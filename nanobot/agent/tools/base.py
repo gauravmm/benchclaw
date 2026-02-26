@@ -1,8 +1,10 @@
 """Base class for agent tools."""
 
+import asyncio
 from abc import abstractmethod
+from asyncio import Task
 from contextlib import AbstractAsyncContextManager
-from typing import Any
+from typing import Any, Self
 
 
 class Tool(AbstractAsyncContextManager):
@@ -12,6 +14,24 @@ class Tool(AbstractAsyncContextManager):
     Tools are capabilities that the agent can use to interact with
     the environment, such as reading files, executing commands, etc.
     """
+
+    _task: Task | None = None
+
+    async def background(self) -> None:
+        """Optional long-running coroutine started on __aenter__. No-op by default."""
+
+    async def __aenter__(self) -> Self:
+        self._task = asyncio.create_task(self.background(), name=self.name)
+        return self
+
+    async def __aexit__(self, *_) -> None:
+        if self._task:
+            try:
+                async with asyncio.timeout(5):
+                    self._task.cancel()
+            except TimeoutError:
+                pass
+            self._task = None
 
     @property
     @abstractmethod
