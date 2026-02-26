@@ -28,7 +28,11 @@ class ChannelManager:
         self.channels: dict[str, BaseChannel] = {}
         self._stack = AsyncExitStack()
 
-        self._init_channels()
+        for name, chconfig in self.config.channels:
+            try:
+                self.channels[name] = chconfig.make_channel(self.bus)
+            except Exception as e:
+                logger.warning(f"{name} channel not available: {e}")
 
     async def __aenter__(self) -> "ChannelManager":
         await self._stack.__aenter__()
@@ -50,27 +54,6 @@ class ChannelManager:
     async def __aexit__(self, *exc_info) -> None:
         logger.info("Stopping all channels...")
         await self._stack.__aexit__(*exc_info)
-
-    def _init_channels(self) -> None:
-        """Initialize all configured channels."""
-        from nanobot.channels.smtp_email import EmailChannel
-        from nanobot.channels.telegram import TelegramChannel
-        from nanobot.channels.whatsapp import WhatsAppChannel
-
-        try:
-            self.channels["telegram"] = TelegramChannel(self.config.channels.telegram, self.bus)
-        except Exception as e:
-            logger.warning(f"Telegram channel not available: {e}")
-
-        try:
-            self.channels["whatsapp"] = WhatsAppChannel(self.config.channels.whatsapp, self.bus)
-        except Exception as e:
-            logger.warning(f"WhatsApp channel not available: {e}")
-
-        try:
-            self.channels["email"] = EmailChannel(self.config.channels.email, self.bus)
-        except Exception as e:
-            logger.warning(f"Email channel not available: {e}")
 
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""

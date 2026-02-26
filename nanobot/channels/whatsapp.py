@@ -7,7 +7,7 @@ import websockets
 from loguru import logger
 
 from nanobot.bus import MessageBus, OutboundMessage
-from nanobot.channels.base import BaseChannel, ChannelConfig
+from nanobot.channels.base import BaseChannel, ChannelConfig, register_channel
 
 
 class WhatsAppConfig(ChannelConfig):
@@ -15,6 +15,12 @@ class WhatsAppConfig(ChannelConfig):
 
     bridge_url: str = "ws://localhost:3001"
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
+
+    def make_channel(self, bus: MessageBus) -> "WhatsAppChannel":
+        return WhatsAppChannel(self, bus)
+
+
+register_channel("whatsapp", WhatsAppConfig)
 
 
 class WhatsAppChannel(BaseChannel):

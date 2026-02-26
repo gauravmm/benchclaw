@@ -1,8 +1,11 @@
 """Configuration schema using Pydantic."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+import nanobot.channels  # triggers register_channel() calls in all channel modules
+from nanobot.channels.base import ChannelConfig, _CONFIG_REGISTRY
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_settings import BaseSettings
 
 
@@ -83,16 +86,17 @@ class ToolsConfig(BaseModel):
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 
-class ChannelConfigs(BaseModel):
-    """Configuration for all chat channels."""
+class _ChannelConfigsBase(BaseModel):
+    def __iter__(self) -> Iterator[tuple[str, ChannelConfig]]:
+        for name in type(self).model_fields:
+            yield name, getattr(self, name)
 
-    from nanobot.channels.smtp_email import EmailConfig
-    from nanobot.channels.telegram import TelegramConfig
-    from nanobot.channels.whatsapp import WhatsAppConfig
 
-    whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
-    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
-    email: EmailConfig = Field(default_factory=EmailConfig)
+ChannelConfigs: type[_ChannelConfigsBase] = create_model(
+    "ChannelConfigs",
+    __base__=_ChannelConfigsBase,
+    **{name: (cls, Field(default_factory=cls)) for name, cls in _CONFIG_REGISTRY.items()},  # type: ignore[arg-type]
+)
 
 
 class Config(BaseSettings):
@@ -101,7 +105,7 @@ class Config(BaseSettings):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
-    channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
+    channels: _ChannelConfigsBase = Field(default_factory=ChannelConfigs)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @property
@@ -161,4 +165,4 @@ class Config(BaseSettings):
                 return spec.default_api_base
         return None
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")
+    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")  # type: ignore

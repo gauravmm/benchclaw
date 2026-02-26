@@ -12,8 +12,19 @@ from pydantic import BaseModel
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 
 
+_CONFIG_REGISTRY: dict[str, type["ChannelConfig"]] = {}
+
+
+def register_channel(name: str, cls: type["ChannelConfig"]) -> None:
+    """Register a channel config class under the given name."""
+    _CONFIG_REGISTRY[name] = cls
+
+
 class ChannelConfig(BaseModel):
     allow_from: list[str] | None = None
+
+    def make_channel(self, bus: "MessageBus") -> "BaseChannel":
+        raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
 
 
 class BaseChannel(AbstractAsyncContextManager):

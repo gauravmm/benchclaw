@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from telegram.request import HTTPXRequest
 
 from nanobot.bus import MessageBus, OutboundMessage
-from nanobot.channels.base import BaseChannel, ChannelConfig
+from nanobot.channels.base import BaseChannel, ChannelConfig, register_channel
 from nanobot.utils import get_workspace_path
 
 
@@ -23,6 +23,12 @@ class TelegramConfig(ChannelConfig):
     proxy: str | None = (
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
+
+    def make_channel(self, bus: MessageBus) -> "TelegramChannel":
+        return TelegramChannel(self, bus)
+
+
+register_channel("telegram", TelegramConfig)
 
 
 def _markdown_to_telegram_html(text: str) -> str:

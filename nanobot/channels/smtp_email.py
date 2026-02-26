@@ -17,11 +17,14 @@ from typing import Any
 from loguru import logger
 
 from nanobot.bus import MessageBus, OutboundMessage
-from nanobot.channels.base import BaseChannel, ChannelConfig
+from nanobot.channels.base import BaseChannel, ChannelConfig, register_channel
 
 
 class EmailConfig(ChannelConfig):
     """Email channel configuration (IMAP inbound + SMTP outbound)."""
+
+    def make_channel(self, bus: MessageBus) -> "EmailChannel":
+        return EmailChannel(self, bus)
 
     consent_granted: bool = False  # Explicit owner permission to access mailbox data
 
@@ -48,6 +51,9 @@ class EmailConfig(ChannelConfig):
     mark_seen: bool = True
     max_body_chars: int = 12000
     subject_prefix: str = "Re: "
+
+
+register_channel("email", EmailConfig)
 
 
 _IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
