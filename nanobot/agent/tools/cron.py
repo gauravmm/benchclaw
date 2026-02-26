@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, register_tool
 from nanobot.cron.service import CronService
 from nanobot.cron.types import CronSchedule
 
@@ -122,3 +122,6 @@ class CronTool(Tool):
         if self._cron.remove_job(job_id):
             return f"Removed job {job_id}"
         return f"Job {job_id} not found"
+
+
+register_tool("cron", CronTool)

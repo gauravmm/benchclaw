@@ -11,7 +11,6 @@ from pydantic import BaseModel
 
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 
-
 _CONFIG_REGISTRY: dict[str, type["ChannelConfig"]] = {}
 
 

@@ -3,10 +3,11 @@
 from collections.abc import Iterator
 from pathlib import Path
 
-import nanobot.channels  # triggers register_channel() calls in all channel modules
-from nanobot.channels.base import ChannelConfig, _CONFIG_REGISTRY
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_settings import BaseSettings
+
+import nanobot.channels  # noqa: F401  # triggers register_channel() calls in all channel modules
+from nanobot.channels.base import _CONFIG_REGISTRY, ChannelConfig
 
 
 class AgentDefaults(BaseModel):

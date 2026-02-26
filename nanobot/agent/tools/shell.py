@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, register_tool
 
 
 class ExecTool(Tool):
@@ -136,3 +136,6 @@ class ExecTool(Tool):
                     return "Error: Command blocked by safety guard (path outside working dir)"
 
         return None
+
+
+register_tool("exec", ExecTool)

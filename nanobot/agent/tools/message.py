@@ -2,7 +2,7 @@
 
 from typing import Any, Awaitable, Callable
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, register_tool
 from nanobot.bus import OutboundMessage
 
 
@@ -70,3 +70,6 @@ class MessageTool(Tool):
             return f"Message sent to {channel}:{chat_id}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
+
+
+register_tool("message", MessageTool)

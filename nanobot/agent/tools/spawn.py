@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, register_tool
 
 if TYPE_CHECKING:
     from nanobot.agent.subagent import SubagentManager
@@ -63,3 +63,6 @@ class SpawnTool(Tool):
             origin_channel=self._origin_channel,
             origin_chat_id=self._origin_chat_id,
         )
+
+
+register_tool("spawn", SpawnTool)

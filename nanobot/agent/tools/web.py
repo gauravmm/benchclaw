@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, register_tool
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -189,3 +189,7 @@ class WebFetchTool(Tool):
         text = re.sub(r"</(p|div|section|article)>", "\n\n", text, flags=re.I)
         text = re.sub(r"<(br|hr)\s*/?>", "\n", text, flags=re.I)
         return _normalize(_strip_tags(text))
+
+
+register_tool("web_search", WebSearchTool)
+register_tool("web_fetch", WebFetchTool)

@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, register_tool
 
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
@@ -184,3 +184,9 @@ class ListDirTool(Tool):
             return f"Error: {e}"
         except Exception as e:
             return f"Error listing directory: {str(e)}"
+
+
+register_tool("read_file", ReadFileTool)
+register_tool("write_file", WriteFileTool)
+register_tool("edit_file", EditFileTool)
+register_tool("list_dir", ListDirTool)

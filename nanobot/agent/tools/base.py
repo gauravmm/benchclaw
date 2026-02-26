@@ -6,6 +6,13 @@ from asyncio import Task
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Self
 
+_TOOL_REGISTRY: dict[str, type["Tool"]] = {}
+
+
+def register_tool(name: str, cls: type["Tool"]) -> None:
+    """Register a tool class under the given name."""
+    _TOOL_REGISTRY[name] = cls
+
 
 class Tool(AbstractAsyncContextManager):
     """
