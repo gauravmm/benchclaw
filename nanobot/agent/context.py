@@ -7,8 +7,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.agent.tools.memory import MemoryStore
+
+# TODO Use hooks for generate_system_prompt
 
 
 class ContextBuilder:
@@ -53,6 +55,7 @@ class ContextBuilder:
 
         # Skills - progressive loading
         # 1. Always-loaded skills: include full content
+        # TODO: Do this with the special part
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)

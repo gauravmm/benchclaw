@@ -1,4 +1,5 @@
 config/
+workspace/
 bridge/node_modules
 
 .assets

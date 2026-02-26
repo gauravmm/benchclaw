@@ -10,6 +10,7 @@
     "**/Thumbs.db": true,
     ".venv/": true,
     "bridge/node_modules": true,
-    ".ruff_cache/": true
+    ".ruff_cache/": true,
+    "**/__pycache__": true
   }
 }

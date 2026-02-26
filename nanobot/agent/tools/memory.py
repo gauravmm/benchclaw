@@ -9,6 +9,12 @@ from nanobot.agent.tools.base import Tool, register_tool
 from nanobot.utils import _ensure_dir
 
 
+# TODO: Split MemoryStore into memory:
+#   read/write memories with associated tags
+#   the underlying storage is timestamped files with a YAML preamble
+#   on init it reads all the files.
+# and into log:
+#   Timestamped log with rotation that the agent can choose to write to.
 class MemoryStore:
     """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
 
