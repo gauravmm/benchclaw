@@ -1,25 +1,17 @@
 """Base class for agent tools."""
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 
-class Tool(ABC):
+class Tool(AbstractAsyncContextManager):
     """
     Abstract base class for agent tools.
 
     Tools are capabilities that the agent can use to interact with
     the environment, such as reading files, executing commands, etc.
     """
-
-    _TYPE_MAP = {
-        "string": str,
-        "integer": int,
-        "number": (int, float),
-        "boolean": bool,
-        "array": list,
-        "object": dict,
-    }
 
     @property
     @abstractmethod
@@ -57,40 +49,7 @@ class Tool(ABC):
         schema = self.parameters or {}
         if schema.get("type", "object") != "object":
             raise ValueError(f"Schema must be object type, got {schema.get('type')!r}")
-        return self._validate(params, {**schema, "type": "object"}, "")
-
-    def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
-        t, label = schema.get("type"), path or "parameter"
-        if t in self._TYPE_MAP and not isinstance(val, self._TYPE_MAP[t]):
-            return [f"{label} should be {t}"]
-
-        errors = []
-        if "enum" in schema and val not in schema["enum"]:
-            errors.append(f"{label} must be one of {schema['enum']}")
-        if t in ("integer", "number"):
-            if "minimum" in schema and val < schema["minimum"]:
-                errors.append(f"{label} must be >= {schema['minimum']}")
-            if "maximum" in schema and val > schema["maximum"]:
-                errors.append(f"{label} must be <= {schema['maximum']}")
-        if t == "string":
-            if "minLength" in schema and len(val) < schema["minLength"]:
-                errors.append(f"{label} must be at least {schema['minLength']} chars")
-            if "maxLength" in schema and len(val) > schema["maxLength"]:
-                errors.append(f"{label} must be at most {schema['maxLength']} chars")
-        if t == "object":
-            props = schema.get("properties", {})
-            for k in schema.get("required", []):
-                if k not in val:
-                    errors.append(f"missing required {path + '.' + k if path else k}")
-            for k, v in val.items():
-                if k in props:
-                    errors.extend(self._validate(v, props[k], path + "." + k if path else k))
-        if t == "array" and "items" in schema:
-            for i, item in enumerate(val):
-                errors.extend(
-                    self._validate(item, schema["items"], f"{path}[{i}]" if path else f"[{i}]")
-                )
-        return errors
+        return _validate_schema(params, {**schema, "type": "object"}, "")
 
     def to_schema(self) -> dict[str, Any]:
         """Convert tool to OpenAI function schema format."""
@@ -102,3 +61,45 @@ class Tool(ABC):
                 "parameters": self.parameters,
             },
         }
+
+
+_TYPE_MAP = {
+    "string": str,
+    "integer": int,
+    "number": (int, float),
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def _validate_schema(val: Any, schema: dict[str, Any], label: str = "") -> list[str]:
+    t = schema.get("type")
+    if t in _TYPE_MAP and not isinstance(val, _TYPE_MAP[t]):
+        return [f"{label} should be {t}"]
+
+    errors = []
+    if "enum" in schema and val not in schema["enum"]:
+        errors.append(f"{label} must be one of {schema['enum']}")
+    elif t in ("integer", "number"):
+        if "minimum" in schema and val < schema["minimum"]:
+            errors.append(f"{label} must be >= {schema['minimum']}")
+        if "maximum" in schema and val > schema["maximum"]:
+            errors.append(f"{label} must be <= {schema['maximum']}")
+    elif t == "string":
+        if "minLength" in schema and len(val) < schema["minLength"]:
+            errors.append(f"{label} must be at least {schema['minLength']} chars")
+        if "maxLength" in schema and len(val) > schema["maxLength"]:
+            errors.append(f"{label} must be at most {schema['maxLength']} chars")
+    elif t == "object":
+        for k in schema.get("required", []):
+            if k not in val:
+                errors.append(f"missing required {label + '.' + k}")
+        props = schema.get("properties", {})
+        for k, v in val.items():
+            if k in props:
+                errors.extend(_validate_schema(v, props[k], label + "." + k))
+    if t == "array" and "items" in schema:
+        for i, item in enumerate(val):
+            errors.extend(_validate_schema(item, schema["items"], f"{label}[{i}]"))
+    return errors

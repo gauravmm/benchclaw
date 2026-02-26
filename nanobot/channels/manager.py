@@ -38,6 +38,7 @@ class ChannelManager:
             return self
 
         # Why do we have this again? This is pretty bad design.
+        # TODO: Replace this with a per-channel outbound dispatch in the queue.
         dispatch_task = asyncio.create_task(self._dispatch_outbound(), name="dispatch")
         self._stack.callback(dispatch_task.cancel)
 
