@@ -16,10 +16,39 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import EmailConfig
+from nanobot.bus import MessageBus, OutboundMessage
+from nanobot.channels.base import BaseChannel, ChannelConfig
+
+
+class EmailConfig(ChannelConfig):
+    """Email channel configuration (IMAP inbound + SMTP outbound)."""
+
+    consent_granted: bool = False  # Explicit owner permission to access mailbox data
+
+    # IMAP (receive)
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_username: str = ""
+    imap_password: str = ""
+    imap_mailbox: str = "INBOX"
+    imap_use_ssl: bool = True
+
+    # SMTP (send)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    from_address: str = ""
+
+    # Behavior
+    auto_reply_enabled: bool = True
+    poll_interval_seconds: int = 30
+    mark_seen: bool = True
+    max_body_chars: int = 12000
+    subject_prefix: str = "Re: "
+
 
 _IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
@@ -46,6 +75,12 @@ class EmailChannel(BaseChannel):
         self._processed_uids: set[str] = set()  # Capped to prevent unbounded growth
         self._MAX_PROCESSED_UIDS = 100000
 
+    def status(self) -> tuple[bool, str]:
+        if not self.config.consent_granted:
+            return (False, "consent not granted")
+        running = bool(self._task and not self._task.done())
+        return (running, f"polling {self.config.imap_host}" if running else "stopped")
+
     async def background(self) -> None:
         """Start polling IMAP for inbound emails."""
         if not self.config.consent_granted:
@@ -58,11 +93,10 @@ class EmailChannel(BaseChannel):
         if not self._validate_config():
             return
 
-        self._running = True
         logger.info("Starting Email channel (IMAP polling mode)...")
 
         poll_seconds = max(5, int(self.config.poll_interval_seconds))
-        while self._running:
+        while True:
             try:
                 inbound_items = await asyncio.to_thread(self._fetch_new_messages)
                 for item in inbound_items:
@@ -85,10 +119,6 @@ class EmailChannel(BaseChannel):
                 logger.error(f"Email polling error: {e}")
 
             await asyncio.sleep(poll_seconds)
-
-    async def stop(self) -> None:
-        """Stop polling loop."""
-        self._running = False
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send email via SMTP."""

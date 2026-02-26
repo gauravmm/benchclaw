@@ -12,8 +12,7 @@ from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTo
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
+from nanobot.bus import InboundMessage, MessageBus
 from nanobot.providers.base import LLMProvider
 
 

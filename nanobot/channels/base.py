@@ -1,22 +1,22 @@
 """Base channel interface for chat platforms."""
 
 import asyncio
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from asyncio import Task
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.bus.queue import MessageBus
+from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 
 
 class ChannelConfig(BaseModel):
-    allow_from: list[str] = Field(default_factory=list)
+    allow_from: list[str] | None = None
 
 
-class BaseChannel(ABC):
+class BaseChannel(AbstractAsyncContextManager):
     """
     Abstract base class for chat channel implementations.
 
@@ -61,6 +61,11 @@ class BaseChannel(ABC):
             except TimeoutError:
                 print(f"{self.__qualname__} timed out while exiting")
 
+    def status(self) -> tuple[bool, str]:
+        """Return (is_running, description) for this channel."""
+        running = bool(self._task and not self._task.done())
+        return (running, "running" if running else "stopped")
+
     @abstractmethod
     async def send(self, msg: OutboundMessage) -> None:
         """
@@ -81,19 +86,17 @@ class BaseChannel(ABC):
         Returns:
             True if allowed, False otherwise.
         """
-        allow_list = getattr(self.config, "allow_from", [])
-
-        # If no allow list, allow everyone
+        allow_list = self.config.allow_from
         if not allow_list:
+            # If no allow list, allow everyone
             return True
 
-        sender_str = str(sender_id)
-        if sender_str in allow_list:
+        if sender_id in allow_list:
             return True
-        if "|" in sender_str:
-            for part in sender_str.split("|"):
-                if part and part in allow_list:
-                    return True
+
+        if "|" in sender_id:
+            if any(part in allow_list for part in sender_id.split("|")):
+                return True
         return False
 
     async def _handle_message(
@@ -119,7 +122,7 @@ class BaseChannel(ABC):
         if not self.is_allowed(sender_id):
             logger.warning(
                 f"Access denied for sender {sender_id} on channel {self.name}. "
-                f"Add them to allowFrom list in config to grant access."
+                f"Add them to allow_from list in config to grant access."
             )
             return
 

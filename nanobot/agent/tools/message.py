@@ -3,7 +3,7 @@
 from typing import Any, Awaitable, Callable
 
 from nanobot.agent.tools.base import Tool
-from nanobot.bus.events import OutboundMessage
+from nanobot.bus import OutboundMessage
 
 
 class MessageTool(Tool):

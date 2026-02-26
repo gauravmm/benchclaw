@@ -6,15 +6,13 @@ import json
 import websockets
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
+from nanobot.bus import MessageBus, OutboundMessage
 from nanobot.channels.base import BaseChannel, ChannelConfig
 
 
 class WhatsAppConfig(ChannelConfig):
     """WhatsApp channel configuration."""
 
-    enabled: bool = False
     bridge_url: str = "ws://localhost:3001"
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
 
@@ -34,6 +32,11 @@ class WhatsAppChannel(BaseChannel):
         self.config: WhatsAppConfig = config
         self._ws = None
         self._connected = False
+
+    def status(self) -> tuple[bool, str]:
+        if self._connected:
+            return (True, f"bridge connected ({self.config.bridge_url})")
+        return (False, f"bridge disconnected ({self.config.bridge_url})")
 
     async def background(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
@@ -128,7 +131,7 @@ class WhatsAppChannel(BaseChannel):
 if __name__ == "__main__":
     import sys
 
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus import MessageBus
 
     bridge_url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:3001"
     test_chat_id = sys.argv[2] if len(sys.argv) > 2 else None
@@ -159,7 +162,7 @@ if __name__ == "__main__":
 
     async def main() -> None:
         bus = MessageBus()
-        config = WhatsAppConfig(enabled=True, bridge_url=bridge_url)
+        config = WhatsAppConfig(bridge_url=bridge_url)
         channel = WhatsAppChannel(config, bus)
 
         print(f"[test] Connecting to bridge at {bridge_url} ...")

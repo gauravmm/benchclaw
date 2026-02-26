@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
 
-    workspace: str = "~/.nanobot/workspace"
+    workspace: str = "./workspace"
     model: str = "anthropic/claude-opus-4-5"
     max_tokens: int = 8192
     temperature: float = 0.7
@@ -83,12 +83,25 @@ class ToolsConfig(BaseModel):
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 
+class ChannelConfigs(BaseModel):
+    """Configuration for all chat channels."""
+
+    from nanobot.channels.smtp_email import EmailConfig
+    from nanobot.channels.telegram import TelegramConfig
+    from nanobot.channels.whatsapp import WhatsAppConfig
+
+    whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @property

@@ -1,5 +1,15 @@
 {
   "markdownlint.config": {
     "MD040": false
+  },
+  "files.exclude": {
+    "**/.git": true,
+    "**/.svn": true,
+    "**/.hg": true,
+    "**/.DS_Store": true,
+    "**/Thumbs.db": true,
+    ".venv/": true,
+    "bridge/node_modules": true,
+    ".ruff_cache/": true
   }
 }

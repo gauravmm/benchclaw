@@ -10,8 +10,7 @@ from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.queue import MessageBus
+from nanobot.bus import MessageBus, OutboundMessage
 from nanobot.channels.base import BaseChannel, ChannelConfig
 from nanobot.utils import get_workspace_path
 
@@ -111,22 +110,24 @@ class TelegramChannel(BaseChannel):
         self,
         config: TelegramConfig,
         bus: MessageBus,
-        groq_api_key: str = "",
     ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
-        self.groq_api_key = groq_api_key
+        self.groq_api_key = None  # TODO: Remove
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+
+    def status(self) -> tuple[bool, str]:
+        if self._app:
+            return (True, "connected")
+        return (False, "not connected")
 
     async def background(self) -> None:
         """Start the Telegram bot with long polling."""
         if not self.config.token:
             logger.error("Telegram bot token not configured")
             return
-
-        self._running = True
 
         # Build the application with larger connection pool to avoid pool-timeout on long runs
         req = HTTPXRequest(
@@ -176,31 +177,26 @@ class TelegramChannel(BaseChannel):
         except Exception as e:
             logger.warning(f"Failed to register bot commands: {e}")
 
-        # Start polling (this runs until stopped)
+        # Start polling (this runs until cancelled)
         assert self._app.updater
         await self._app.updater.start_polling(
             allowed_updates=["message"],
             drop_pending_updates=True,  # Ignore old messages on startup
         )
 
-        # Keep running until stopped
-        while self._running:
-            await asyncio.sleep(1)
+        try:
+            await asyncio.Future()  # Wait forever until CancelledError
+        finally:
+            # Cancel all typing indicators
+            for chat_id in list(self._typing_tasks):
+                self._stop_typing(chat_id)
 
-    async def stop(self) -> None:
-        """Stop the Telegram bot."""
-        self._running = False
-
-        # Cancel all typing indicators
-        for chat_id in list(self._typing_tasks):
-            self._stop_typing(chat_id)
-
-        if self._app:
-            logger.info("Stopping Telegram bot...")
-            await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
-            self._app = None
+            if self._app:
+                logger.info("Stopping Telegram bot...")
+                await self._app.updater.stop()
+                await self._app.stop()
+                await self._app.shutdown()
+                self._app = None
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""

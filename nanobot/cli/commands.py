@@ -312,7 +312,7 @@ def gateway(
 ):
     """Start the nanobot gateway."""
     from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus import MessageBus
     from nanobot.channels.manager import ChannelManager
     from nanobot.config.loader import get_data_path, load_config
     from nanobot.cron.service import CronService
@@ -363,7 +363,7 @@ def gateway(
             chat_id=job.payload.to or "direct",
         )
         if job.payload.deliver and job.payload.to:
-            from nanobot.bus.events import OutboundMessage
+            from nanobot.bus import OutboundMessage
 
             await bus.publish_outbound(
                 OutboundMessage(
@@ -391,8 +391,8 @@ def gateway(
     # Create channel manager
     channels = ChannelManager(config, bus)
 
-    if channels.enabled_channels:
-        console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
+    if channels.channels:
+        console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.channels)}")
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
 
@@ -406,16 +406,13 @@ def gateway(
         try:
             await cron.start()
             await heartbeat.start()
-            await asyncio.gather(
-                agent.run(),
-                channels.start_all(),
-            )
+            async with channels:
+                await agent.run()
         except KeyboardInterrupt:
             console.print("\nShutting down...")
             heartbeat.stop()
             cron.stop()
             agent.stop()
-            await channels.stop_all()
 
     asyncio.run(run())
 
@@ -440,7 +437,7 @@ def agent(
     from loguru import logger
 
     from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus import MessageBus
     from nanobot.config.loader import load_config
 
     config = load_config()
