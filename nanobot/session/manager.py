@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from pathvalidate import sanitize_filename
 
-from nanobot.utils import ensure_dir, safe_filename
+from nanobot.utils import get_workspace_path
 
 
 @dataclass
@@ -56,12 +57,12 @@ class SessionManager:
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
-        self.sessions_dir = ensure_dir(Path.home() / ".nanobot" / "sessions")
+        self.sessions_dir = _ensure_dir(get_workspace_path() / "sessions")
         self._cache: dict[str, Session] = {}
 
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
-        safe_key = safe_filename(key.replace(":", "_"))
+        safe_key = sanitize_filename(key.replace(":", "_"))
         return self.sessions_dir / f"{safe_key}.jsonl"
 
     def get_or_create(self, key: str) -> Session:

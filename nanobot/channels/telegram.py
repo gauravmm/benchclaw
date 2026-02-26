@@ -13,6 +13,7 @@ from telegram.request import HTTPXRequest
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel, ChannelConfig
+from nanobot.utils import get_workspace_path
 
 
 class TelegramConfig(ChannelConfig):
@@ -298,10 +299,8 @@ class TelegramChannel(BaseChannel):
                 file = await self._app.bot.get_file(media_file.file_id)
                 ext = self._get_extension(media_type, getattr(media_file, "mime_type", None))
 
-                # Save to workspace/media/
-                from pathlib import Path
-
-                media_dir = Path.home() / ".nanobot" / "media"
+                # TODO: Move this into utils.py
+                media_dir = get_workspace_path() / "media"
                 media_dir.mkdir(parents=True, exist_ok=True)
 
                 file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
