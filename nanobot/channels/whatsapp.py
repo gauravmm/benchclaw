@@ -3,12 +3,20 @@
 import asyncio
 import json
 
+import websockets
 from loguru import logger
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import WhatsAppConfig
+from nanobot.channels.base import BaseChannel, ChannelConfig
+
+
+class WhatsAppConfig(ChannelConfig):
+    """WhatsApp channel configuration."""
+
+    enabled: bool = False
+    bridge_url: str = "ws://localhost:3001"
+    bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
 
 
 class WhatsAppChannel(BaseChannel):
@@ -27,19 +35,12 @@ class WhatsAppChannel(BaseChannel):
         self._ws = None
         self._connected = False
 
-    async def start(self) -> None:
+    async def background(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
-        import websockets
-
-        bridge_url = self.config.bridge_url
-
-        logger.info(f"Connecting to WhatsApp bridge at {bridge_url}...")
-
-        self._running = True
-
-        while self._running:
+        logger.info(f"Connecting to WhatsApp bridge at {self.config.bridge_url}...")
+        while True:
             try:
-                async with websockets.connect(bridge_url) as ws:
+                async with websockets.connect(self.config.bridge_url) as ws:
                     self._ws = ws
                     # Send auth token if configured
                     if self.config.bridge_token:
@@ -56,30 +57,16 @@ class WhatsAppChannel(BaseChannel):
                         except Exception as e:
                             logger.error(f"Error handling bridge message: {e}")
 
-            except asyncio.CancelledError:
-                break
             except Exception as e:
-                self._connected = False
-                self._ws = None
-                logger.warning(f"WhatsApp bridge connection error: {e}")
-
-                if self._running:
-                    logger.info("Reconnecting in 5 seconds...")
-                    await asyncio.sleep(5)
-
-    async def stop(self) -> None:
-        """Stop the WhatsApp channel."""
-        self._running = False
-        self._connected = False
-
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
+                logger.warning(f"WhatsApp bridge connection error: {e}. Retrying...")
+                await asyncio.sleep(5)
+        # asyncio.CancelledError falls through.
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through WhatsApp."""
         if not self._ws or not self._connected:
             logger.warning("WhatsApp bridge not connected")
+            # TODO: Propagate a message back to the loop saying that WhatsApp is down.
             return
 
         try:
@@ -97,18 +84,12 @@ class WhatsAppChannel(BaseChannel):
             return
 
         msg_type = data.get("type")
-
         if msg_type == "message":
-            # Incoming message from WhatsApp
-            # Deprecated by whatsapp: old phone number style typically: <phone>@s.whatspp.net
-            pn = data.get("pn", "")
-            # New LID sytle typically:
-            sender = data.get("sender", "")
-            content = data.get("content", "")
+            sender = str(data.get("sender", ""))
+            content = str(data.get("content", ""))
 
             # Extract just the phone number or lid as chat_id
-            user_id = pn if pn else sender
-            sender_id = user_id.split("@")[0] if "@" in user_id else user_id
+            sender_id = sender.split("@")[0] if "@" in sender else sender
             logger.info(f"Sender {sender}")
 
             # Handle voice transcription if it's a voice message
@@ -116,7 +97,6 @@ class WhatsAppChannel(BaseChannel):
                 logger.info(
                     f"Voice message received from {sender_id}, but direct download from bridge is not yet supported."
                 )
-                content = "[Voice Message: Transcription not available for WhatsApp yet]"
 
             await self._handle_message(
                 sender_id=sender_id,
@@ -131,17 +111,65 @@ class WhatsAppChannel(BaseChannel):
 
         elif msg_type == "status":
             # Connection status update
-            status = data.get("status")
+            status = str(data.get("status"))
             logger.info(f"WhatsApp status: {status}")
-
-            if status == "connected":
-                self._connected = True
-            elif status == "disconnected":
-                self._connected = False
+            self._connected = status == "connected"
 
         elif msg_type == "qr":
-            # QR code for authentication
-            logger.info("Scan QR code in the bridge terminal to connect WhatsApp")
+            logger.error("Scan QR code in the bridge terminal to connect WhatsApp")
 
         elif msg_type == "error":
             logger.error(f"WhatsApp bridge error: {data.get('error')}")
+
+        else:
+            logger.error(f"Unknown type: {msg_type}: " + str(data))
+
+
+if __name__ == "__main__":
+    import sys
+
+    from nanobot.bus.queue import MessageBus
+
+    bridge_url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:3001"
+    test_chat_id = sys.argv[2] if len(sys.argv) > 2 else None
+
+    async def watch_connected(channel: WhatsAppChannel) -> None:
+        """Send a message when the channel first becomes connected."""
+        while True:
+            await asyncio.sleep(0.5)
+            if channel._connected:
+                print("[test] Successfully connected to WhatsApp bridge!")
+                if test_chat_id:
+                    await channel.send(
+                        OutboundMessage(
+                            channel="whatsapp",
+                            chat_id="120363405977110775@g.us",
+                            content="Connected!",
+                        )
+                    )
+                return
+
+    async def print_inbound(bus: MessageBus, channel: WhatsAppChannel) -> None:
+        while True:
+            msg = await bus.consume_inbound()
+            print(f"[inbound] {msg}")
+            await channel.send(
+                OutboundMessage(channel="whatsapp", chat_id=msg.chat_id, content=msg.content[::-1])
+            )
+
+    async def main() -> None:
+        bus = MessageBus()
+        config = WhatsAppConfig(enabled=True, bridge_url=bridge_url)
+        channel = WhatsAppChannel(config, bus)
+
+        print(f"[test] Connecting to bridge at {bridge_url} ...")
+        await asyncio.gather(
+            channel.background(),
+            watch_connected(channel),
+            print_inbound(bus, channel),
+        )
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

@@ -1,12 +1,19 @@
 """Base channel interface for chat platforms."""
 
+import asyncio
 from abc import ABC, abstractmethod
+from asyncio import Task
 from typing import Any
 
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
+
+
+class ChannelConfig(BaseModel):
+    allow_from: list[str] = Field(default_factory=list)
 
 
 class BaseChannel(ABC):
@@ -19,7 +26,7 @@ class BaseChannel(ABC):
 
     name: str = "base"
 
-    def __init__(self, config: Any, bus: MessageBus):
+    def __init__(self, config: ChannelConfig, bus: MessageBus):
         """
         Initialize the channel.
 
@@ -29,10 +36,10 @@ class BaseChannel(ABC):
         """
         self.config = config
         self.bus = bus
-        self._running = False
 
-    @abstractmethod
-    async def start(self) -> None:
+        self._task: Task | None = None  # Background task
+
+    async def background(self) -> None:
         """
         Start the channel and begin listening for messages.
 
@@ -40,13 +47,19 @@ class BaseChannel(ABC):
         1. Connects to the chat platform
         2. Listens for incoming messages
         3. Forwards messages to the bus via _handle_message()
+        4. Terminates cleanly on CancelledError
         """
-        pass
 
-    @abstractmethod
-    async def stop(self) -> None:
-        """Stop the channel and clean up resources."""
-        pass
+    async def __aenter__(self):
+        self._task = asyncio.create_task(self.background())
+
+    async def __aexit__(self):
+        if self._task:
+            try:
+                async with asyncio.timeout(5):
+                    self._task.cancel()
+            except TimeoutError:
+                print(f"{self.__qualname__} timed out while exiting")
 
     @abstractmethod
     async def send(self, msg: OutboundMessage) -> None:
@@ -120,8 +133,3 @@ class BaseChannel(ABC):
         )
 
         await self.bus.publish_inbound(msg)
-
-    @property
-    def is_running(self) -> bool:
-        """Check if the channel is running."""
-        return self._running

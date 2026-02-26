@@ -60,7 +60,7 @@ class ChannelManager:
         # Email channel
         if self.config.channels.email.enabled:
             try:
-                from nanobot.channels.email import EmailChannel
+                from nanobot.channels.smtp_email import EmailChannel
 
                 self.channels["email"] = EmailChannel(self.config.channels.email, self.bus)
                 logger.info("Email channel enabled")
@@ -70,7 +70,7 @@ class ChannelManager:
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
         """Start a channel and log any exceptions."""
         try:
-            await channel.start()
+            await channel.background()
         except Exception as e:
             logger.error(f"Failed to start channel {name}: {e}")
 

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from nanobot.utils.helpers import ensure_dir
+from nanobot.utils import ensure_dir
 
 
 class MemoryStore:

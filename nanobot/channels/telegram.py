@@ -12,8 +12,17 @@ from telegram.request import HTTPXRequest
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import TelegramConfig
+from nanobot.channels.base import BaseChannel, ChannelConfig
+
+
+class TelegramConfig(ChannelConfig):
+    """Telegram channel configuration."""
+
+    enabled: bool = False
+    token: str = ""  # Bot token from @BotFather
+    proxy: str | None = (
+        None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
+    )
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -110,7 +119,7 @@ class TelegramChannel(BaseChannel):
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
 
-    async def start(self) -> None:
+    async def background(self) -> None:
         """Start the Telegram bot with long polling."""
         if not self.config.token:
             logger.error("Telegram bot token not configured")

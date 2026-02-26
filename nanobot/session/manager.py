@@ -8,7 +8,7 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.utils.helpers import ensure_dir, safe_filename
+from nanobot.utils import ensure_dir, safe_filename
 
 
 @dataclass

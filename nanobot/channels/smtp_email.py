@@ -46,7 +46,7 @@ class EmailChannel(BaseChannel):
         self._processed_uids: set[str] = set()  # Capped to prevent unbounded growth
         self._MAX_PROCESSED_UIDS = 100000
 
-    async def start(self) -> None:
+    async def background(self) -> None:
         """Start polling IMAP for inbound emails."""
         if not self.config.consent_granted:
             logger.warning(

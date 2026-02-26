@@ -5,7 +5,7 @@ import pytest
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.email import EmailChannel
+from nanobot.channels.smtp_email import EmailChannel
 from nanobot.config.schema import EmailConfig
 
 
@@ -107,7 +107,7 @@ async def test_start_returns_immediately_without_consent(monkeypatch) -> None:
         return []
 
     monkeypatch.setattr(channel, "_fetch_new_messages", _fake_fetch)
-    await channel.start()
+    await channel.background()
     assert channel.is_running is False
     assert called["fetch"] is False
 
