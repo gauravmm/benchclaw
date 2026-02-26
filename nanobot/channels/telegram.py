@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+
 from loguru import logger
 from telegram import BotCommand, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from nanobot.bus.events import OutboundMessage
@@ -166,6 +167,7 @@ class TelegramChannel(BaseChannel):
             logger.warning(f"Failed to register bot commands: {e}")
 
         # Start polling (this runs until stopped)
+        assert self._app.updater
         await self._app.updater.start_polling(
             allowed_updates=["message"],
             drop_pending_updates=True,  # Ignore old messages on startup
