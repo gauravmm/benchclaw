@@ -52,7 +52,7 @@ class WhatsAppChannel(BaseChannel):
                     # Listen for messages
                     async for message in ws:
                         try:
-                            await self._handle_bridge_message(message)
+                            await self._handle_bridge_message(str(message))
                         except Exception as e:
                             logger.error(f"Error handling bridge message: {e}")
 

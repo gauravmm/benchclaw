@@ -21,6 +21,8 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import EmailConfig
 
+_IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
 
 class EmailChannel(BaseChannel):
     """
@@ -35,20 +37,6 @@ class EmailChannel(BaseChannel):
     """
 
     name = "email"
-    _IMAP_MONTHS = (
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec",
-    )
 
     def __init__(self, config: EmailConfig, bus: MessageBus):
         super().__init__(config, bus)
@@ -318,10 +306,10 @@ class EmailChannel(BaseChannel):
 
         return messages
 
-    @classmethod
-    def _format_imap_date(cls, value: date) -> str:
+    @staticmethod
+    def _format_imap_date(value: date) -> str:
         """Format date for IMAP search (always English month abbreviations)."""
-        month = cls._IMAP_MONTHS[value.month - 1]
+        month = _IMAP_MONTHS[value.month - 1]
         return f"{value.day:02d}-{month}-{value.year}"
 
     @staticmethod

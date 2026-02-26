@@ -20,11 +20,10 @@ if (!globalThis.crypto) {
 }
 
 import { BridgeServer } from './server.js';
-import { homedir } from 'os';
 import { join } from 'path';
 
 const PORT = parseInt(process.env.BRIDGE_PORT || '3001', 10);
-const AUTH_DIR = process.env.AUTH_DIR || join(homedir(), '.nanobot', 'whatsapp-auth');
+const AUTH_DIR = process.env.AUTH_DIR || join('config', 'whatsapp-auth');
 const TOKEN = process.env.BRIDGE_TOKEN || undefined;
 
 console.log('🐈 nanobot WhatsApp Bridge');
