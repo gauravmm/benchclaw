@@ -40,6 +40,12 @@ class ExecTool(Tool):
         return "exec"
 
     @property
+    def skill(self) -> str | None:
+        # TODO: review — exec is used by tmux, github, weather, and summarize skills;
+        # consider injecting the appropriate skill based on context rather than a single one
+        return "tmux"
+
+    @property
     def description(self) -> str:
         return "Execute a shell command and return its output. Use with caution."
 

@@ -31,6 +31,11 @@ class SpawnTool(Tool):
         return "spawn"
 
     @property
+    def skill(self) -> str | None:
+        # TODO: review — no dedicated skill exists for spawn/subagent orchestration
+        return None
+
+    @property
     def description(self) -> str:
         return (
             "Spawn a subagent to handle a task in the background. "

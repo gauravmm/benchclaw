@@ -33,6 +33,11 @@ class MessageTool(Tool):
         return "message"
 
     @property
+    def skill(self) -> str | None:
+        # TODO: review — no dedicated skill for message delivery
+        return None
+
+    @property
     def description(self) -> str:
         return "Send a message to the user. Use this when you want to communicate something."
 

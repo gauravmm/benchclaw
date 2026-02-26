@@ -26,6 +26,7 @@ class Tool(AbstractAsyncContextManager):
 
     async def background(self) -> None:
         """Optional long-running coroutine started on __aenter__. No-op by default."""
+        pass
 
     async def __aenter__(self) -> Self:
         self._task = asyncio.create_task(self.background(), name=self.name)
@@ -45,6 +46,11 @@ class Tool(AbstractAsyncContextManager):
     def name(self) -> str:
         """Tool name used in function calls."""
         pass
+
+    @property
+    def skill(self) -> str | None:
+        """Skill name to inject into agent context when this tool is selected. None if no skill applies."""
+        return None
 
     @property
     @abstractmethod

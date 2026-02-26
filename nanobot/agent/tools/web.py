@@ -48,6 +48,8 @@ class WebSearchTool(Tool):
 
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
+    # TODO: review — no dedicated skill; consider "weather" or "github" if context is known
+    skill = None
     parameters = {
         "type": "object",
         "properties": {
@@ -100,6 +102,8 @@ class WebFetchTool(Tool):
 
     name = "web_fetch"
     description = "Fetch URL and extract readable content (HTML → markdown/text)."
+    # TODO: review — "summarize" skill is related but uses the summarize CLI rather than web_fetch
+    skill = None
     parameters = {
         "type": "object",
         "properties": {
