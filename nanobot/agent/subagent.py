@@ -1,19 +1,21 @@
 """Subagent manager for background task execution."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import uuid
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.base import ToolBuildContext
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus import InboundMessage, MessageBus
 from nanobot.providers.base import LLMProvider
+
+if TYPE_CHECKING:
+    from nanobot.config.schema import Config
 
 
 class SubagentManager:
@@ -27,23 +29,17 @@ class SubagentManager:
 
     def __init__(
         self,
+        config: Config,
         provider: LLMProvider,
-        workspace: Path,
         bus: MessageBus,
-        model: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        tools_config=None,
-        restrict_to_workspace: bool = False,
     ):
+        self._config = config
         self.provider = provider
-        self.workspace = workspace
         self.bus = bus
-        self.model = model or provider.get_default_model()
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.tools_config = tools_config
-        self.restrict_to_workspace = restrict_to_workspace
+        self.workspace = config.workspace_path
+        self.model = config.agents.defaults.model
+        self.temperature = config.agents.defaults.temperature
+        self.max_tokens = config.agents.defaults.max_tokens
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def spawn(
@@ -94,87 +90,72 @@ class SubagentManager:
         logger.info(f"Subagent [{task_id}] starting task: {label}")
 
         try:
-            # Build subagent tools (no message tool, no spawn tool)
-            tools = ToolRegistry()
-            allowed_dir = self.workspace if self.restrict_to_workspace else None
-            tools.register(ReadFileTool(allowed_dir=allowed_dir))
-            tools.register(WriteFileTool(allowed_dir=allowed_dir))
-            tools.register(EditFileTool(allowed_dir=allowed_dir))
-            tools.register(ListDirTool(allowed_dir=allowed_dir))
-            exec_cfg = getattr(self.tools_config, "exec", None)
-            tools.register(
-                ExecTool(
-                    working_dir=str(self.workspace),
-                    timeout=exec_cfg.timeout if exec_cfg else 300,
-                    restrict_to_workspace=self.restrict_to_workspace,
-                )
+            ctx = ToolBuildContext(
+                workspace=self.workspace,
+                restrict_to_workspace=self._config.tools.restrict_to_workspace,
+                # No bus/process_direct/subagent_manager → agent_only tools are excluded
             )
-            web_cfg = getattr(self.tools_config, "web_search", None)
-            tools.register(WebSearchTool(api_key=web_cfg.api_key if web_cfg else None))
-            tools.register(WebFetchTool())
+            async with ToolRegistry.build_all(self._config.tools, ctx) as tools:
+                # Build messages with subagent-specific prompt
+                system_prompt = self._build_subagent_prompt(task)
+                messages: list[dict[str, Any]] = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": task},
+                ]
 
-            # Build messages with subagent-specific prompt
-            system_prompt = self._build_subagent_prompt(task)
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": task},
-            ]
+                # Run agent loop (limited iterations)
+                max_iterations = 15
+                iteration = 0
+                final_result: str | None = None
 
-            # Run agent loop (limited iterations)
-            max_iterations = 15
-            iteration = 0
-            final_result: str | None = None
+                while iteration < max_iterations:
+                    iteration += 1
 
-            while iteration < max_iterations:
-                iteration += 1
-
-                response = await self.provider.chat(
-                    messages=messages,
-                    tools=tools.get_definitions(),
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                )
-
-                if response.has_tool_calls:
-                    # Add assistant message with tool calls
-                    tool_call_dicts = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in response.tool_calls
-                    ]
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": response.content or "",
-                            "tool_calls": tool_call_dicts,
-                        }
+                    response = await self.provider.chat(
+                        messages=messages,
+                        tools=tools.get_definitions(),
+                        model=self.model,
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
                     )
 
-                    # Execute tools
-                    for tool_call in response.tool_calls:
-                        args_str = json.dumps(tool_call.arguments)
-                        logger.debug(
-                            f"Subagent [{task_id}] executing: {tool_call.name} with arguments: {args_str}"
-                        )
-                        result = await tools.execute(tool_call.name, tool_call.arguments)
+                    if response.has_tool_calls:
+                        tool_call_dicts = [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments),
+                                },
+                            }
+                            for tc in response.tool_calls
+                        ]
                         messages.append(
                             {
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "name": tool_call.name,
-                                "content": result,
+                                "role": "assistant",
+                                "content": response.content or "",
+                                "tool_calls": tool_call_dicts,
                             }
                         )
-                else:
-                    final_result = response.content
-                    break
+
+                        for tool_call in response.tool_calls:
+                            args_str = json.dumps(tool_call.arguments)
+                            logger.debug(
+                                f"Subagent [{task_id}] executing: {tool_call.name} with arguments: {args_str}"
+                            )
+                            result = await tools.execute(tool_call.name, tool_call.arguments)
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "name": tool_call.name,
+                                    "content": result,
+                                }
+                            )
+                    else:
+                        final_result = response.content
+                        break
 
             if final_result is None:
                 final_result = "Task completed but no final response was generated."

@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool, register_tool
+from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
 
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
@@ -16,6 +16,10 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
 
 class ReadFileTool(Tool):
     """Tool to read file contents."""
+
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "ReadFileTool":
+        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -59,6 +63,10 @@ class ReadFileTool(Tool):
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
 
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "WriteFileTool":
+        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
+
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
 
@@ -99,6 +107,10 @@ class WriteFileTool(Tool):
 
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
+
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "EditFileTool":
+        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -155,6 +167,10 @@ class EditFileTool(Tool):
 
 class ListDirTool(Tool):
     """Tool to list directory contents."""
+
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "ListDirTool":
+        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir

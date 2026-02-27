@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel
 
-from nanobot.agent.tools.base import Tool, register_tool, register_tool_config
+from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool, register_tool_config
 
 
 class WebSearchConfig(BaseModel):
@@ -75,9 +75,13 @@ class WebSearchTool(Tool):
         "required": ["query"],
     }
 
-    def __init__(self, api_key: str | None = None, max_results: int = 5):
-        self.api_key = api_key or os.environ.get("BRAVE_API_KEY", "")
-        self.max_results = max_results
+    @classmethod
+    def build(cls, config: "WebSearchConfig | None", ctx: ToolBuildContext) -> "WebSearchTool":
+        return cls(config=config or WebSearchConfig())
+
+    def __init__(self, config: WebSearchConfig):
+        self.api_key = config.api_key or os.environ.get("BRAVE_API_KEY", "")
+        self.max_results = config.max_results
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         if not self.api_key:
@@ -124,6 +128,10 @@ class WebFetchTool(Tool):
         },
         "required": ["url"],
     }
+
+    @classmethod
+    def build(cls, _config: None, _ctx: ToolBuildContext) -> "WebFetchTool":
+        return cls()
 
     def __init__(self, max_chars: int = 50000):
         self.max_chars = max_chars

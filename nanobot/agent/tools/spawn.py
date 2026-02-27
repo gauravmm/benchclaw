@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from nanobot.agent.tools.base import Tool, register_tool
+from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
 
 if TYPE_CHECKING:
     from nanobot.agent.subagent import SubagentManager
@@ -15,6 +15,12 @@ class SpawnTool(Tool):
     The subagent runs asynchronously and announces its result back
     to the main agent when complete.
     """
+
+    agent_only = True
+
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "SpawnTool":
+        return cls(manager=ctx.subagent_manager)
 
     def __init__(self, manager: "SubagentManager"):
         self._manager = manager

@@ -2,12 +2,18 @@
 
 from typing import Any, Awaitable, Callable
 
-from nanobot.agent.tools.base import Tool, register_tool
+from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
 from nanobot.bus import OutboundMessage
 
 
 class MessageTool(Tool):
     """Tool to send messages to users on chat channels."""
+
+    agent_only = True
+
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "MessageTool":
+        return cls(send_callback=ctx.bus.publish_outbound)
 
     def __init__(
         self,

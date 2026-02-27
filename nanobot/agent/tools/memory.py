@@ -5,12 +5,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool, register_tool
+from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
 from nanobot.utils import _ensure_dir
 
 
 # TODO: Split MemoryStore into memory:
-#   read/write memories with associated tags
+#   read/write memories with semantic tags, both selected by the LLM
 #   the underlying storage is timestamped files with a YAML preamble
 #   on init it reads all the files.
 # and into log:
@@ -42,6 +42,10 @@ class MemoryStore:
 
 class MemoryTool(Tool):
     """Tool to read/write long-term memory and search conversation history."""
+
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "MemoryTool":
+        return cls(workspace=ctx.workspace)
 
     def __init__(self, workspace: Path):
         self._store = MemoryStore(workspace)

@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from nanobot.agent.tools.base import Tool, register_tool, register_tool_config
+from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool, register_tool_config
 
 
 class ExecToolConfig(BaseModel):
@@ -23,15 +23,23 @@ register_tool_config("exec", ExecToolConfig)
 class ExecTool(Tool):
     """Tool to execute shell commands."""
 
+    @classmethod
+    def build(cls, config: "ExecToolConfig | None", ctx: ToolBuildContext) -> "ExecTool":
+        return cls(
+            config=config or ExecToolConfig(),
+            working_dir=str(ctx.workspace),
+            restrict_to_workspace=ctx.restrict_to_workspace,
+        )
+
     def __init__(
         self,
-        timeout: int = 60,
+        config: ExecToolConfig,
         working_dir: str | None = None,
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
         restrict_to_workspace: bool = False,
     ):
-        self.timeout = timeout
+        self.timeout = config.timeout
         self.working_dir = working_dir
         self.deny_patterns = deny_patterns or [
             r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr

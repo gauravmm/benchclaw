@@ -1,25 +1,24 @@
 """Agent loop: the core processing engine."""
 
+from __future__ import annotations
+
 import asyncio
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.tools.base import ToolBuildContext
 from nanobot.agent.tools.memory import MemoryStore
-from nanobot.agent.subagent import SubagentManager
-from nanobot.agent.tools.cron import CronTool
-from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from nanobot.agent.tools.memory import MemoryTool
-from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.spawn import SpawnTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.agent.subagent import SubagentManager
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
+
+if TYPE_CHECKING:
+    from nanobot.config.schema import Config
 
 
 class AgentLoop:
@@ -36,104 +35,38 @@ class AgentLoop:
 
     def __init__(
         self,
+        config: Config,
         bus: MessageBus,
         provider: LLMProvider,
-        workspace: Path,
-        model: str | None = None,
-        max_iterations: int = 20,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        memory_window: int = 50,
-        tools_config=None,
-        restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
     ):
         self.bus = bus
         self.provider = provider
-        self.workspace = workspace
-        self.model = model or provider.get_default_model()
-        self.max_iterations = max_iterations
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.memory_window = memory_window
-        self.tools_config = tools_config
-        self.restrict_to_workspace = restrict_to_workspace
+        self.workspace = config.workspace_path
+        self.model = config.agents.defaults.model
+        self.max_iterations = config.agents.defaults.max_tool_iterations
+        self.temperature = config.agents.defaults.temperature
+        self.max_tokens = config.agents.defaults.max_tokens
+        self.memory_window = config.agents.defaults.memory_window
 
-        self.context = ContextBuilder(workspace)
-        self.sessions = session_manager or SessionManager(workspace)
-        self.tools = ToolRegistry()
-        self.subagents = SubagentManager(
-            provider=provider,
-            workspace=workspace,
+        self.context = ContextBuilder(self.workspace)
+        self.sessions = session_manager or SessionManager(self.workspace)
+        self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
+
+        ctx = ToolBuildContext(
+            workspace=self.workspace,
+            restrict_to_workspace=config.tools.restrict_to_workspace,
             bus=bus,
-            model=self.model,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            tools_config=tools_config,
-            restrict_to_workspace=restrict_to_workspace,
+            process_direct=self.process_direct,
+            subagent_manager=self.subagents,
         )
-
+        self.tools = ToolRegistry.build_all(config.tools, ctx)
         self._running = False
-        self._register_default_tools()
-
-    def _register_default_tools(self) -> None:
-        """Register the default set of tools."""
-        # Memory tool
-        self.tools.register(MemoryTool(self.workspace))
-
-        # File tools (restrict to workspace if configured)
-        allowed_dir = self.workspace if self.restrict_to_workspace else None
-        self.tools.register(ReadFileTool(allowed_dir=allowed_dir))
-        self.tools.register(WriteFileTool(allowed_dir=allowed_dir))
-        self.tools.register(EditFileTool(allowed_dir=allowed_dir))
-        self.tools.register(ListDirTool(allowed_dir=allowed_dir))
-
-        # Shell tool
-        exec_cfg = getattr(self.tools_config, "exec", None)
-        self.tools.register(
-            ExecTool(
-                working_dir=str(self.workspace),
-                timeout=exec_cfg.timeout if exec_cfg else 300,
-                restrict_to_workspace=self.restrict_to_workspace,
-            )
-        )
-
-        # Web tools
-        web_cfg = getattr(self.tools_config, "web_search", None)
-        self.tools.register(WebSearchTool(api_key=web_cfg.api_key if web_cfg else None))
-        self.tools.register(WebFetchTool())
-
-        # Message tool
-        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-
-        # Spawn tool (for subagents)
-        self.tools.register(SpawnTool(manager=self.subagents))
-
-        # Cron tool (manages CronService via background())
-        from nanobot.config.loader import get_data_path
-
-        self.tools.register(
-            CronTool(
-                store_path=get_data_path() / "cron" / "jobs.json",
-                process_direct=self.process_direct,
-                bus=self.bus,
-            )
-        )
-
 
     def _set_tool_context(self, channel: str, chat_id: str) -> None:
         """Update context for all tools that need routing info."""
-        if message_tool := self.tools.get("message"):
-            if isinstance(message_tool, MessageTool):
-                message_tool.set_context(channel, chat_id)
-
-        if spawn_tool := self.tools.get("spawn"):
-            if isinstance(spawn_tool, SpawnTool):
-                spawn_tool.set_context(channel, chat_id)
-
-        if cron_tool := self.tools.get("cron"):
-            if isinstance(cron_tool, CronTool):
-                cron_tool.set_context(channel, chat_id)
+        for tool in self.tools.values():
+            tool.set_context(channel, chat_id)
 
     async def _run_agent_loop(self, initial_messages: list[dict]) -> tuple[str | None, list[str]]:
         """

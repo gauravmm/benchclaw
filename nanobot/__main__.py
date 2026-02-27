@@ -43,16 +43,9 @@ def gateway(port: int = 18790, verbose: bool = False) -> None:
     session_manager = SessionManager(config.workspace_path)
 
     agent = AgentLoop(
+        config=config,
         bus=bus,
         provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        temperature=config.agents.defaults.temperature,
-        max_tokens=config.agents.defaults.max_tokens,
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
-        tools_config=config.tools,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
     )
 

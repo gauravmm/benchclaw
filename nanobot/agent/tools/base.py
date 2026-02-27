@@ -4,7 +4,9 @@ import asyncio
 from abc import abstractmethod
 from asyncio import Task
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Self
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel
 
@@ -22,6 +24,17 @@ def register_tool_config(name: str, cls: type[BaseModel]) -> None:
     _TOOL_CONFIG_REGISTRY[name] = cls
 
 
+@dataclass
+class ToolBuildContext:
+    """Runtime context passed to Tool.build() during agent initialisation."""
+
+    workspace: Path
+    restrict_to_workspace: bool = False
+    bus: Any = None             # MessageBus; None for subagents
+    process_direct: Any = None  # AgentLoop.process_direct; None for subagents
+    subagent_manager: Any = None  # SubagentManager; None for subagents
+
+
 class Tool(AbstractAsyncContextManager):
     """
     Abstract base class for agent tools.
@@ -31,6 +44,7 @@ class Tool(AbstractAsyncContextManager):
     """
 
     _task: Task | None = None
+    agent_only: ClassVar[bool] = False  # True → tool excluded from subagent registries
 
     async def background(self) -> None:
         """Optional long-running coroutine started on __aenter__. No-op by default."""
@@ -48,6 +62,15 @@ class Tool(AbstractAsyncContextManager):
             except TimeoutError:
                 pass
             self._task = None
+
+    @classmethod
+    def build(cls, config: Any, ctx: ToolBuildContext) -> "Self":
+        """Instantiate this tool from a config object and build context."""
+        raise NotImplementedError(f"{cls.__name__}.build() is not implemented")
+
+    def set_context(self, channel: str, chat_id: str) -> None:
+        """Update per-message routing context. Override in tools that need it."""
+        pass
 
     @property
     @abstractmethod

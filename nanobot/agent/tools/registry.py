@@ -1,9 +1,9 @@
 """Tool registry for dynamic tool management."""
 
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, Iterable
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, ToolBuildContext, _TOOL_REGISTRY
 
 
 class ToolRegistry:
@@ -30,6 +30,17 @@ class ToolRegistry:
             await self._stack.__aexit__(*exc_info)
             self._stack = None
 
+    @classmethod
+    def build_all(cls, tools_config: Any, ctx: ToolBuildContext) -> "ToolRegistry":
+        """Build a ToolRegistry from all registered tools using the given config and context."""
+        registry = cls()
+        for name, tool_cls in _TOOL_REGISTRY.items():
+            if ctx.bus is None and tool_cls.agent_only:
+                continue  # skip agent-only tools in subagent context (no bus)
+            tool_config = getattr(tools_config, name, None)
+            registry.register(tool_cls.build(tool_config, ctx))
+        return registry
+
     def register(self, tool: Tool) -> None:
         """Register a tool."""
         self._tools[tool.name] = tool
@@ -45,6 +56,10 @@ class ToolRegistry:
     def has(self, name: str) -> bool:
         """Check if a tool is registered."""
         return name in self._tools
+
+    def values(self) -> Iterable[Tool]:
+        """Iterate over all registered tools."""
+        return self._tools.values()
 
     def get_definitions(self) -> list[dict[str, Any]]:
         """Get all tool definitions in OpenAI format."""

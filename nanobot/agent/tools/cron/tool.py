@@ -8,7 +8,7 @@ from typing import Any, Callable, Coroutine
 
 from loguru import logger
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, ToolBuildContext
 from nanobot.agent.tools.cron.typesupport import (
     CronJob,
     CronJobState,
@@ -26,6 +26,18 @@ _MAX_DT = datetime.max.replace(tzinfo=timezone.utc)
 
 class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
+
+    agent_only = True
+
+    @classmethod
+    def build(cls, _config: None, ctx: ToolBuildContext) -> "CronTool":
+        from nanobot.config.loader import get_data_path
+
+        return cls(
+            store_path=get_data_path() / "cron" / "jobs.json",
+            process_direct=ctx.process_direct,
+            bus=ctx.bus,
+        )
 
     def __init__(
         self,
