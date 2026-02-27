@@ -1,13 +1,22 @@
 """Heartbeat service - periodic agent wake-up to check for tasks."""
 
-import asyncio
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from loguru import logger
 
+from nanobot.agent.tools.cron.types import CronPayload, CronSchedule
+
+if TYPE_CHECKING:
+    from nanobot.agent.tools.cron.service import CronService
+
 # Default interval: 30 minutes
 DEFAULT_HEARTBEAT_INTERVAL_S = 30 * 60
+
+# Reserved cron job ID for the heartbeat
+HEARTBEAT_JOB_ID = "__heartbeat__"
 
 # The prompt sent to agent during heartbeat
 HEARTBEAT_PROMPT = """Read HEARTBEAT.md in your workspace (if it exists).
@@ -39,8 +48,9 @@ class HeartbeatService:
     """
     Periodic heartbeat service that wakes the agent to check for tasks.
 
-    The agent reads HEARTBEAT.md from the workspace and executes any
-    tasks listed there. If nothing needs attention, it replies HEARTBEAT_OK.
+    Scheduling is delegated to CronService. Call register() to set up the
+    recurring cron job; the gateway's on_job callback routes heartbeat payloads
+    back to tick().
     """
 
     def __init__(
@@ -54,8 +64,6 @@ class HeartbeatService:
         self.on_heartbeat = on_heartbeat
         self.interval_s = interval_s
         self.enabled = enabled
-        self._running = False
-        self._task: asyncio.Task | None = None
 
     @property
     def heartbeat_file(self) -> Path:
@@ -70,40 +78,34 @@ class HeartbeatService:
                 return None
         return None
 
-    async def start(self) -> None:
-        """Start the heartbeat service."""
+    def register(self, cron_service: CronService) -> None:
+        """Register (or re-enable) the heartbeat as a cron job."""
         if not self.enabled:
-            logger.info("Heartbeat disabled")
+            logger.info("Heartbeat disabled; skipping registration")
             return
 
-        self._running = True
-        self._task = asyncio.create_task(self._run_loop())
-        logger.info(f"Heartbeat started (every {self.interval_s}s)")
+        existing = cron_service.get_job(HEARTBEAT_JOB_ID)
+        if existing is not None:
+            if not existing.enabled:
+                cron_service.enable_job(HEARTBEAT_JOB_ID, enabled=True)
+                logger.info("Heartbeat cron job re-enabled")
+            else:
+                logger.info("Heartbeat cron job already registered")
+            return
 
-    def stop(self) -> None:
-        """Stop the heartbeat service."""
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            self._task = None
+        cron_service.add_job(
+            name="Heartbeat",
+            schedule=CronSchedule(kind="every", every_s=self.interval_s),
+            message="",
+            payload=CronPayload(kind="heartbeat"),
+            job_id=HEARTBEAT_JOB_ID,
+        )
+        logger.info(f"Heartbeat registered as cron job (every {self.interval_s}s)")
 
-    async def _run_loop(self) -> None:
-        """Main heartbeat loop."""
-        while self._running:
-            try:
-                await asyncio.sleep(self.interval_s)
-                if self._running:
-                    await self._tick()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Heartbeat error: {e}")
-
-    async def _tick(self) -> None:
-        """Execute a single heartbeat tick."""
+    async def tick(self) -> None:
+        """Execute a single heartbeat tick. Called by the cron on_job callback."""
         content = self._read_heartbeat_file()
 
-        # Skip if HEARTBEAT.md is empty or doesn't exist
         if _is_heartbeat_empty(content):
             logger.debug("Heartbeat: no tasks (HEARTBEAT.md empty)")
             return
@@ -114,7 +116,6 @@ class HeartbeatService:
             try:
                 response = await self.on_heartbeat(HEARTBEAT_PROMPT)
 
-                # Check if agent said "nothing to do"
                 if HEARTBEAT_OK_TOKEN.replace("_", "") in response.upper().replace("_", ""):
                     logger.info("Heartbeat: OK (no action needed)")
                 else:
