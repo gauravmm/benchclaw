@@ -1,4 +1,0 @@
-# Global TODOs
-
-1. All data paths in the config.
-2. Add support for an external connection interface (a unix socket)
