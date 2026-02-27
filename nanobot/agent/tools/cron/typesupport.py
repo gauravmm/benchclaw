@@ -3,9 +3,12 @@
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Literal
+from pathlib import Path
+from typing import Iterable, Literal
 
 from dataclasses_json import DataClassJsonMixin, config
+from heapdict import heapdict
+from loguru import logger
 
 
 def _encode_ts(dt: datetime | None) -> str | None:
@@ -150,3 +153,107 @@ class CronData(DataClassJsonMixin):
 
     version: int = 1
     jobs: list[CronJob] = field(default_factory=list)
+
+
+class CronStore:
+    """Async context manager: loads on enter, always writes back on exit."""
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._store: dict[str, CronJob] = {}
+        self._queue: heapdict = heapdict()  # jid → next_run_at
+
+    async def __aenter__(self) -> "CronStore":
+        try:
+            data = CronData.from_json(self._path.read_text())
+            now = _ts_now()
+            for j in data.jobs:
+                self._store[j.id] = j
+                if j.enabled and (next_run := j.schedule.next_run(now)) is not None:
+                    self._queue[j.id] = next_run
+                    j.state.next_run_at = next_run
+        except IOError as e:
+            logger.warning(f"Failed to load cron store: {e}")
+        return self
+
+    async def __aexit__(self, *_) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(CronData(jobs=list(self._store.values())).to_json(indent=2))
+
+    def jobs(self) -> Iterable[CronJob]:
+        return self._store.values()
+
+    def get(self, jid: str) -> CronJob | None:
+        return self._store.get(jid)
+
+    def add(self, j: CronJob) -> None:
+        """Add or replace a job and update the queue."""
+        self._store[j.id] = j
+        if j.enabled and j.state.next_run_at is not None:
+            self._queue[j.id] = j.state.next_run_at
+        elif j.id in self._queue:
+            del self._queue[j.id]
+
+    def remove(self, jid: str) -> bool:
+        """Remove a job by ID. Returns True if it existed."""
+        if jid not in self._store:
+            return False
+        del self._store[jid]
+        if jid in self._queue:
+            del self._queue[jid]
+
+        return True
+
+    def enable(self, jid: str, enabled: bool, now: datetime) -> bool:
+        """Enable or disable a job. Returns False if job not found."""
+        if (job := self._store.get(jid)) is None:
+            return False
+        job.enabled = enabled
+        job.updated_at = now
+        if enabled:
+            next_run = job.schedule.next_run(now)
+            job.state.next_run_at = next_run
+            if next_run is not None:
+                self._queue[jid] = next_run
+            elif jid in self._queue:
+                del self._queue[jid]
+        else:
+            job.state.next_run_at = None
+            if jid in self._queue:
+                del self._queue[jid]
+
+        return True
+
+    def executed(self, jid: str, now: datetime) -> None:
+        """Post-execution: remove CronScheduleAt jobs, reschedule recurring ones."""
+        if (job := self._store.get(jid)) is None:
+            return
+        if isinstance(job.schedule, CronScheduleAt):
+            self.remove(jid)
+        else:
+            next_run = job.schedule.next_run(now)
+            job.state.next_run_at = next_run
+            if next_run is not None:
+                self._queue[jid] = next_run
+            elif jid in self._queue:
+                del self._queue[jid]
+
+    def next_wake(self) -> datetime | None:
+        """Return the earliest scheduled next_run_at, or None."""
+        if not self._queue:
+            return None
+        _, dt = self._queue.peekitem()
+        return dt
+
+    def pop_due(self, now: datetime) -> list[CronJob]:
+        """Remove and return all jobs due at or before now."""
+        due = []
+        while self._queue:
+            jid, next_run = self._queue.peekitem()
+            if next_run > now:
+                break
+            self._queue.popitem()
+            job = self._store.get(jid)
+            if job is not None and job.enabled:
+                due.append(job)
+        return due
