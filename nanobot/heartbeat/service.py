@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from loguru import logger
 
+from datetime import timedelta
+
 from nanobot.agent.tools.cron.types import CronPayload, CronSchedule
 
 if TYPE_CHECKING:
@@ -95,7 +97,7 @@ class HeartbeatService:
 
         cron_service.add_job(
             name="Heartbeat",
-            schedule=CronSchedule(kind="every", every_s=self.interval_s),
+            schedule=CronSchedule(kind="every", every=timedelta(seconds=self.interval_s)),
             message="",
             payload=CronPayload(kind="heartbeat"),
             job_id=HEARTBEAT_JOB_ID,

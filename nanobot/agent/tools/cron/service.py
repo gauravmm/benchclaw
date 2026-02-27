@@ -30,9 +30,9 @@ def _compute_next_run(schedule: CronSchedule, now: datetime) -> datetime | None:
         return schedule.at if schedule.at and schedule.at > now else None
 
     if schedule.kind == "every":
-        if not schedule.every_s or schedule.every_s <= 0:
+        if not schedule.every or schedule.every <= timedelta(0):
             return None
-        return now + timedelta(seconds=schedule.every_s)
+        return now + schedule.every
 
     if schedule.kind == "cron" and schedule.expr:
         try:
@@ -314,7 +314,7 @@ if __name__ == "__main__":
             CronJob(
                 id="test01",
                 name="Test job",
-                schedule=CronSchedule(kind="every", every_s=60),
+                schedule=CronSchedule(kind="every", every=timedelta(seconds=60)),
                 payload=CronPayload(kind="agent_turn", message="hello"),
                 state=CronJobState(next_run_at=now + timedelta(seconds=60)),
                 created_at=now,

@@ -1,7 +1,7 @@
 """Cron types."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from dataclasses_json import DataClassJsonMixin, config
@@ -17,6 +17,14 @@ def _decode_ts(s: str | None) -> datetime | None:
     if s is None:
         return None
     return datetime.fromisoformat(s)
+
+
+def _encode_td(td: timedelta | None) -> float | None:
+    return None if td is None else td.total_seconds()
+
+
+def _decode_td(s: float | None) -> timedelta | None:
+    return None if s is None else timedelta(seconds=s)
 
 
 def _ts(default: datetime | None = None):
@@ -37,8 +45,10 @@ class CronSchedule(DataClassJsonMixin):
     kind: Literal["at", "every", "cron"]
     # For "at": absolute datetime
     at: datetime | None = _ts()
-    # For "every": interval in seconds
-    every_s: int | None = None
+    # For "every": interval duration
+    every: timedelta | None = field(
+        default=None, metadata=config(encoder=_encode_td, decoder=_decode_td)
+    )
     # For "cron": cron expression (e.g. "0 9 * * *")
     expr: str | None = None
     # Timezone for cron expressions
