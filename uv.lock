@@ -545,6 +545,15 @@ wheels = [
 ]
 
 [[package]]
+name = "heapdict"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/9b/d8963ae7e388270b695f3b556b6dc9adb70ae9618fba09aa1e7b1886652d/HeapDict-1.0.1.tar.gz", hash = "sha256:8495f57b3e03d8e46d5f1b2cc62ca881aca392fd5cc048dc0aa2e1a6d23ecdb6", size = 4274, upload-time = "2019-09-09T18:57:02.154Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/9d/cd4777dbcf3bef9d9627e0fe4bc43d2e294b1baeb01d0422399d5e9de319/HeapDict-1.0.1-py3-none-any.whl", hash = "sha256:6065f90933ab1bb7e50db403b90cab653c853690c5992e69294c2de2b253fc92", size = 3917, upload-time = "2019-09-09T18:57:00.821Z" },
+]
+
+[[package]]
 name = "hf-xet"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1245,6 +1254,7 @@ dependencies = [
     { name = "croniter" },
     { name = "dataclasses-json" },
     { name = "dingtalk-stream" },
+    { name = "heapdict" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "lark-oapi" },
@@ -1281,6 +1291,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=2.0.0" },
     { name = "dataclasses-json", specifier = ">=0.6.0" },
     { name = "dingtalk-stream", specifier = ">=0.4.0" },
+    { name = "heapdict", specifier = ">=1.0.1" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.25.0" },
     { name = "jinja2", specifier = ">=3.0.0" },
     { name = "lark-oapi", specifier = ">=1.0.0" },

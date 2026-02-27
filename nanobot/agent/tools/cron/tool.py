@@ -7,7 +7,7 @@ from typing import Any, Callable, Coroutine
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.cron.service import CronService
-from nanobot.agent.tools.cron.types import CronSchedule
+from nanobot.agent.tools.cron.typesupport import CronScheduleAt, CronScheduleCron, CronScheduleEvery
 from nanobot.bus import MessageBus, OutboundMessage
 
 # The heartbeat cron job fires periodically and asks the agent to read HEARTBEAT.md.
@@ -84,14 +84,14 @@ class CronTool(Tool):
             return
         self._cron.add_job(
             name="Heartbeat",
-            schedule=CronSchedule(kind="every", every=timedelta(seconds=HEARTBEAT_INTERVAL_S)),
+            schedule=CronScheduleEvery(every=timedelta(seconds=HEARTBEAT_INTERVAL_S)),
             message=HEARTBEAT_PROMPT,
             job_id=HEARTBEAT_JOB_ID,
         )
 
     async def background(self) -> None:
         """Start the cron service and keep it running until cancelled."""
-        from nanobot.agent.tools.cron.types import CronJob
+        from nanobot.agent.tools.cron.typesupport import CronJob
 
         async def on_job(job: CronJob) -> str | None:
             response = await self._process_direct(
@@ -147,14 +147,14 @@ class CronTool(Tool):
         # Build schedule
         delete_after = False
         if every_seconds:
-            schedule = CronSchedule(kind="every", every=timedelta(seconds=every_seconds))
+            schedule = CronScheduleEvery(every=timedelta(seconds=every_seconds))
         elif cron_expr:
-            schedule = CronSchedule(kind="cron", expr=cron_expr)
+            schedule = CronScheduleCron(expr=cron_expr)
         elif at:
             from datetime import datetime
 
             dt = datetime.fromisoformat(at)
-            schedule = CronSchedule(kind="at", at=dt)
+            schedule = CronScheduleAt(at=dt)
             delete_after = True
         else:
             return "Error: either every_seconds, cron_expr, or at is required"

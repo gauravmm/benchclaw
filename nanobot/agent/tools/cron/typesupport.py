@@ -35,20 +35,69 @@ def _ts_now():
 
 
 @dataclass
-class CronSchedule(DataClassJsonMixin):
-    """Schedule definition for a cron job."""
+class CronScheduleAt(DataClassJsonMixin):
+    """Run once at a specific datetime."""
 
-    kind: Literal["at", "every", "cron"]
-    # For "at": absolute datetime
+    kind: Literal["at"] = "at"
     at: datetime | None = _ts()
-    # For "every": interval duration
-    every: timedelta | None = field(
-        default=None, metadata=config(encoder=_encode_td, decoder=_decode_td)
+
+    def next_run(self, dt: datetime) -> datetime | None:
+        return self.at if self.at and self.at > dt else None
+
+
+@dataclass
+class CronScheduleEvery(DataClassJsonMixin):
+    """Run repeatedly with a fixed interval."""
+
+    kind: Literal["every"] = "every"
+    every: timedelta = field(
+        default=timedelta(hours=1), metadata=config(encoder=_encode_td, decoder=_decode_td)
     )
-    # For "cron": cron expression (e.g. "0 9 * * *")
+    # TODO: Compute the next run relative to a fixed starting time.
+
+    def next_run(self, dt: datetime) -> datetime | None:
+        if self.every <= timedelta(0):
+            return None
+        return dt + self.every
+
+
+@dataclass
+class CronScheduleCron(DataClassJsonMixin):
+    """Run on a cron expression schedule."""
+
+    kind: Literal["cron"] = "cron"
+    # TODO: Don't support None value for expr or tz.
     expr: str | None = None
-    # Timezone for cron expressions
     tz: str | None = None
+
+    def next_run(self, dt: datetime) -> datetime | None:
+        if not self.expr:
+            return None
+        try:
+            from croniter import croniter
+
+            cron = croniter(self.expr, dt)
+            return datetime.fromtimestamp(cron.get_next()).astimezone()
+        except Exception:
+            return None
+
+
+CronSchedule = CronScheduleAt | CronScheduleEvery | CronScheduleCron
+
+
+def _encode_schedule(s: CronScheduleAt | CronScheduleEvery | CronScheduleCron) -> dict:
+    return s.to_dict()
+
+
+def _decode_schedule(d: dict) -> CronScheduleAt | CronScheduleEvery | CronScheduleCron:
+    kind = d.get("kind")
+    if kind == "at":
+        return CronScheduleAt.from_dict(d)
+    if kind == "every":
+        return CronScheduleEvery.from_dict(d)
+    if kind == "cron":
+        return CronScheduleCron.from_dict(d)
+    raise ValueError(f"Unknown schedule kind: {kind!r}")
 
 
 @dataclass
@@ -80,7 +129,10 @@ class CronJob(DataClassJsonMixin):
     id: str
     name: str
     enabled: bool = True
-    schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
+    schedule: CronScheduleAt | CronScheduleEvery | CronScheduleCron = field(
+        default_factory=CronScheduleEvery,
+        metadata=config(encoder=_encode_schedule, decoder=_decode_schedule),
+    )
     payload: CronPayload = field(default_factory=CronPayload)
     state: CronJobState = field(default_factory=CronJobState)
     created_at: datetime = _ts_now()
@@ -89,7 +141,7 @@ class CronJob(DataClassJsonMixin):
 
 
 @dataclass
-class CronStore(DataClassJsonMixin):
+class CronData(DataClassJsonMixin):
     """Persistent store for cron jobs."""
 
     version: int = 1
