@@ -142,7 +142,6 @@ class CronJob(DataClassJsonMixin):
     state: CronJobState = field(default_factory=CronJobState)
     created_at: datetime = _ts_now()
     updated_at: datetime = _ts_now()
-    delete_after_run: bool = False
 
 
 @dataclass

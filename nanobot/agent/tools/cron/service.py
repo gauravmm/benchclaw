@@ -27,18 +27,17 @@ def _now() -> datetime:
 
 
 class CronStore:
-    """Manages cron jobs in memory with a priority queue, persisting to disk."""
+    """Async context manager: loads on enter, writes back on exit if dirty."""
 
     def __init__(self, path: Path):
         self._path = path
         self._store: dict[str, CronJob] = {}
         self._queue: heapdict = heapdict()  # jid → next_run_at
-        self._saved_json: str | None = None
+        self._dirty = False
 
+    async def __aenter__(self) -> "CronStore":
         try:
-            text = path.read_text()
-            data = CronData.from_json(text)
-            self._saved_json = text
+            data = CronData.from_json(self._path.read_text())
             now = _now()
             for j in data.jobs:
                 self._store[j.id] = j
@@ -49,6 +48,13 @@ class CronStore:
                         self._queue[j.id] = next_run
         except IOError as e:
             logger.warning(f"Failed to load cron store: {e}")
+        return self
+
+    async def __aexit__(self, *_) -> None:
+        if self._dirty:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(CronData(jobs=list(self._store.values())).to_json(indent=2))
+            self._dirty = False
 
     def jobs(self) -> Iterable[CronJob]:
         return self._store.values()
@@ -63,6 +69,7 @@ class CronStore:
             self._queue[j.id] = j.state.next_run_at
         elif j.id in self._queue:
             del self._queue[j.id]
+        self._dirty = True
 
     def remove(self, jid: str) -> bool:
         """Remove a job by ID. Returns True if it existed."""
@@ -71,13 +78,13 @@ class CronStore:
         del self._store[jid]
         if jid in self._queue:
             del self._queue[jid]
+        self._dirty = True
         return True
 
     def enable(self, jid: str, enabled: bool, now: datetime) -> bool:
         """Enable or disable a job. Returns False if job not found."""
         if (job := self._store.get(jid)) is None:
             return False
-
         job.enabled = enabled
         job.updated_at = now
         if enabled:
@@ -91,27 +98,23 @@ class CronStore:
             job.state.next_run_at = None
             if jid in self._queue:
                 del self._queue[jid]
+        self._dirty = True
         return True
 
     def executed(self, jid: str, now: datetime) -> None:
-        """Post-execution: reschedule, disable, or delete the job."""
-        job = self._store.get(jid)
-        if job is None:
+        """Post-execution: remove CronScheduleAt jobs, reschedule recurring ones."""
+        if (job := self._store.get(jid)) is None:
             return
         if isinstance(job.schedule, CronScheduleAt):
-            if job.delete_after_run:
-                self.remove(jid)
-            else:
-                job.enabled = False
-                job.state.next_run_at = None
-                if jid in self._queue:
-                    del self._queue[jid]
+            self.remove(jid)
         else:
-            job.state.next_run_at = job.schedule.next_run(now)
-            if job.state.next_run_at is not None:
-                self._queue[jid] = job.state.next_run_at
+            next_run = job.schedule.next_run(now)
+            job.state.next_run_at = next_run
+            if next_run is not None:
+                self._queue[jid] = next_run
             elif jid in self._queue:
                 del self._queue[jid]
+            self._dirty = True
 
     def next_wake(self) -> datetime | None:
         """Return the earliest scheduled next_run_at, or None."""
@@ -170,7 +173,6 @@ class CronService:
         now = _now()
         for job in self._store.pop_due(now):
             await self._execute_job(job)
-        self._store.flush()
         self._arm_timer()
 
     async def _execute_job(self, job: CronJob) -> None:
@@ -195,16 +197,18 @@ class CronService:
 
     async def start(self) -> None:
         """Start the cron service."""
+        await self._store.__aenter__()
         self._running = True
         self._arm_timer()
         logger.info(f"Cron service started with {len(list(self._store.jobs()))} jobs")
 
-    def stop(self) -> None:
-        """Stop the cron service."""
+    async def stop(self) -> None:
+        """Stop the cron service and flush the store."""
         self._running = False
         if self._timer_task:
             self._timer_task.cancel()
             self._timer_task = None
+        await self._store.__aexit__(None, None, None)
 
     def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
         """List all jobs, sorted by next run time."""
@@ -221,7 +225,6 @@ class CronService:
         deliver: bool = False,
         channel: str | None = None,
         to: str | None = None,
-        delete_after_run: bool = False,
         payload: CronPayload | None = None,
         job_id: str | None = None,
     ) -> CronJob:
@@ -243,10 +246,8 @@ class CronService:
             state=CronJobState(next_run_at=schedule.next_run(now)),
             created_at=now,
             updated_at=now,
-            delete_after_run=delete_after_run,
         )
         self._store.add(job)
-        self._store.flush()
         self._arm_timer()
         logger.info(f"Cron: added job '{name}' ({job.id})")
         return job
@@ -255,7 +256,6 @@ class CronService:
         """Remove a job by ID."""
         removed = self._store.remove(job_id)
         if removed:
-            self._store.flush()
             self._arm_timer()
             logger.info(f"Cron: removed job {job_id}")
         return removed
@@ -264,7 +264,6 @@ class CronService:
         """Enable or disable a job."""
         if not self._store.enable(job_id, enabled, _now()):
             return None
-        self._store.flush()
         self._arm_timer()
         return self._store.get(job_id)
 
@@ -280,7 +279,6 @@ class CronService:
         if not force and not job.enabled:
             return False
         await self._execute_job(job)
-        self._store.flush()
         self._arm_timer()
         return True
 
@@ -294,62 +292,50 @@ class CronService:
 
 
 if __name__ == "__main__":
+    import asyncio
     import tempfile
-    import time
 
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "cron_store.json"
-        store = CronStore(path)
+    async def main():
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cron_store.json"
 
-        # Add a test job
-        now = _now()
-        job = CronJob(
-            id="test01",
-            name="Test job",
-            schedule=CronScheduleEvery(every=timedelta(seconds=60)),
-            payload=CronPayload(kind="agent_turn", message="hello"),
-            state=CronJobState(next_run_at=now + timedelta(seconds=60)),
-            created_at=now,
-            updated_at=now,
-        )
-        store.add(job)
+            # Test: add job, verify it's written on close
+            async with CronStore(path) as store:
+                now = _now()
+                store.add(CronJob(
+                    id="test01",
+                    name="Test job",
+                    schedule=CronScheduleEvery(every=timedelta(seconds=60)),
+                    payload=CronPayload(kind="agent_turn", message="hello"),
+                    state=CronJobState(next_run_at=now + timedelta(seconds=60)),
+                    created_at=now,
+                    updated_at=now,
+                ))
+            assert path.exists(), "Expected file written on close"
+            print("=== Stored JSON ===")
+            print(path.read_text())
+            print("=== Write on close: OK ===")
 
-        # First flush — should write
-        mtime_before = path.stat().st_mtime if path.exists() else None
-        store.flush()
-        mtime_after = path.stat().st_mtime
-        assert mtime_before != mtime_after, "Expected file to be written on first flush"
+            # Test: no write if not dirty
+            mtime_before = path.stat().st_mtime
+            async with CronStore(path) as _:
+                pass
+            mtime_after = path.stat().st_mtime
+            assert mtime_before == mtime_after, "Expected no write when not dirty"
+            print("=== No-op close: OK ===")
 
-        print("=== Stored JSON ===")
-        print(path.read_text())
+            # Test: round-trip
+            async with CronStore(path) as store2:
+                jobs2 = list(store2.jobs())
+                assert len(jobs2) == 1
+                job2 = jobs2[0]
+                assert job2.id == "test01"
+                assert isinstance(job2.created_at, datetime)
+                assert isinstance(job2.state.next_run_at, datetime)
+                print(
+                    f"=== Round-trip OK: created_at={job2.created_at},"
+                    f" next_run_at={job2.state.next_run_at} ==="
+                )
+            print("All checks passed.")
 
-        # Second flush without changes — should NOT write
-        mtime_before = path.stat().st_mtime
-        time.sleep(0.01)
-        store.flush()
-        mtime_after = path.stat().st_mtime
-        assert mtime_before == mtime_after, "Expected no write when data unchanged"
-        print("=== No-op flush: OK ===")
-
-        # Mutate and flush — should write
-        list(store.jobs())[0].state.last_status = "ok"
-        mtime_before = path.stat().st_mtime
-        time.sleep(0.01)
-        store.flush()
-        mtime_after = path.stat().st_mtime
-        assert mtime_before != mtime_after, "Expected write after mutation"
-        print("=== Mutation flush: OK ===")
-
-        # Round-trip: reload from disk
-        store2 = CronStore(path)
-        jobs2 = list(store2.jobs())
-        assert len(jobs2) == 1
-        job2 = jobs2[0]
-        assert job2.id == "test01"
-        assert job2.state.last_status == "ok"
-        assert isinstance(job2.created_at, datetime)
-        assert isinstance(job2.state.next_run_at, datetime)
-        print(
-            f"=== Round-trip OK: created_at={job2.created_at}, next_run_at={job2.state.next_run_at} ==="
-        )
-        print("All checks passed.")
+    asyncio.run(main())
