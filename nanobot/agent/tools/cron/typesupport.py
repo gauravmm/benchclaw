@@ -1,5 +1,6 @@
 """Cron types."""
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
@@ -15,12 +16,12 @@ def _decode_ts(s: str | None) -> datetime | None:
     return None if s is None else datetime.fromisoformat(s)
 
 
-def _encode_td(td: timedelta | None) -> float | None:
-    return None if td is None else td.total_seconds()
+def _encode_td(td: timedelta) -> float:
+    return td.total_seconds()
 
 
-def _decode_td(s: float | None) -> timedelta | None:
-    return None if s is None else timedelta(seconds=s)
+def _decode_td(s: float) -> timedelta:
+    return timedelta(seconds=s)
 
 
 def _ts(default: datetime | None = None):
@@ -47,18 +48,20 @@ class CronScheduleAt(DataClassJsonMixin):
 
 @dataclass
 class CronScheduleEvery(DataClassJsonMixin):
-    """Run repeatedly with a fixed interval."""
+    """Run repeatedly with a fixed interval, anchored to a starting time."""
 
     kind: Literal["every"] = "every"
     every: timedelta = field(
         default=timedelta(hours=1), metadata=config(encoder=_encode_td, decoder=_decode_td)
     )
-    # TODO: Compute the next run relative to a fixed starting time.
+    anchor: datetime = _ts_now()
 
     def next_run(self, dt: datetime) -> datetime | None:
         if self.every <= timedelta(0):
             return None
-        return dt + self.every
+        elapsed_s = (dt - self.anchor).total_seconds()
+        n = math.floor(elapsed_s / self.every.total_seconds()) + 1
+        return self.anchor + n * self.every
 
 
 @dataclass
@@ -66,18 +69,20 @@ class CronScheduleCron(DataClassJsonMixin):
     """Run on a cron expression schedule."""
 
     kind: Literal["cron"] = "cron"
-    # TODO: Don't support None value for expr or tz.
-    expr: str | None = None
-    tz: str | None = None
+    expr: str = ""  # required; empty string is invalid
+    tz: str = ""  # IANA timezone name; empty = local timezone
 
     def next_run(self, dt: datetime) -> datetime | None:
         if not self.expr:
             return None
         try:
+            from zoneinfo import ZoneInfo
+
             from croniter import croniter
 
-            cron = croniter(self.expr, dt)
-            return datetime.fromtimestamp(cron.get_next()).astimezone()
+            start = dt.astimezone(ZoneInfo(self.tz)) if self.tz else dt.astimezone()
+            cron = croniter(self.expr, start)
+            return cron.get_next(datetime).astimezone()
         except Exception:
             return None
 
