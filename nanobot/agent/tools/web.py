@@ -8,8 +8,19 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import BaseModel
 
-from nanobot.agent.tools.base import Tool, register_tool
+from nanobot.agent.tools.base import Tool, register_tool, register_tool_config
+
+
+class WebSearchConfig(BaseModel):
+    """Web search tool configuration."""
+
+    api_key: str = ""
+    max_results: int = 5
+
+
+register_tool_config("web_search", WebSearchConfig)
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"

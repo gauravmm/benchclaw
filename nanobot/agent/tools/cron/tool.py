@@ -1,17 +1,27 @@
 """Cron tool for scheduling reminders and tasks."""
 
-from typing import Any
+import asyncio
+from pathlib import Path
+from typing import Any, Callable, Coroutine
 
-from nanobot.agent.tools.base import Tool, register_tool
-from nanobot.cron.service import CronService
-from nanobot.cron.types import CronSchedule
+from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.cron.service import CronService
+from nanobot.agent.tools.cron.types import CronSchedule
+from nanobot.bus import MessageBus, OutboundMessage
 
 
 class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
 
-    def __init__(self, cron_service: CronService):
-        self._cron = cron_service
+    def __init__(
+        self,
+        store_path: Path,
+        process_direct: Callable[..., Coroutine[Any, Any, str]],
+        bus: MessageBus,
+    ):
+        self._cron = CronService(store_path)
+        self._process_direct = process_direct
+        self._bus = bus
         self._channel = ""
         self._chat_id = ""
 
@@ -59,6 +69,34 @@ class CronTool(Tool):
             },
             "required": ["action"],
         }
+
+    async def background(self) -> None:
+        """Start the cron service and keep it running until cancelled."""
+        from nanobot.agent.tools.cron.types import CronJob
+
+        async def on_job(job: CronJob) -> str | None:
+            response = await self._process_direct(
+                job.payload.message,
+                session_key=f"cron:{job.id}",
+                channel=job.payload.channel or "cli",
+                chat_id=job.payload.to or "direct",
+            )
+            if job.payload.deliver and job.payload.to:
+                await self._bus.publish_outbound(
+                    OutboundMessage(
+                        channel=job.payload.channel or "cli",
+                        chat_id=job.payload.to,
+                        content=response or "",
+                    )
+                )
+            return response
+
+        self._cron.on_job = on_job
+        await self._cron.start()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self._cron.stop()
 
     async def execute(
         self,
@@ -126,6 +164,3 @@ class CronTool(Tool):
         if self._cron.remove_job(job_id):
             return f"Removed job {job_id}"
         return f"Job {job_id} not found"
-
-
-register_tool("cron", CronTool)

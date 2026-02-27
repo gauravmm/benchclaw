@@ -33,20 +33,16 @@ class SubagentManager:
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        brave_api_key: str | None = None,
-        exec_config: "ExecToolConfig | None" = None,
+        tools_config=None,
         restrict_to_workspace: bool = False,
     ):
-        from nanobot.config.schema import ExecToolConfig
-
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
         self.model = model or provider.get_default_model()
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.brave_api_key = brave_api_key
-        self.exec_config = exec_config or ExecToolConfig()
+        self.tools_config = tools_config
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -105,14 +101,16 @@ class SubagentManager:
             tools.register(WriteFileTool(allowed_dir=allowed_dir))
             tools.register(EditFileTool(allowed_dir=allowed_dir))
             tools.register(ListDirTool(allowed_dir=allowed_dir))
+            exec_cfg = getattr(self.tools_config, "exec", None)
             tools.register(
                 ExecTool(
                     working_dir=str(self.workspace),
-                    timeout=self.exec_config.timeout,
+                    timeout=exec_cfg.timeout if exec_cfg else 300,
                     restrict_to_workspace=self.restrict_to_workspace,
                 )
             )
-            tools.register(WebSearchTool(api_key=self.brave_api_key))
+            web_cfg = getattr(self.tools_config, "web_search", None)
+            tools.register(WebSearchTool(api_key=web_cfg.api_key if web_cfg else None))
             tools.register(WebFetchTool())
 
             # Build messages with subagent-specific prompt

@@ -6,7 +6,18 @@ import re
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool, register_tool
+from pydantic import BaseModel
+
+from nanobot.agent.tools.base import Tool, register_tool, register_tool_config
+
+
+class ExecToolConfig(BaseModel):
+    """Shell exec tool configuration."""
+
+    timeout: int = 300
+
+
+register_tool_config("exec", ExecToolConfig)
 
 
 class ExecTool(Tool):

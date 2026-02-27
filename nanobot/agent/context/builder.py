@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from jinja2 import Environment, PackageLoader
+
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.tools.memory import MemoryStore
 
@@ -27,6 +29,10 @@ class ContextBuilder:
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self._jinja = Environment(
+            loader=PackageLoader("nanobot.agent.context", "templates"),
+            keep_trailing_newline=True,
+        )
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
@@ -65,51 +71,26 @@ class ContextBuilder:
         # 2. Available skills: only show summary (agent uses read_file to load)
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
-            parts.append(f"""# Skills
-
-The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
-Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
-
-{skills_summary}""")
+            parts.append(
+                self._jinja.get_template("skills_section.j2").render(
+                    skills_summary=skills_summary
+                )
+            )
 
         return "\n\n---\n\n".join(parts)
 
     def _get_identity(self) -> str:
         """Get the core identity section."""
-
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
 
-        return f"""# nanobot 🐈
-
-You are nanobot, a helpful AI assistant. You have access to tools that allow you to:
-- Read, write, and edit files
-- Execute shell commands
-- Search the web and fetch web pages
-- Send messages to users on chat channels
-- Spawn subagents for complex background tasks
-
-## Current Time
-{now}
-
-## Runtime
-{runtime}
-
-## Workspace
-Your workspace is at: {workspace_path}
-- Long-term memory: {workspace_path}/memory/MEMORY.md
-- History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
-- Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
-
-IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
-Only use the 'message' tool when you need to send a message to a specific chat channel (like WhatsApp).
-For normal conversation, just respond with text - do not call the message tool.
-
-Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
-When remembering something important, write to {workspace_path}/memory/MEMORY.md
-To recall past events, grep {workspace_path}/memory/HISTORY.md"""
+        return self._jinja.get_template("identity.j2").render(
+            now=now,
+            runtime=runtime,
+            workspace_path=workspace_path,
+        )
 
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -151,7 +132,9 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         # System prompt
         system_prompt = self.build_system_prompt(skill_names)
         if channel and chat_id:
-            system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+            system_prompt += self._jinja.get_template("current_session.j2").render(
+                channel=channel, chat_id=chat_id
+            )
         messages.append({"role": "system", "content": system_prompt})
 
         # History

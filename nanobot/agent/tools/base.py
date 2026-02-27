@@ -6,12 +6,20 @@ from asyncio import Task
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Self
 
+from pydantic import BaseModel
+
 _TOOL_REGISTRY: dict[str, type["Tool"]] = {}
+_TOOL_CONFIG_REGISTRY: dict[str, type[BaseModel]] = {}
 
 
 def register_tool(name: str, cls: type["Tool"]) -> None:
     """Register a tool class under the given name."""
     _TOOL_REGISTRY[name] = cls
+
+
+def register_tool_config(name: str, cls: type[BaseModel]) -> None:
+    """Register a tool config class under the given name."""
+    _TOOL_CONFIG_REGISTRY[name] = cls
 
 
 class Tool(AbstractAsyncContextManager):

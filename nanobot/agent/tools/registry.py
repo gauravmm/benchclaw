@@ -1,5 +1,6 @@
 """Tool registry for dynamic tool management."""
 
+from contextlib import AsyncExitStack
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
@@ -10,10 +11,24 @@ class ToolRegistry:
     Registry for agent tools.
 
     Allows dynamic registration and execution of tools.
+    Enter as an async context manager to start all tool background() tasks.
     """
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._stack: AsyncExitStack | None = None
+
+    async def __aenter__(self) -> "ToolRegistry":
+        self._stack = AsyncExitStack()
+        await self._stack.__aenter__()
+        for tool in self._tools.values():
+            await self._stack.enter_async_context(tool)
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        if self._stack:
+            await self._stack.__aexit__(*exc_info)
+            self._stack = None
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""

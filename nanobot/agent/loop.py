@@ -7,10 +7,11 @@ from pathlib import Path
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
-from nanobot.agent.memory import MemoryStore
+from nanobot.agent.tools.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.heartbeat import HeartbeatTool
 from nanobot.agent.tools.memory import MemoryTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -18,8 +19,6 @@ from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
-from nanobot.config.schema import ExecToolConfig
-from nanobot.cron.service import CronService
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
@@ -46,9 +45,7 @@ class AgentLoop:
         temperature: float = 0.7,
         max_tokens: int = 4096,
         memory_window: int = 50,
-        brave_api_key: str | None = None,
-        exec_config: ExecToolConfig | None = None,
-        cron_service: CronService | None = None,
+        tools_config=None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
     ):
@@ -60,9 +57,7 @@ class AgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.memory_window = memory_window
-        self.brave_api_key = brave_api_key
-        self.exec_config = exec_config or ExecToolConfig()
-        self.cron_service = cron_service
+        self.tools_config = tools_config
         self.restrict_to_workspace = restrict_to_workspace
 
         self.context = ContextBuilder(workspace)
@@ -75,8 +70,7 @@ class AgentLoop:
             model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            brave_api_key=brave_api_key,
-            exec_config=self.exec_config,
+            tools_config=tools_config,
             restrict_to_workspace=restrict_to_workspace,
         )
 
@@ -96,29 +90,47 @@ class AgentLoop:
         self.tools.register(ListDirTool(allowed_dir=allowed_dir))
 
         # Shell tool
+        exec_cfg = getattr(self.tools_config, "exec", None)
         self.tools.register(
             ExecTool(
                 working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
+                timeout=exec_cfg.timeout if exec_cfg else 300,
                 restrict_to_workspace=self.restrict_to_workspace,
             )
         )
 
         # Web tools
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key))
+        web_cfg = getattr(self.tools_config, "web_search", None)
+        self.tools.register(WebSearchTool(api_key=web_cfg.api_key if web_cfg else None))
         self.tools.register(WebFetchTool())
 
         # Message tool
-        message_tool = MessageTool(send_callback=self.bus.publish_outbound)
-        self.tools.register(message_tool)
+        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
 
         # Spawn tool (for subagents)
-        spawn_tool = SpawnTool(manager=self.subagents)
-        self.tools.register(spawn_tool)
+        self.tools.register(SpawnTool(manager=self.subagents))
 
-        # Cron tool (for scheduling)
-        if self.cron_service:
-            self.tools.register(CronTool(self.cron_service))
+        # Cron tool (manages CronService via background())
+        from nanobot.config.loader import get_data_path
+
+        self.tools.register(
+            CronTool(
+                store_path=get_data_path() / "cron" / "jobs.json",
+                process_direct=self.process_direct,
+                bus=self.bus,
+            )
+        )
+
+        # Heartbeat tool (manages HeartbeatService via background())
+        hb_cfg = getattr(self.tools_config, "heartbeat", None)
+        self.tools.register(
+            HeartbeatTool(
+                workspace=self.workspace,
+                process_direct=self.process_direct,
+                interval_s=hb_cfg.interval_s if hb_cfg else 1800,
+                enabled=hb_cfg.enabled if hb_cfg else True,
+            )
+        )
 
     def _set_tool_context(self, channel: str, chat_id: str) -> None:
         """Update context for all tools that need routing info."""
@@ -195,27 +207,28 @@ class AgentLoop:
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
-        self._running = True
-        logger.info("Agent loop started")
+        async with self.tools:  # starts all tool background() tasks (cron, heartbeat, etc.)
+            self._running = True
+            logger.info("Agent loop started")
 
-        while self._running:
-            try:
-                msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+            while self._running:
                 try:
-                    response = await self._process_message(msg)
-                    if response:
-                        await self.bus.publish_outbound(response)
-                except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=f"Sorry, I encountered an error: {str(e)}",
+                    msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                    try:
+                        response = await self._process_message(msg)
+                        if response:
+                            await self.bus.publish_outbound(response)
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content=f"Sorry, I encountered an error: {str(e)}",
+                            )
                         )
-                    )
-            except asyncio.TimeoutError:
-                continue
+                except asyncio.TimeoutError:
+                    continue
 
     def stop(self) -> None:
         """Stop the agent loop."""

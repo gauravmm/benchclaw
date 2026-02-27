@@ -1,3 +1,4 @@
-1. Move all path handling into utils.py
-2. Move cron, heartbeat into tools.
-3. Root all data paths in ./data
+# Global TODOs
+
+1. All data paths in the config.
+2. Add support for an external connection interface (a unix socket)

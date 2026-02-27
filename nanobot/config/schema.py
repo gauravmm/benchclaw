@@ -6,7 +6,9 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_settings import BaseSettings
 
+import nanobot.agent.tools  # noqa: F401  # triggers register_tool_config() calls in all tool modules
 import nanobot.channels  # noqa: F401  # triggers register_channel() calls in all channel modules
+from nanobot.agent.tools.base import _TOOL_CONFIG_REGISTRY
 from nanobot.channels.base import _CONFIG_REGISTRY, ChannelConfig
 
 
@@ -60,31 +62,17 @@ class GatewayConfig(BaseModel):
     port: int = 18790
 
 
-class WebSearchConfig(BaseModel):
-    """Web search tool configuration."""
+class _ToolConfigsBase(BaseModel):
+    """Base class for dynamically-built ToolsConfig."""
 
-    api_key: str = ""  # Brave Search API key
-    max_results: int = 5
-
-
-class WebToolsConfig(BaseModel):
-    """Web tools configuration."""
-
-    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
-
-
-class ExecToolConfig(BaseModel):
-    """Shell exec tool configuration."""
-
-    timeout: int = 300
-
-
-class ToolsConfig(BaseModel):
-    """Tools configuration."""
-
-    web: WebToolsConfig = Field(default_factory=WebToolsConfig)
-    exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
+
+
+ToolsConfig: type[_ToolConfigsBase] = create_model(
+    "ToolsConfig",
+    __base__=_ToolConfigsBase,
+    **{name: (cls, Field(default_factory=cls)) for name, cls in _TOOL_CONFIG_REGISTRY.items()},
+)
 
 
 class _ChannelConfigsBase(BaseModel):
