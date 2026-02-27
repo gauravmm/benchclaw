@@ -52,7 +52,7 @@ dev = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+nanobot = "nanobot.__main__:main"
 
 [tool.ruff]
 line-length = 100
