@@ -11,7 +11,6 @@ from nanobot.agent.tools.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from nanobot.agent.tools.heartbeat import HeartbeatTool
 from nanobot.agent.tools.memory import MemoryTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -121,16 +120,6 @@ class AgentLoop:
             )
         )
 
-        # Heartbeat tool (manages HeartbeatService via background())
-        hb_cfg = getattr(self.tools_config, "heartbeat", None)
-        self.tools.register(
-            HeartbeatTool(
-                workspace=self.workspace,
-                process_direct=self.process_direct,
-                interval_s=hb_cfg.interval_s if hb_cfg else 1800,
-                enabled=hb_cfg.enabled if hb_cfg else True,
-            )
-        )
 
     def _set_tool_context(self, channel: str, chat_id: str) -> None:
         """Update context for all tools that need routing info."""

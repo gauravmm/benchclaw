@@ -1,6 +1,7 @@
 """Cron tool for scheduling reminders and tasks."""
 
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -8,6 +9,13 @@ from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.cron.service import CronService
 from nanobot.agent.tools.cron.types import CronSchedule
 from nanobot.bus import MessageBus, OutboundMessage
+
+# The heartbeat cron job fires periodically and asks the agent to read HEARTBEAT.md.
+HEARTBEAT_JOB_ID = "__heartbeat__"
+HEARTBEAT_INTERVAL_S = 30 * 60
+HEARTBEAT_PROMPT = """Read HEARTBEAT.md in your workspace (if it exists).
+Follow any instructions or tasks listed there.
+If nothing needs attention, reply with just: HEARTBEAT_OK"""
 
 
 class CronTool(Tool):
@@ -70,6 +78,17 @@ class CronTool(Tool):
             "required": ["action"],
         }
 
+    def _ensure_heartbeat(self) -> None:
+        """Register the heartbeat cron job if it doesn't already exist."""
+        if self._cron.get_job(HEARTBEAT_JOB_ID) is not None:
+            return
+        self._cron.add_job(
+            name="Heartbeat",
+            schedule=CronSchedule(kind="every", every=timedelta(seconds=HEARTBEAT_INTERVAL_S)),
+            message=HEARTBEAT_PROMPT,
+            job_id=HEARTBEAT_JOB_ID,
+        )
+
     async def background(self) -> None:
         """Start the cron service and keep it running until cancelled."""
         from nanobot.agent.tools.cron.types import CronJob
@@ -93,6 +112,7 @@ class CronTool(Tool):
 
         self._cron.on_job = on_job
         await self._cron.start()
+        self._ensure_heartbeat()
         try:
             await asyncio.Event().wait()
         finally:
@@ -127,15 +147,14 @@ class CronTool(Tool):
         # Build schedule
         delete_after = False
         if every_seconds:
-            schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
+            schedule = CronSchedule(kind="every", every=timedelta(seconds=every_seconds))
         elif cron_expr:
             schedule = CronSchedule(kind="cron", expr=cron_expr)
         elif at:
             from datetime import datetime
 
             dt = datetime.fromisoformat(at)
-            at_ms = int(dt.timestamp() * 1000)
-            schedule = CronSchedule(kind="at", at_ms=at_ms)
+            schedule = CronSchedule(kind="at", at=dt)
             delete_after = True
         else:
             return "Error: either every_seconds, cron_expr, or at is required"

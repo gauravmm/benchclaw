@@ -7,7 +7,6 @@ from nanobot.agent.tools.registry import ToolRegistry
 # Add a new import here when adding a new tool.
 import nanobot.agent.tools.cron  # noqa: F401
 import nanobot.agent.tools.filesystem  # noqa: F401
-import nanobot.agent.tools.heartbeat  # noqa: F401
 import nanobot.agent.tools.memory  # noqa: F401
 import nanobot.agent.tools.message  # noqa: F401
 import nanobot.agent.tools.shell  # noqa: F401

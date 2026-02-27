@@ -8,15 +8,11 @@ from dataclasses_json import DataClassJsonMixin, config
 
 
 def _encode_ts(dt: datetime | None) -> str | None:
-    if dt is None:
-        return None
-    return dt.astimezone().isoformat(timespec="seconds")
+    return None if dt is None else dt.astimezone().isoformat(timespec="seconds")
 
 
 def _decode_ts(s: str | None) -> datetime | None:
-    if s is None:
-        return None
-    return datetime.fromisoformat(s)
+    return None if s is None else datetime.fromisoformat(s)
 
 
 def _encode_td(td: timedelta | None) -> float | None:
@@ -59,7 +55,7 @@ class CronSchedule(DataClassJsonMixin):
 class CronPayload(DataClassJsonMixin):
     """What to do when the job runs."""
 
-    kind: Literal["system_event", "agent_turn", "heartbeat"] = "agent_turn"
+    kind: Literal["system_event", "agent_turn"] = "agent_turn"
     message: str = ""
     # Deliver response to channel
     deliver: bool = False
