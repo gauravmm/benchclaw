@@ -9,7 +9,6 @@ from typing import Any, Callable, Coroutine
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.cron.service import CronStore, _now
 from nanobot.agent.tools.cron.typesupport import (
     CronJob,
     CronJobState,
@@ -17,17 +16,12 @@ from nanobot.agent.tools.cron.typesupport import (
     CronScheduleAt,
     CronScheduleCron,
     CronScheduleEvery,
+    CronStore,
+    _ts_now,
 )
 from nanobot.bus import MessageBus, OutboundMessage
 
 _MAX_DT = datetime.max.replace(tzinfo=timezone.utc)
-
-# The heartbeat cron job fires periodically and asks the agent to read HEARTBEAT.md.
-HEARTBEAT_JOB_ID = "__heartbeat__"
-HEARTBEAT_INTERVAL_S = 30 * 60
-HEARTBEAT_PROMPT = """Read HEARTBEAT.md in your workspace (if it exists).
-Follow any instructions or tasks listed there.
-If nothing needs attention, reply with just: HEARTBEAT_OK"""
 
 
 class CronTool(Tool):
@@ -92,29 +86,10 @@ class CronTool(Tool):
             "required": ["action"],
         }
 
-    def _ensure_heartbeat(self) -> None:
-        """Register the heartbeat cron job if it doesn't already exist."""
-        assert self._store is not None
-        if self._store.get(HEARTBEAT_JOB_ID) is not None:
-            return
-        now = _now()
-        sched = CronScheduleEvery(every=timedelta(seconds=HEARTBEAT_INTERVAL_S))
-        self._store.add(
-            CronJob(
-                id=HEARTBEAT_JOB_ID,
-                name="Heartbeat",
-                schedule=sched,
-                payload=CronPayload(kind="agent_turn", message=HEARTBEAT_PROMPT),
-                state=CronJobState(next_run_at=sched.next_run(now)),
-                created_at=now,
-                updated_at=now,
-            )
-        )
-
     async def _execute_job(self, job: CronJob) -> None:
         """Execute a job: run the agent turn and optionally deliver the response."""
         assert self._store is not None
-        start = _now()
+        start = _ts_now()
         logger.info(f"Cron: executing job '{job.name}' ({job.id})")
         try:
             response = await self._process_direct(
@@ -139,8 +114,8 @@ class CronTool(Tool):
             job.state.last_error = str(e)
             logger.error(f"Cron: job '{job.name}' failed: {e}")
         job.state.last_run_at = start
-        job.updated_at = _now()
-        self._store.executed(job.id, _now())
+        job.updated_at = start
+        self._store.executed(job.id, start)
 
     async def background(self) -> None:
         """Run the cron loop until cancelled."""
@@ -150,15 +125,17 @@ class CronTool(Tool):
         try:
             async with CronStore(self._store_path) as store:
                 self._store = store
-                self._ensure_heartbeat()
                 while True:
+                    now = _ts_now()
+                    for job in store.pop_due(now):
+                        await self._execute_job(job)
+
                     next_wake = store.next_wake()
-                    delay = max(0.0, (next_wake - _now()).total_seconds()) if next_wake else 60.0
+                    delay = max(0.0, (next_wake - now).total_seconds()) if next_wake else 60.0
                     self._wakeup.clear()
                     with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
                         await asyncio.wait_for(self._wakeup.wait(), timeout=delay)
-                    for job in store.pop_due(_now()):
-                        await self._execute_job(job)
+
         finally:
             self._store = None
 
@@ -199,7 +176,7 @@ class CronTool(Tool):
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 
-        now = _now()
+        now = _ts_now()
         job = CronJob(
             id=str(uuid.uuid4())[:8],
             name=message[:30],
