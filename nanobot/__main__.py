@@ -2,15 +2,22 @@
 
 import argparse
 import asyncio
+import logging
 import sys
+
+from nanobot import __logo__
+from nanobot.agent.loop import AgentLoop
+from nanobot.bus import MessageBus
+from nanobot.channels.manager import ChannelManager
+from nanobot.config.loader import ConfigManager
+from nanobot.providers.litellm_provider import LiteLLMProvider
+from nanobot.session.manager import SessionManager
 
 
 def _make_provider(config):
-    from nanobot.providers.litellm_provider import LiteLLMProvider
-
     p = config.get_provider()
     model = config.agents.defaults.model
-    if not (p and p.api_key) and not model.startswith("bedrock/"):
+    if not (p and p.api_key):
         print("Error: No API key configured.")
         print("Set one in config/config.yaml under providers section.")
         sys.exit(1)
@@ -25,47 +32,39 @@ def _make_provider(config):
 
 def gateway(port: int = 18790, verbose: bool = False) -> None:
     """Start the nanobot gateway."""
-    from nanobot import __logo__
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus import MessageBus
-    from nanobot.channels.manager import ChannelManager
-    from nanobot.config.loader import load_config
-    from nanobot.session.manager import SessionManager
 
     if verbose:
-        import logging
-
         logging.basicConfig(level=logging.DEBUG)
 
-    config = load_config()
-    bus = MessageBus()
-    provider = _make_provider(config)
-    session_manager = SessionManager(config.workspace_path)
+    with ConfigManager() as config:
+        bus = MessageBus()
+        provider = _make_provider(config)
+        session_manager = SessionManager(config.workspace_path)
 
-    agent = AgentLoop(
-        config=config,
-        bus=bus,
-        provider=provider,
-        session_manager=session_manager,
-    )
+        agent = AgentLoop(
+            config=config,
+            bus=bus,
+            provider=provider,
+            session_manager=session_manager,
+        )
 
-    channels = ChannelManager(config, bus)
+        channels = ChannelManager(config, bus)
 
-    print(f"{__logo__} nanobot gateway starting on port {port}")
-    if channels.channels:
-        print(f"Channels: {', '.join(channels.channels)}")
-    else:
-        print("Warning: no channels enabled")
+        print(f"{__logo__} nanobot gateway starting on port {port}")
+        if channels.channels:
+            print(f"Channels: {', '.join(channels.channels)}")
+        else:
+            print("Warning: no channels enabled")
 
-    async def run():
-        try:
-            async with channels:
-                await agent.run()
-        except KeyboardInterrupt:
-            print("\nShutting down...")
-            agent.stop()
+        async def run():
+            try:
+                async with channels:
+                    await agent.run()
+            except KeyboardInterrupt:
+                print("\nShutting down...")
+                agent.stop()
 
-    asyncio.run(run())
+        asyncio.run(run())
 
 
 def main() -> None:
@@ -74,14 +73,16 @@ def main() -> None:
         description="nanobot — personal AI assistant gateway",
     )
     parser.add_argument(
-        "--port", "-p",
+        "--port",
+        "-p",
         type=int,
         default=18790,
         metavar="PORT",
         help="gateway port (default: 18790)",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="enable debug logging",
     )

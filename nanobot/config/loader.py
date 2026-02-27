@@ -13,44 +13,33 @@ def get_config_path() -> Path:
     return Path("config") / "config.yaml"
 
 
-def load_config(config_path: Path | None = None) -> Config:
-    """
-    Load configuration from file or create default.
+class ConfigManager:
+    """Context manager that loads config on enter and saves it on exit."""
 
-    Args:
-        config_path: Optional path to config file. Uses default if not provided.
+    def __init__(self, config_path: Path | None = None):
+        self._path = config_path or get_config_path()
+        self.config: Config | None = None
 
-    Returns:
-        Loaded configuration object.
-    """
-    path = config_path or get_config_path()
+    def __enter__(self) -> Config:
+        if self._path.exists():
+            try:
+                with open(self._path) as f:
+                    data = yaml.safe_load(f)
+                data = _migrate_config(data)
+                self.config = Config.model_validate(data)
+                return self.config
+            except (yaml.YAMLError, ValueError) as e:
+                print(f"Warning: Failed to load config from {self._path}: {e}")
+                print("Using default configuration.")
 
-    if path.exists():
-        try:
-            with open(path) as f:
-                data = yaml.safe_load(f)
-            data = _migrate_config(data)
-            return Config.model_validate(data)
+        self.config = Config()
+        return self.config
 
-        except (yaml.YAMLError, ValueError) as e:
-            print(f"Warning: Failed to load config from {path}: {e}")
-            print("Using default configuration.")
-
-    return Config()
-
-
-def save_config(config: Config, config_path: Path | None = None) -> None:
-    """
-    Save configuration to file.
-
-    Args:
-        config: Configuration to save.
-        config_path: Optional path to save to. Uses default if not provided.
-    """
-    path = config_path or get_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        yaml.dump(config.model_dump(), f, default_flow_style=False, allow_unicode=True)
+    def __exit__(self, *_) -> None:
+        if self.config is not None:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w") as f:
+                yaml.dump(self.config.model_dump(), f, default_flow_style=False, allow_unicode=True)
 
 
 def _migrate_config(data: dict) -> dict:
