@@ -1,6 +1,5 @@
 """Cron types."""
 
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -8,25 +7,25 @@ from typing import Literal
 from dataclasses_json import DataClassJsonMixin, config
 
 
-def _encode_ts(ts_s: int | None) -> str | None:
-    if ts_s is None:
+def _encode_ts(dt: datetime | None) -> str | None:
+    if dt is None:
         return None
-    return datetime.fromtimestamp(ts_s).astimezone().isoformat(timespec="seconds")
+    return dt.astimezone().isoformat(timespec="seconds")
 
 
-def _decode_ts(s: str | None) -> int | None:
+def _decode_ts(s: str | None) -> datetime | None:
     if s is None:
         return None
-    return int(datetime.fromisoformat(s).timestamp())
+    return datetime.fromisoformat(s)
 
 
-def _ts(default: int | None = None):
+def _ts(default: datetime | None = None):
     return field(default=default, metadata=config(encoder=_encode_ts, decoder=_decode_ts))
 
 
 def _ts_now():
     return field(
-        default_factory=lambda: int(time.time()),
+        default_factory=lambda: datetime.now().astimezone(),
         metadata=config(encoder=_encode_ts, decoder=_decode_ts),
     )
 
@@ -36,8 +35,8 @@ class CronSchedule(DataClassJsonMixin):
     """Schedule definition for a cron job."""
 
     kind: Literal["at", "every", "cron"]
-    # For "at": absolute timestamp in seconds
-    at_s: int | None = _ts()
+    # For "at": absolute datetime
+    at: datetime | None = _ts()
     # For "every": interval in seconds
     every_s: int | None = None
     # For "cron": cron expression (e.g. "0 9 * * *")
@@ -62,8 +61,8 @@ class CronPayload(DataClassJsonMixin):
 class CronJobState(DataClassJsonMixin):
     """Runtime state of a job."""
 
-    next_run_at_s: int | None = _ts()
-    last_run_at_s: int | None = _ts()
+    next_run_at: datetime | None = _ts()
+    last_run_at: datetime | None = _ts()
     last_status: Literal["ok", "error", "skipped"] | None = None
     last_error: str | None = None
 
@@ -78,14 +77,8 @@ class CronJob(DataClassJsonMixin):
     schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
     payload: CronPayload = field(default_factory=CronPayload)
     state: CronJobState = field(default_factory=CronJobState)
-    created_at_s: int = field(
-        default_factory=lambda: int(time.time()),
-        metadata=config(encoder=_encode_ts, decoder=_decode_ts),
-    )
-    updated_at_s: int = field(
-        default_factory=lambda: int(time.time()),
-        metadata=config(encoder=_encode_ts, decoder=_decode_ts),
-    )
+    created_at: datetime = _ts_now()
+    updated_at: datetime = _ts_now()
     delete_after_run: bool = False
 
 

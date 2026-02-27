@@ -3,6 +3,7 @@
 import asyncio
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -16,27 +17,29 @@ from nanobot.agent.tools.cron.types import (
     CronStore,
 )
 
-
-def _now_s() -> int:
-    return int(time.time())
+_MAX_DT = datetime.max.replace(tzinfo=timezone.utc)
 
 
-def _compute_next_run(schedule: CronSchedule, now_s: int) -> int | None:
-    """Compute next run time in seconds."""
+def _now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _compute_next_run(schedule: CronSchedule, now: datetime) -> datetime | None:
+    """Compute next run time."""
     if schedule.kind == "at":
-        return schedule.at_s if schedule.at_s and schedule.at_s > now_s else None
+        return schedule.at if schedule.at and schedule.at > now else None
 
     if schedule.kind == "every":
         if not schedule.every_s or schedule.every_s <= 0:
             return None
-        return now_s + schedule.every_s
+        return now + timedelta(seconds=schedule.every_s)
 
     if schedule.kind == "cron" and schedule.expr:
         try:
             from croniter import croniter
 
             cron = croniter(schedule.expr, time.time())
-            return int(cron.get_next())
+            return datetime.fromtimestamp(cron.get_next()).astimezone()
         except Exception:
             return None
 
@@ -94,17 +97,17 @@ class CronService:
 
     def _recompute_next_runs(self) -> None:
         """Recompute next run times for all enabled jobs."""
-        now = _now_s()
+        now = _now()
         for job in self._store_file.store.jobs:
             if job.enabled:
-                job.state.next_run_at_s = _compute_next_run(job.schedule, now)
+                job.state.next_run_at = _compute_next_run(job.schedule, now)
 
-    def _get_next_wake_s(self) -> int | None:
+    def _get_next_wake(self) -> datetime | None:
         """Get the earliest next run time across all jobs."""
         times = [
-            j.state.next_run_at_s
+            j.state.next_run_at
             for j in self._store_file.store.jobs
-            if j.enabled and j.state.next_run_at_s
+            if j.enabled and j.state.next_run_at
         ]
         return min(times) if times else None
 
@@ -113,11 +116,11 @@ class CronService:
         if self._timer_task:
             self._timer_task.cancel()
 
-        next_wake = self._get_next_wake_s()
+        next_wake = self._get_next_wake()
         if not next_wake or not self._running:
             return
 
-        delay_s = max(0, next_wake - _now_s())
+        delay_s = max(0.0, (next_wake - _now()).total_seconds())
 
         async def tick():
             await asyncio.sleep(delay_s)
@@ -128,11 +131,11 @@ class CronService:
 
     async def _on_timer(self) -> None:
         """Handle timer tick - run due jobs."""
-        now = _now_s()
+        now = _now()
         due_jobs = [
             j
             for j in self._store_file.store.jobs
-            if j.enabled and j.state.next_run_at_s and now >= j.state.next_run_at_s
+            if j.enabled and j.state.next_run_at and now >= j.state.next_run_at
         ]
 
         for job in due_jobs:
@@ -143,7 +146,7 @@ class CronService:
 
     async def _execute_job(self, job: CronJob) -> None:
         """Execute a single job."""
-        start_s = _now_s()
+        start = _now()
         logger.info(f"Cron: executing job '{job.name}' ({job.id})")
 
         try:
@@ -159,8 +162,8 @@ class CronService:
             job.state.last_error = str(e)
             logger.error(f"Cron: job '{job.name}' failed: {e}")
 
-        job.state.last_run_at_s = start_s
-        job.updated_at_s = _now_s()
+        job.state.last_run_at = start
+        job.updated_at = _now()
 
         # Handle one-shot jobs
         if job.schedule.kind == "at":
@@ -170,9 +173,9 @@ class CronService:
                 ]
             else:
                 job.enabled = False
-                job.state.next_run_at_s = None
+                job.state.next_run_at = None
         else:
-            job.state.next_run_at_s = _compute_next_run(job.schedule, _now_s())
+            job.state.next_run_at = _compute_next_run(job.schedule, _now())
 
     # ========== Public API ==========
 
@@ -197,7 +200,7 @@ class CronService:
         jobs = self._store_file.store.jobs
         if not include_disabled:
             jobs = [j for j in jobs if j.enabled]
-        return sorted(jobs, key=lambda j: j.state.next_run_at_s or float("inf"))
+        return sorted(jobs, key=lambda j: j.state.next_run_at or _MAX_DT)
 
     def add_job(
         self,
@@ -212,7 +215,7 @@ class CronService:
         job_id: str | None = None,
     ) -> CronJob:
         """Add a new job."""
-        now = _now_s()
+        now = _now()
 
         job = CronJob(
             id=job_id or str(uuid.uuid4())[:8],
@@ -227,9 +230,9 @@ class CronService:
                 channel=channel,
                 to=to,
             ),
-            state=CronJobState(next_run_at_s=_compute_next_run(schedule, now)),
-            created_at_s=now,
-            updated_at_s=now,
+            state=CronJobState(next_run_at=_compute_next_run(schedule, now)),
+            created_at=now,
+            updated_at=now,
             delete_after_run=delete_after_run,
         )
 
@@ -259,11 +262,11 @@ class CronService:
         for job in self._store_file.store.jobs:
             if job.id == job_id:
                 job.enabled = enabled
-                job.updated_at_s = _now_s()
+                job.updated_at = _now()
                 if enabled:
-                    job.state.next_run_at_s = _compute_next_run(job.schedule, _now_s())
+                    job.state.next_run_at = _compute_next_run(job.schedule, _now())
                 else:
-                    job.state.next_run_at_s = None
+                    job.state.next_run_at = None
                 self._store_file.flush()
                 self._arm_timer()
                 return job
@@ -293,28 +296,29 @@ class CronService:
         return {
             "enabled": self._running,
             "jobs": len(self._store_file.store.jobs),
-            "next_wake_at_s": self._get_next_wake_s(),
+            "next_wake_at": self._get_next_wake(),
         }
 
 
 if __name__ == "__main__":
     import tempfile
+    import time
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "cron_store.json"
         sf = CronStoreFile(path)
 
         # Add a test job
-        now = _now_s()
+        now = _now()
         sf.store.jobs.append(
             CronJob(
                 id="test01",
                 name="Test job",
                 schedule=CronSchedule(kind="every", every_s=60),
                 payload=CronPayload(kind="agent_turn", message="hello"),
-                state=CronJobState(next_run_at_s=now + 60),
-                created_at_s=now,
-                updated_at_s=now,
+                state=CronJobState(next_run_at=now + timedelta(seconds=60)),
+                created_at=now,
+                updated_at=now,
             )
         )
 
@@ -349,7 +353,7 @@ if __name__ == "__main__":
         job = sf2.store.jobs[0]
         assert job.id == "test01"
         assert job.state.last_status == "ok"
-        assert isinstance(job.created_at_s, int)
-        assert isinstance(job.state.next_run_at_s, int)
-        print(f"=== Round-trip OK: created_at_s={job.created_at_s}, next_run_at_s={job.state.next_run_at_s} ===")
+        assert isinstance(job.created_at, datetime)
+        assert isinstance(job.state.next_run_at, datetime)
+        print(f"=== Round-trip OK: created_at={job.created_at}, next_run_at={job.state.next_run_at} ===")
         print("All checks passed.")
