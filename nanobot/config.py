@@ -79,8 +79,8 @@ class Config(BaseSettings):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
-    channels: _ChannelConfigsBase = Field(default_factory=ChannelConfigs)
-    tools: _ToolConfigsBase = Field(default_factory=ToolsConfig)
+    channels: ChannelConfigs = Field(default_factory=ChannelConfigs)  # pyright: ignore[reportInvalidTypeForm]
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)  # pyright: ignore[reportInvalidTypeForm]
 
     @property
     def workspace_path(self) -> Path:
@@ -96,6 +96,7 @@ class ConfigManager:
     def __init__(self, config_path: Path = Path("config") / "config.yaml"):
         self._path = config_path
         self.config: Config | None = None
+        self._write_on_exit = False
 
     def __enter__(self) -> Config:
         if self._path.exists():
@@ -108,12 +109,15 @@ class ConfigManager:
             except (yaml.YAMLError, ValueError) as e:
                 logger.warning(f"Failed to load config from {self._path}: {e}")
                 logger.warning("Using default configuration.")
+        else:
+            # Don't clobber an existing config file.
+            self._write_on_exit = True
 
         self.config = Config()
         return self.config
 
     def __exit__(self, *_) -> None:
-        if self.config is not None:
+        if self._write_on_exit and self.config:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._path, "w") as f:
                 yaml.dump(self.config.model_dump(), f, default_flow_style=False, allow_unicode=True)

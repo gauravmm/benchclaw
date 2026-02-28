@@ -3,7 +3,7 @@
 # Import channel modules to trigger their register_channel() calls.
 # Add a new import here when adding a new channel.
 import nanobot.channels.smtp_email  # noqa: F401
-import nanobot.channels.telegram  # noqa: F401
+import nanobot.channels.telegrm  # noqa: F401
 import nanobot.channels.whatsapp  # noqa: F401
 from nanobot.channels.base import _CONFIG_REGISTRY, BaseChannel, ChannelConfig, register_channel
 

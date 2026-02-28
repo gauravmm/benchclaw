@@ -4,7 +4,6 @@ from contextlib import AsyncExitStack
 from typing import Any, Iterable, Self
 
 from nanobot.agent.tools.base import _TOOL_REGISTRY, Tool, ToolBuildContext
-from nanobot.config import _ToolConfigsBase
 
 
 class ToolRegistry:
@@ -32,7 +31,7 @@ class ToolRegistry:
             self._stack = None
 
     @classmethod
-    def build_all(cls, tools_config: _ToolConfigsBase, ctx: ToolBuildContext) -> Self:
+    def build_all(cls, tools_config: Any, ctx: ToolBuildContext) -> Self:
         """Build a ToolRegistry from all registered tools using the given config and context."""
         registry = cls()
         for name, tool_cls in _TOOL_REGISTRY.items():

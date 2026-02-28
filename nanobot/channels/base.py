@@ -4,8 +4,9 @@ import asyncio
 from abc import abstractmethod
 from asyncio import Task
 from contextlib import AbstractAsyncContextManager
-from typing import Any
+from typing import Any, Self
 
+from anyio import AsyncContextManagerMixin
 from loguru import logger
 from pydantic import BaseModel
 
@@ -26,7 +27,7 @@ class ChannelConfig(BaseModel):
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
 
 
-class BaseChannel(AbstractAsyncContextManager):
+class BaseChannel(AsyncContextManagerMixin):
     """
     Abstract base class for chat channel implementations.
 
@@ -60,10 +61,11 @@ class BaseChannel(AbstractAsyncContextManager):
         4. Terminates cleanly on CancelledError
         """
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         self._task = asyncio.create_task(self.background())
+        return self
 
-    async def __aexit__(self):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._task:
             try:
                 async with asyncio.timeout(5):

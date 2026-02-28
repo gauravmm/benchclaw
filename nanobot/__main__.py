@@ -34,9 +34,7 @@ def _make_provider(config):
 
 def gateway(args) -> None:
     """Start the nanobot gateway."""
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)
 
     with ConfigManager(args.config) as config:
         bus = MessageBus()
@@ -81,7 +79,7 @@ def main() -> None:
         "--verbose",
         "-v",
         action="store_true",
-        help="enable debug logging",
+        help="enable info logging",
     )
     args = parser.parse_args()
     gateway(args)
