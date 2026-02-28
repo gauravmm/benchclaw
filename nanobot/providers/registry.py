@@ -37,6 +37,9 @@ class ProviderSpec:
     # per-model param overrides, e.g. (("kimi-k2.5", {"temperature": 1.0}),)
     model_overrides: tuple[tuple[str, dict[str, Any]], ...] = ()
 
+    # LiteLLM custom_llm_provider value; None = infer from model string
+    litellm_provider: str | None = None
+
     @property
     def label(self) -> str:
         return self.display_name or self.name.title()
@@ -53,6 +56,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         env_key="OPENAI_API_KEY",
         display_name="Custom",
         is_gateway=True,
+        litellm_provider="openai",
     ),
     # === Gateways ==========================================================
     ProviderSpec(
@@ -61,6 +65,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         display_name="OpenRouter",
         is_gateway=True,
         default_api_base="https://openrouter.ai/api/v1",
+        litellm_provider="openrouter",
     ),
     ProviderSpec(
         name="aihubmix",
@@ -68,38 +73,45 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         display_name="AiHubMix",
         is_gateway=True,
         default_api_base="https://aihubmix.com/v1",
+        litellm_provider="openai",
     ),
     # === Standard providers ================================================
     ProviderSpec(
         name="anthropic",
         env_key="ANTHROPIC_API_KEY",
         display_name="Anthropic",
+        litellm_provider="anthropic",
     ),
     ProviderSpec(
         name="openai",
         env_key="OPENAI_API_KEY",
         display_name="OpenAI",
+        litellm_provider="openai",
     ),
     ProviderSpec(
         name="deepseek",
         env_key="DEEPSEEK_API_KEY",
         display_name="DeepSeek",
+        litellm_provider="deepseek",
     ),
     ProviderSpec(
         name="gemini",
         env_key="GEMINI_API_KEY",
         display_name="Gemini",
+        litellm_provider="gemini",
     ),
     ProviderSpec(
         name="zhipu",
         env_key="ZAI_API_KEY",
         display_name="Zhipu AI",
         env_extras=(("ZHIPUAI_API_KEY", "{api_key}"),),
+        litellm_provider="zhipuai",
     ),
     ProviderSpec(
         name="dashscope",
         env_key="DASHSCOPE_API_KEY",
         display_name="DashScope",
+        litellm_provider="dashscope",
     ),
     ProviderSpec(
         name="moonshot",
@@ -108,12 +120,14 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         env_extras=(("MOONSHOT_API_BASE", "{api_base}"),),
         default_api_base="https://api.moonshot.ai/v1",
         model_overrides=(("kimi-k2.5", {"temperature": 1.0}),),
+        litellm_provider="moonshot",
     ),
     ProviderSpec(
         name="minimax",
         env_key="MINIMAX_API_KEY",
         display_name="MiniMax",
         default_api_base="https://api.minimax.io/v1",
+        litellm_provider="minimax",
     ),
     # === Local deployment ==================================================
     ProviderSpec(
@@ -121,12 +135,14 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         env_key="HOSTED_VLLM_API_KEY",
         display_name="vLLM/Local",
         is_local=True,
+        litellm_provider="hosted_vllm",
     ),
     # === Auxiliary =========================================================
     ProviderSpec(
         name="groq",
         env_key="GROQ_API_KEY",
         display_name="Groq",
+        litellm_provider="groq",
     ),
 )
 

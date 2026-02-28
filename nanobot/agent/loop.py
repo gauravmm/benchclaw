@@ -43,12 +43,6 @@ class AgentLoop:
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
-        # self.workspace = config.workspace_path
-        # self.model = config.agents.defaults.model
-        # self.max_iterations = config.agents.defaults.max_tool_iterations
-        # self.temperature = config.agents.defaults.temperature
-        # self.max_tokens = config.agents.defaults.max_tokens
-        # self.memory_window = config.agents.defaults.memory_window
 
         self.context = ContextBuilder(config.workspace_path)
         self.sessions = session_manager or SessionManager(config.workspace_path / "sessions")
@@ -82,7 +76,7 @@ class AgentLoop:
         final_content = None
         tools_used: list[str] = []
 
-        for iteration in range(self.config.max_tool_iterations):
+        for _ in range(self.config.max_tool_iterations):
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),

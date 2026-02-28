@@ -37,19 +37,21 @@ class LiteLLMProvider(LLMProvider):
             raise RuntimeError("No API key configured")
 
         # Compute the effective base, use it to update the environment:
-        effective_base = self._config.api_base or self._spec.default_api_base
+        self._effective_base = self._config.api_base or self._spec.default_api_base
         if self._spec.env_key:
             os.environ[self._spec.env_key] = self._config.api_key
         for env_name, env_val in self._spec.env_extras:
             resolved = env_val.replace("{api_key}", self._config.api_key).replace(
-                "{api_base}", effective_base
+                "{api_base}", self._effective_base
             )
             os.environ.setdefault(env_name, resolved)
 
-        # Set up litellm options.clear
-        litellm.api_base = effective_base
+        # Set up litellm options.
+        litellm.api_base = self._effective_base
         litellm.suppress_debug_info = True
         litellm.drop_params = True
+
+        logger.info(f"Configured LiteLLMProvider with {self._config.name}.")
 
     def _apply_model_overrides(self, model: str, kwargs: dict[str, Any]) -> None:
         """Apply model-specific parameter overrides from the registry."""
@@ -69,8 +71,9 @@ class LiteLLMProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> LLMResponse:
+        assert max_tokens >= 1
+        assert temperature >= 0
         model = model or self.default_model
-        max_tokens = max(1, max_tokens)
 
         kwargs: dict[str, Any] = {
             "model": model,
@@ -78,10 +81,11 @@ class LiteLLMProvider(LLMProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
             "api_key": self._config.api_key,
-            "api_base": self._config.api_base,
+            "api_base": self._effective_base or None,
             "extra_headers": self._config.extra_headers,
             "tools": tools,
             "tool_choice": "auto",
+            "custom_llm_provider": self._spec.litellm_provider,
         }
 
         self._apply_model_overrides(model, kwargs)
