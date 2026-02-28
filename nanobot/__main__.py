@@ -5,15 +5,12 @@ import asyncio
 import logging
 from pathlib import Path
 
-from loguru import logger
-
 from nanobot import __logo__
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus import MessageBus
 from nanobot.channels.manager import ChannelManager
 from nanobot.config import ConfigManager
 from nanobot.providers.litellm_provider import LiteLLMProvider
-from nanobot.session.manager import SessionManager
 
 
 def gateway(args) -> None:

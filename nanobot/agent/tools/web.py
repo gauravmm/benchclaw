@@ -91,7 +91,9 @@ class WebSearchTool(Tool):
         self.api_key = config.api_key or os.environ.get("BRAVE_API_KEY", "")
         self.max_results = config.max_results
 
-    async def execute(self, ctx: ToolBuildContext, query: str, count: int | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self, ctx: ToolBuildContext, query: str, count: int | None = None, **kwargs: Any
+    ) -> str:
         if not self.api_key:
             return "Error: BRAVE_API_KEY not configured"
 
@@ -155,7 +157,12 @@ class WebFetchTool(Tool):
         self.max_chars = max_chars
 
     async def execute(
-        self, ctx: ToolBuildContext, url: str, extract_mode: str = "markdown", max_chars: int | None = None, **kwargs: Any
+        self,
+        ctx: ToolBuildContext,
+        url: str,
+        extract_mode: str = "markdown",
+        max_chars: int | None = None,
+        **kwargs: Any,
     ) -> str:
         max_chars = max_chars or self.max_chars
 

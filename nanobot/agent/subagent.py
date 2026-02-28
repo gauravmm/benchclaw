@@ -142,7 +142,9 @@ class SubagentManager:
                             logger.debug(
                                 f"Subagent [{task_id}] executing: {tool_call.name} with arguments: {args_str}"
                             )
-                            result = await tools.execute(tool_call.name, tool_call.arguments, call_ctx)
+                            result = await tools.execute(
+                                tool_call.name, tool_call.arguments, call_ctx
+                            )
                             messages.append(
                                 {
                                     "role": "tool",
@@ -189,11 +191,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
 
         # Inject as system message to trigger main agent
         # chat_id encodes the origin address for routing back
-        origin_chat_id = (
-            f"{origin.channel}:{origin.chat_id}"
-            if origin
-            else "cli:direct"
-        )
+        origin_chat_id = f"{origin.channel}:{origin.chat_id}" if origin else "cli:direct"
         msg = InboundMessage(
             address=MessageAddress(channel="system", chat_id=origin_chat_id),
             sender_id="subagent",
@@ -201,9 +199,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
         )
 
         await self.bus.publish_inbound(msg)
-        logger.debug(
-            f"Subagent [{task_id}] announced result to {origin_chat_id}"
-        )
+        logger.debug(f"Subagent [{task_id}] announced result to {origin_chat_id}")
 
     def _build_subagent_prompt(self, task: str) -> str:
         """Build a focused system prompt for the subagent."""

@@ -127,7 +127,9 @@ class EditFileTool(Tool):
             "required": ["path", "old_text", "new_text"],
         }
 
-    async def execute(self, ctx: ToolBuildContext, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
+    async def execute(
+        self, ctx: ToolBuildContext, path: str, old_text: str, new_text: str, **kwargs: Any
+    ) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():

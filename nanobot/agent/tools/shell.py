@@ -76,7 +76,9 @@ class ExecTool(Tool):
             "required": ["command"],
         }
 
-    async def execute(self, ctx: ToolBuildContext, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self, ctx: ToolBuildContext, command: str, working_dir: str | None = None, **kwargs: Any
+    ) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:

@@ -1,6 +1,5 @@
 """Base class for agent tools."""
 
-import asyncio
 from abc import abstractmethod
 from asyncio import Task
 from dataclasses import dataclass
