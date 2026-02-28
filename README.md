@@ -1,6 +1,15 @@
 # IGNORE THIS
 
-THIS WHOLE FILE IS OUTDATED.
+While this is technically built on Nanobot, its pretty much a rewrite. I wanted to add some specific guardrails and state management to Nanobot but the code quality was horrifying, so I wound up building this instead.
+
+Here's what we have:
+
+ 1. Unified system prompt (TODO: Where?)
+ 2. Simpler loading and unloading.
+
+THIS WHOLE FILE BELOW THIS IS OUTDATED.
+
+---
 
 🐈 **nanobot** is an **ultra-lightweight** personal AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw)
 

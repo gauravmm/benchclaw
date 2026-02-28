@@ -39,6 +39,19 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
   </skill>
 {% endfor %}</skills>{% endif %}
 
+{% if tools %}
+## Tools
+
+{% for tool in tools %}
+### {{ tool.name }}
+{{ tool.description }}
+{% if tool.skill %}
+
+{{ tool.skill }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
 {% if bootstrap_files %}
 
 ---

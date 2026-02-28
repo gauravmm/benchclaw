@@ -199,6 +199,7 @@ class AgentLoop:
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.config.memory_window),
             current_message=msg.content,
+            tools=self.tools.values(),
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -245,6 +246,7 @@ class AgentLoop:
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.memory_window),
             current_message=msg.content,
+            tools=self.tools.values(),
             channel=origin_channel,
             chat_id=origin_chat_id,
         )

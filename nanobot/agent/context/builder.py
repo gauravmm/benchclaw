@@ -3,14 +3,18 @@
 import base64
 import mimetypes
 import platform
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jinja2 import Environment, PackageLoader
 
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.tools.memory import MemoryStore
+
+if TYPE_CHECKING:
+    from nanobot.agent.tools.base import Tool
 
 BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
 
@@ -29,6 +33,7 @@ class ContextBuilder:
 
     def build_system_prompt(
         self,
+        tools: Iterable["Tool"] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> str:
@@ -38,13 +43,23 @@ class ContextBuilder:
             for f in BOOTSTRAP_FILES
             if (self.workspace / f).exists()
         ]
+        all_skills = self.skills.get_all_skills()
+        tool_data = [
+            {
+                "name": t.name,
+                "description": t.description,
+                "skill": all_skills[t.skill].body if t.skill and t.skill in all_skills else None,
+            }
+            for t in (tools or [])
+        ]
         return self._jinja.get_template("system_prompt.j2").render(
             now=datetime.now().strftime("%Y-%m-%d %H:%M (%A)"),
             runtime=f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}",
             workspace_path=str(self.workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,
             memory=self.memory.get_memory_context() or "",
-            skills=self.skills.get_all_skills(),
+            skills=all_skills,
+            tools=tool_data,
             channel=channel,
             chat_id=chat_id,
         )
@@ -53,13 +68,16 @@ class ContextBuilder:
         self,
         history: list[dict[str, Any]],
         current_message: str,
+        tools: Iterable["Tool"] | None = None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
         messages = []
 
-        messages.append({"role": "system", "content": self.build_system_prompt(channel, chat_id)})
+        messages.append(
+            {"role": "system", "content": self.build_system_prompt(tools, channel, chat_id)}
+        )
 
         # History
         messages.extend(history)
@@ -138,3 +156,10 @@ class ContextBuilder:
 
         messages.append(msg)
         return messages
+
+
+if __name__ == "__main__":
+    from nanobot.config import ConfigManager
+
+    with ConfigManager() as config:
+        print(ContextBuilder(config.workspace_path).build_system_prompt())
