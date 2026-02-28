@@ -53,14 +53,15 @@ class SessionManager:
     Sessions are stored as JSONL files in the sessions directory.
     """
 
-    def __init__(self, workspace: Path):
-        self.sessions_dir = workspace / "sessions"
+    def __init__(self, sessions_dir: Path):
+        self.sessions_dir = sessions_dir
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+
         self._cache: dict[str, Session] = {}
 
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
-        safe_key = sanitize_filename(key.replace(":", "_"))
-        return self.sessions_dir / f"{safe_key}.jsonl"
+        return self.sessions_dir / f"{sanitize_filename(key)}.jsonl"
 
     def get_or_create(self, key: str) -> Session:
         """

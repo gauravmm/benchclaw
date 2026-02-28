@@ -6,6 +6,7 @@ from typing import Any
 
 import litellm
 from litellm import acompletion
+from loguru import logger
 
 from nanobot.config import ProviderConfig
 
@@ -29,6 +30,11 @@ class LiteLLMProvider(LLMProvider):
         self.default_model = default_model
         self._config = p
         self._spec = provider_by_name(p.name)
+
+        if not p.api_key:
+            logger.error("No API key configured.")
+            logger.error("Set one in config/config.yaml under provider section.")
+            raise RuntimeError("No API key configured")
 
         # Compute the effective base, use it to update the environment:
         effective_base = self._config.api_base or self._spec.default_api_base
@@ -71,9 +77,9 @@ class LiteLLMProvider(LLMProvider):
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "api_key": self.api_key,
-            "api_base": self.api_base,
-            "extra_headers": self.extra_headers,
+            "api_key": self._config.api_key,
+            "api_base": self._config.api_base,
+            "extra_headers": self._config.extra_headers,
             "tools": tools,
             "tool_choice": "auto",
         }

@@ -14,7 +14,7 @@ from nanobot.agent.tools.base import _TOOL_CONFIG_REGISTRY
 from nanobot.channels.base import _CONFIG_REGISTRY, ChannelConfig
 
 
-class AgentDefaults(BaseModel):
+class AgentConfig(BaseModel):
     """Default agent configuration."""
 
     workspace: str = "./workspace"
@@ -28,7 +28,7 @@ class AgentDefaults(BaseModel):
 class AgentsConfig(BaseModel):
     """Agent configuration."""
 
-    defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    master: AgentConfig = Field(default_factory=AgentConfig)
 
 
 class ProviderConfig(BaseModel):
@@ -85,7 +85,7 @@ class Config(BaseSettings):
     @property
     def workspace_path(self) -> Path:
         """Get expanded workspace path."""
-        return Path(self.agents.defaults.workspace).expanduser()
+        return Path(self.agents.master.workspace).expanduser()
 
     model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")  # type: ignore
 

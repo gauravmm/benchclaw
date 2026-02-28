@@ -72,9 +72,7 @@ class ContextBuilder:
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
             parts.append(
-                self._jinja.get_template("skills_section.j2").render(
-                    skills_summary=skills_summary
-                )
+                self._jinja.get_template("skills_section.j2").render(skills_summary=skills_summary)
             )
 
         return "\n\n---\n\n".join(parts)

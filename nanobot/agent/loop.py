@@ -40,24 +40,25 @@ class AgentLoop:
         provider: LLMProvider,
         session_manager: SessionManager | None = None,
     ):
+        self.config = config.agents.master
         self.bus = bus
         self.provider = provider
-        self.workspace = config.workspace_path
-        self.model = config.agents.defaults.model
-        self.max_iterations = config.agents.defaults.max_tool_iterations
-        self.temperature = config.agents.defaults.temperature
-        self.max_tokens = config.agents.defaults.max_tokens
-        self.memory_window = config.agents.defaults.memory_window
+        # self.workspace = config.workspace_path
+        # self.model = config.agents.defaults.model
+        # self.max_iterations = config.agents.defaults.max_tool_iterations
+        # self.temperature = config.agents.defaults.temperature
+        # self.max_tokens = config.agents.defaults.max_tokens
+        # self.memory_window = config.agents.defaults.memory_window
 
-        self.context = ContextBuilder(self.workspace)
-        self.sessions = session_manager or SessionManager(self.workspace)
-        self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
+        self.context = ContextBuilder(config.workspace_path)
+        self.sessions = session_manager or SessionManager(config.workspace_path / "sessions")
+        # self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
 
         ctx = ToolBuildContext(
-            workspace=self.workspace,
+            workspace=config.workspace_path,
             bus=bus,
             process_direct=self.process_direct,
-            subagent_manager=self.subagents,
+            # subagent_manager=self.subagents,
         )
         self.tools = ToolRegistry.build_all(config.tools, ctx)
         self._running = False
@@ -78,19 +79,16 @@ class AgentLoop:
             Tuple of (final_content, list_of_tools_used).
         """
         messages = initial_messages
-        iteration = 0
         final_content = None
         tools_used: list[str] = []
 
-        while iteration < self.max_iterations:
-            iteration += 1
-
+        for iteration in range(self.config.max_tool_iterations):
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
+                model=self.config.model,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
             )
 
             if response.has_tool_calls:
@@ -109,6 +107,7 @@ class AgentLoop:
                     reasoning_content=response.reasoning_content,
                 )
 
+                # TODO: Dispatch these and lazily wait for responses.
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
@@ -117,8 +116,12 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                # TODO: Break this off into its own file:
                 messages.append(
-                    {"role": "user", "content": "Reflect on the results and decide next steps."}
+                    {
+                        "role": "system",
+                        "content": "Process the results and continue computation. If no further processing is required, produce a concluding message for the user.",
+                    }
                 )
             else:
                 final_content = response.content
@@ -129,10 +132,9 @@ class AgentLoop:
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         async with self.tools:  # starts all tool background() tasks (cron, heartbeat, etc.)
-            self._running = True
             logger.info("Agent loop started")
 
-            while self._running:
+            while True:
                 try:
                     msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
                     try:
@@ -150,11 +152,6 @@ class AgentLoop:
                         )
                 except asyncio.TimeoutError:
                     continue
-
-    def stop(self) -> None:
-        """Stop the agent loop."""
-        self._running = False
-        logger.info("Agent loop stopping")
 
     async def _process_message(
         self, msg: InboundMessage, session_key: str | None = None
@@ -180,38 +177,39 @@ class AgentLoop:
         session = self.sessions.get_or_create(key)
 
         # Handle slash commands
-        cmd = msg.content.strip().lower()
-        if cmd == "/new":
-            # Capture messages before clearing (avoid race condition with background task)
-            messages_to_archive = session.messages.copy()
-            session.clear()
-            self.sessions.save(session)
-            self.sessions.invalidate(session.key)
+        # cmd = msg.content.strip().lower()
+        # if cmd == "/new":
+        #     # Capture messages before clearing (avoid race condition with background task)
+        #     messages_to_archive = session.messages.copy()
+        #     session.clear()
+        #     self.sessions.save(session)
+        #     self.sessions.invalidate(session.key)
+        #
+        #     async def _consolidate_and_cleanup():
+        #         temp_session = Session(key=session.key)
+        #         temp_session.messages = messages_to_archive
+        #         await self._consolidate_memory(temp_session, archive_all=True)
+        #
+        #     asyncio.create_task(_consolidate_and_cleanup())
+        #     return OutboundMessage(
+        #         channel=msg.channel,
+        #         chat_id=msg.chat_id,
+        #         content="New session started. Memory consolidation in progress.",
+        #     )
+        # if cmd == "/help":
+        #     return OutboundMessage(
+        #         channel=msg.channel,
+        #         chat_id=msg.chat_id,
+        #         content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands",
+        #     )
 
-            async def _consolidate_and_cleanup():
-                temp_session = Session(key=session.key)
-                temp_session.messages = messages_to_archive
-                await self._consolidate_memory(temp_session, archive_all=True)
-
-            asyncio.create_task(_consolidate_and_cleanup())
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content="New session started. Memory consolidation in progress.",
-            )
-        if cmd == "/help":
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands",
-            )
-
-        if len(session.messages) > self.memory_window:
-            asyncio.create_task(self._consolidate_memory(session))
+        # TODO: Reenable
+        # if len(session.messages) > self.memory_window:
+        #     asyncio.create_task(self._consolidate_memory(session))
 
         self._set_tool_context(msg.channel, msg.chat_id)
         initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.memory_window),
+            history=session.get_history(max_messages=self.config.memory_window),
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,

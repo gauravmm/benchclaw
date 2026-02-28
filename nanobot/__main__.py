@@ -11,25 +11,9 @@ from nanobot import __logo__
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus import MessageBus
 from nanobot.channels.manager import ChannelManager
-from nanobot.config import Config, ConfigManager
+from nanobot.config import ConfigManager
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.session.manager import SessionManager
-
-
-def _make_provider(config: Config):
-    p = config.provider
-    if not p.api_key:
-        logger.error("No API key configured.")
-        logger.error("Set one in config/config.yaml under provider section.")
-        raise RuntimeError("No API key configured")
-
-    return LiteLLMProvider(
-        provider_name=p.name,
-        api_key=p.api_key,
-        api_base=p.api_base,
-        default_model=config.agents.defaults.model,
-        extra_headers=p.extra_headers,
-    )
 
 
 def gateway(args) -> None:
@@ -38,7 +22,7 @@ def gateway(args) -> None:
 
     with ConfigManager(args.config) as config:
         bus = MessageBus()
-        provider = _make_provider(config)
+        provider = LiteLLMProvider(config.provider)
         session_manager = SessionManager(config.workspace_path)
 
         agent = AgentLoop(
@@ -62,7 +46,8 @@ def gateway(args) -> None:
                     await agent.run()
             except KeyboardInterrupt:
                 print("\nShutting down...")
-                agent.stop()
+            except asyncio.CancelledError:
+                return
 
         asyncio.run(run())
 

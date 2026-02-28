@@ -37,9 +37,9 @@ class SubagentManager:
         self.provider = provider
         self.bus = bus
         self.workspace = config.workspace_path
-        self.model = config.agents.defaults.model
-        self.temperature = config.agents.defaults.temperature
-        self.max_tokens = config.agents.defaults.max_tokens
+        self.model = config.agents.master.model
+        self.temperature = config.agents.master.temperature
+        self.max_tokens = config.agents.master.max_tokens
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def spawn(
