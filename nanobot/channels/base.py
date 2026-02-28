@@ -3,7 +3,6 @@
 import asyncio
 from abc import abstractmethod
 from asyncio import Task
-from contextlib import AbstractAsyncContextManager
 from typing import Any, Self
 
 from anyio import AsyncContextManagerMixin

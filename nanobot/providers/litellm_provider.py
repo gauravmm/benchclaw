@@ -7,6 +7,8 @@ from typing import Any
 import litellm
 from litellm import acompletion
 
+from nanobot.config import ProviderConfig
+
 from .base import LLMProvider, LLMResponse, ToolCallRequest
 from .registry import provider_by_name
 
@@ -20,42 +22,28 @@ class LiteLLMProvider(LLMProvider):
 
     def __init__(
         self,
-        provider_name: str,
-        api_key: str,
-        api_base: str | None = None,
+        p: ProviderConfig,
         default_model: str = "anthropic/claude-opus-4-5",
-        extra_headers: dict[str, str] | None = None,
     ):
-        super().__init__(api_key, api_base)
+        super().__init__()
         self.default_model = default_model
-        self.extra_headers = extra_headers or {}
-        self._spec = provider_by_name(provider_name)
+        self._config = p
+        self._spec = provider_by_name(p.name)
 
-        if api_key:
-            self._setup_env(api_key, api_base)
+        # Compute the effective base, use it to update the environment:
+        effective_base = self._config.api_base or self._spec.default_api_base
+        if self._spec.env_key:
+            os.environ[self._spec.env_key] = self._config.api_key
+        for env_name, env_val in self._spec.env_extras:
+            resolved = env_val.replace("{api_key}", self._config.api_key).replace(
+                "{api_base}", effective_base
+            )
+            os.environ.setdefault(env_name, resolved)
 
-        # For gateways/local, set api_base from config or spec default.
-        # Standard providers set their base via env vars in _setup_env instead,
-        # to avoid polluting the global litellm.api_base.
-        effective_base = api_base
-        if not effective_base and self._spec and (self._spec.is_gateway or self._spec.is_local):
-            effective_base = self._spec.default_api_base or None
-        if effective_base:
-            litellm.api_base = effective_base
-
+        # Set up litellm options.clear
+        litellm.api_base = effective_base
         litellm.suppress_debug_info = True
         litellm.drop_params = True
-
-    def _setup_env(self, api_key: str, api_base: str | None) -> None:
-        """Set environment variables for the configured provider."""
-        if not self._spec:
-            return
-        os.environ[self._spec.env_key] = api_key
-
-        effective_base = api_base or self._spec.default_api_base
-        for env_name, env_val in self._spec.env_extras:
-            resolved = env_val.replace("{api_key}", api_key).replace("{api_base}", effective_base)
-            os.environ.setdefault(env_name, resolved)
 
     def _apply_model_overrides(self, model: str, kwargs: dict[str, Any]) -> None:
         """Apply model-specific parameter overrides from the registry."""

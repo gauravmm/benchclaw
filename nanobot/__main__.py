@@ -11,12 +11,12 @@ from nanobot import __logo__
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus import MessageBus
 from nanobot.channels.manager import ChannelManager
-from nanobot.config import ConfigManager
+from nanobot.config import Config, ConfigManager
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.session.manager import SessionManager
 
 
-def _make_provider(config):
+def _make_provider(config: Config):
     p = config.provider
     if not p.api_key:
         logger.error("No API key configured.")

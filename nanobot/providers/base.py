@@ -38,10 +38,6 @@ class LLMProvider(ABC):
     while maintaining a consistent interface.
     """
 
-    def __init__(self, api_key: str | None = None, api_base: str | None = None):
-        self.api_key = api_key
-        self.api_base = api_base
-
     @abstractmethod
     async def chat(
         self,

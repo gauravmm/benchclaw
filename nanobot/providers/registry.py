@@ -24,8 +24,8 @@ class ProviderSpec:
     """
 
     name: str  # config field name, e.g. "dashscope"
-    env_key: str  # LiteLLM env var, e.g. "DASHSCOPE_API_KEY"
-    display_name: str = ""
+    env_key: str | None  # LiteLLM env var, e.g. "DASHSCOPE_API_KEY"
+    display_name: str | None = None
 
     # extra env vars, e.g. (("ZHIPUAI_API_KEY", "{api_key}"),)
     env_extras: tuple[tuple[str, str], ...] = ()
@@ -143,5 +143,5 @@ def provider_by_name(name: str) -> ProviderSpec:
             return spec
 
     raise RuntimeError(
-        f"LLM Provider {name} not found. Valid names are: {', '.join(p.name for p in PROVIDERS)}"
+        f"LLM Provider Spec {name} not found. Valid names are: {', '.join(p.name for p in PROVIDERS)}"
     )
