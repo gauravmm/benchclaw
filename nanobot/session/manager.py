@@ -31,7 +31,12 @@ class Session:
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
-        msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **kwargs}
+        msg = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            **kwargs,
+        }
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
@@ -133,8 +138,8 @@ class SessionManager:
         with open(path, "w") as f:
             metadata_line = {
                 "_type": "metadata",
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
+                "created_at": session.created_at.isoformat(timespec="seconds"),
+                "updated_at": session.updated_at.isoformat(timespec="seconds"),
                 "metadata": session.metadata,
                 "last_consolidated": session.last_consolidated,
             }

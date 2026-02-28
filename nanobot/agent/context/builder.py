@@ -12,18 +12,11 @@ from jinja2 import Environment, PackageLoader
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.tools.memory import MemoryStore
 
-# TODO Use hooks for generate_system_prompt
+BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
 
 
 class ContextBuilder:
-    """
-    Builds the context (system prompt + messages) for the agent.
-
-    Assembles bootstrap files, memory, skills, and conversation history
-    into a coherent prompt for the LLM.
-    """
-
-    BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    """Builds the context (system prompt + messages) for the agent."""
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
@@ -34,92 +27,39 @@ class ContextBuilder:
             keep_trailing_newline=True,
         )
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        """
-        Build the system prompt from bootstrap files, memory, and skills.
-
-        Args:
-            skill_names: Optional list of skills to include.
-
-        Returns:
-            Complete system prompt.
-        """
-        prompt = self._jinja.get_template("system_prompt.j2").render()
-
-        parts = []
-
-        # Core identity
-        parts.append(self._get_identity())
-
-        # Bootstrap files
-        bootstrap = self._load_bootstrap_files()
-        if bootstrap:
-            parts.append(bootstrap)
-
-        # Memory context
-        memory = self.memory.get_memory_context()
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
-
-        return "\n\n---\n\n".join(parts)
-
-    def _get_identity(self) -> str:
-        """Get the core identity section."""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        workspace_path = str(self.workspace.expanduser().resolve())
+    def build_system_prompt(
+        self,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ) -> str:
         system = platform.system()
-        runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
-
-        return self._jinja.get_template("identity.j2").render(
-            now=now,
-            runtime=runtime,
-            workspace_path=workspace_path,
+        bootstrap_files = [
+            {"name": f, "content": (self.workspace / f).read_text(encoding="utf-8")}
+            for f in BOOTSTRAP_FILES
+            if (self.workspace / f).exists()
+        ]
+        return self._jinja.get_template("system_prompt.j2").render(
+            now=datetime.now().strftime("%Y-%m-%d %H:%M (%A)"),
+            runtime=f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}",
+            workspace_path=str(self.workspace.expanduser().resolve()),
+            bootstrap_files=bootstrap_files,
+            memory=self.memory.get_memory_context() or "",
+            skills=self.skills.get_all_skills(),
+            channel=channel,
+            chat_id=chat_id,
         )
-
-    def _load_bootstrap_files(self) -> str:
-        """Load all bootstrap files from workspace."""
-        parts = []
-
-        for filename in self.BOOTSTRAP_FILES:
-            file_path = self.workspace / filename
-            if file_path.exists():
-                content = file_path.read_text(encoding="utf-8")
-                parts.append(f"## {filename}\n\n{content}")
-
-        return "\n\n".join(parts) if parts else ""
 
     def build_messages(
         self,
         history: list[dict[str, Any]],
         current_message: str,
-        skill_names: list[str] | None = None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """
-        Build the complete message list for an LLM call.
-
-        Args:
-            history: Previous conversation messages.
-            current_message: The new user message.
-            skill_names: Optional skills to include.
-            media: Optional list of local file paths for images/media.
-            channel: Current channel (telegram, feishu, etc.).
-            chat_id: Current chat/user ID.
-
-        Returns:
-            List of messages including system prompt.
-        """
         messages = []
 
-        # System prompt
-        system_prompt = self.build_system_prompt(skill_names)
-        if channel and chat_id:
-            system_prompt += self._jinja.get_template("current_session.j2").render(
-                channel=channel, chat_id=chat_id
-            )
-        messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "system", "content": self.build_system_prompt(channel, chat_id)})
 
         # History
         messages.extend(history)
