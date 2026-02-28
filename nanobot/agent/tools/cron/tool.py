@@ -177,15 +177,12 @@ class CronTool(Tool):
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 
-        now = datetime.now().astimezone()
         job = CronJob(
             id=str(uuid.uuid4())[:8],
             name=message[:30],
             schedule=schedule,
             payload=CronPayload(message=message, deliver_to=address),
-            state=CronJobState(next_run_at=schedule.next_run(now)),
-            created_at=now,
-            updated_at=now,
+            state=CronJobState(),
         )
         self._store.add(job)
         assert self._wakeup is not None
@@ -195,13 +192,10 @@ class CronTool(Tool):
     def _list_jobs(self) -> str:
         if self._store is None:
             return "Error: cron service not running"
-        jobs = sorted(
-            [j for j in self._store.jobs() if j.enabled],
-            key=lambda j: j.state.next_run_at or _MAX_DT,
-        )
+        jobs = self._store.jobs()
         if not jobs:
             return "No scheduled jobs."
-        lines = [f"- {j.name} (id: {j.id}, {j.schedule.kind})" for j in jobs]
+        lines = [f"- {j.name} (id: {j.id}, {j.schedule})" for j in jobs]
         return "Scheduled jobs:\n" + "\n".join(lines)
 
     def _remove_job(self, job_id: str | None) -> str:

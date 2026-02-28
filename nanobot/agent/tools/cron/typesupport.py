@@ -50,6 +50,9 @@ class CronScheduleAt(DataClassJsonMixin):
     def next_run(self, dt: datetime) -> datetime | None:
         return self.at if self.at and self.at > dt else None
 
+    def __str__(self):
+        return f"at {self.at.isoformat(timespec='seconds') if self.at else 'never'}"
+
 
 @dataclass
 class CronScheduleEvery(DataClassJsonMixin):
@@ -66,6 +69,14 @@ class CronScheduleEvery(DataClassJsonMixin):
         elapsed_s = (dt - self.anchor).total_seconds()
         n = math.floor(elapsed_s / self.every.total_seconds()) + 1
         return self.anchor + n * self.every
+
+    def __str__(self) -> str:
+        s = int(self.every.total_seconds())
+        if s % 3600 == 0:
+            return f"every {s // 3600}h"
+        if s % 60 == 0:
+            return f"every {s // 60}m"
+        return f"every {s}s"
 
 
 @dataclass
@@ -88,6 +99,9 @@ class CronScheduleCron(DataClassJsonMixin):
             return cron.get_next(datetime).astimezone()
         except Exception:
             return None
+
+    def __str__(self) -> str:
+        return f"cron '{self.expr}'" + (f" ({self.tz})" if self.tz else "")
 
 
 CronSchedule = CronScheduleAt | CronScheduleEvery | CronScheduleCron
@@ -132,8 +146,7 @@ class CronPayload(DataClassJsonMixin):
 class CronJobState(DataClassJsonMixin):
     """Runtime state of a job."""
 
-    next_run_at: datetime | None = _ts()
-    last_run_at: datetime | None = _ts()
+    last_run_at: datetime | None = None
     last_status: Literal["ok", "error", "skipped"] | None = None
     last_error: str | None = None
 
@@ -144,13 +157,13 @@ class CronJob(DataClassJsonMixin):
 
     id: str
     name: str
+    payload: CronPayload
+    state: CronJobState
     enabled: bool = True
     schedule: CronScheduleAt | CronScheduleEvery | CronScheduleCron = field(
         default_factory=CronScheduleEvery,
         metadata=config(encoder=_encode_schedule, decoder=_decode_schedule),
     )
-    payload: CronPayload = field(default_factory=CronPayload)
-    state: CronJobState = field(default_factory=CronJobState)
     created_at: datetime = _ts_now()
     updated_at: datetime = _ts_now()
 
@@ -179,7 +192,6 @@ class CronStore:
                 self._store[j.id] = j
                 if j.enabled and (next_run := j.schedule.next_run(now)) is not None:
                     self._queue[j.id] = next_run
-                    j.state.next_run_at = next_run
         except IOError as e:
             logger.warning(f"No cron store at {e}. Creating one from scratch.")
         return self
@@ -197,9 +209,12 @@ class CronStore:
     def add(self, j: CronJob) -> None:
         """Add or replace a job and update the queue."""
         self._store[j.id] = j
-        if j.enabled and j.state.next_run_at is not None:
-            self._queue[j.id] = j.state.next_run_at
-        elif j.id in self._queue:
+        if j.enabled:
+            next_run = j.schedule.next_run(datetime.now().astimezone())
+            if next_run is not None:
+                self._queue[j.id] = next_run
+                return
+        if j.id in self._queue:
             del self._queue[j.id]
 
     def remove(self, jid: str) -> bool:
@@ -220,13 +235,11 @@ class CronStore:
         job.updated_at = now
         if enabled:
             next_run = job.schedule.next_run(now)
-            job.state.next_run_at = next_run
             if next_run is not None:
                 self._queue[jid] = next_run
             elif jid in self._queue:
                 del self._queue[jid]
         else:
-            job.state.next_run_at = None
             if jid in self._queue:
                 del self._queue[jid]
 
@@ -240,11 +253,14 @@ class CronStore:
             self.remove(jid)
         else:
             next_run = job.schedule.next_run(now)
-            job.state.next_run_at = next_run
             if next_run is not None:
                 self._queue[jid] = next_run
             elif jid in self._queue:
                 del self._queue[jid]
+
+    def next_run_for(self, jid: str) -> datetime | None:
+        """Return the queued next run time for a specific job, or None."""
+        return self._queue.get(jid)
 
     def next_wake(self) -> datetime | None:
         """Return the earliest scheduled next_run_at, or None."""
