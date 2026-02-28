@@ -3,7 +3,7 @@
 from contextlib import AsyncExitStack
 from typing import Any, Iterable
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext, _TOOL_REGISTRY
+from nanobot.agent.tools.base import _TOOL_REGISTRY, Tool, ToolBuildContext
 
 
 class ToolRegistry:
@@ -25,7 +25,7 @@ class ToolRegistry:
             await self._stack.enter_async_context(tool)
         return self
 
-    async def __aexit__(self, *exc_info: object) -> None:
+    async def __aexit__(self, *exc_info) -> None:
         if self._stack:
             await self._stack.__aexit__(*exc_info)
             self._stack = None
