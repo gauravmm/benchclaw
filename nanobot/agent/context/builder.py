@@ -12,6 +12,7 @@ from jinja2 import Environment, PackageLoader
 
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.tools.memory import MemoryStore
+from nanobot.agent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from nanobot.agent.tools.base import Tool
@@ -60,7 +61,7 @@ class ContextBuilder:
         self,
         history: list[dict[str, Any]],
         current_message: str,
-        tools: Iterable["Tool"] | None = None,
+        tools: ToolRegistry | None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
@@ -68,7 +69,12 @@ class ContextBuilder:
         messages = []
 
         messages.append(
-            {"role": "system", "content": self.build_system_prompt(tools, channel, chat_id)}
+            {
+                "role": "system",
+                "content": self.build_system_prompt(
+                    tools.values() if tools else None, channel, chat_id
+                ),
+            }
         )
 
         # History

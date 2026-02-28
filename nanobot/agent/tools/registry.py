@@ -18,6 +18,9 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._stack: AsyncExitStack | None = None
 
+    # TODO: Figure out how to use a single ToolRegistry instance so it can be globally started.
+    # Only select subsets of the registry for running individual tools.
+
     async def __aenter__(self) -> Self:
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
@@ -44,8 +47,9 @@ class ToolRegistry:
         """Register a tool."""
         self._tools[tool.name] = tool
 
-    def values(self) -> Iterable[Tool]:
+    def values(self, master: bool = True) -> Iterable[Tool]:
         """Iterate over all registered tools."""
+        # TODO: If master is true, pass in all tools. Otherwise, pass in tools only subagents can use.
         return self._tools.values()
 
     def get_definitions(self) -> list[dict[str, Any]]:
