@@ -1,84 +1,85 @@
-"""Tool registry for dynamic tool management."""
+"""Tool registry: manages tool lifecycle and execution."""
 
-from contextlib import AsyncExitStack
-from typing import Any, Iterable, Self
+import asyncio
+import contextlib
+from collections.abc import Iterable
+from typing import Any
 
-from nanobot.agent.tools.base import _TOOL_REGISTRY, Tool, ToolBuildContext
+from nanobot.agent.tools.base import (
+    _TOOL_REGISTRY,
+    Tool,
+    ToolBuildContext,
+)
 
 
 class ToolRegistry:
     """
     Registry for agent tools.
 
-    Allows dynamic registration and execution of tools.
+    Manages tool construction, lifecycle (background tasks), and execution.
     Enter as an async context manager to start all tool background() tasks.
+    Raises RuntimeError if entered more than once on the same instance.
     """
 
-    def __init__(self):
+    def __init__(self, tools_config: Any, ctx: ToolBuildContext):
         self._tools: dict[str, Tool] = {}
-        self._stack: AsyncExitStack | None = None
+        self._master_ctx = ctx
+        self._running = False
 
-    # TODO: Figure out how to use a single ToolRegistry instance so it can be globally started.
-    # Only select subsets of the registry for running individual tools.
-
-    async def __aenter__(self) -> Self:
-        self._stack = AsyncExitStack()
-        await self._stack.__aenter__()
-        for tool in self._tools.values():
-            await self._stack.enter_async_context(tool)
-        return self
-
-    async def __aexit__(self, *exc_info) -> None:
-        if self._stack:
-            await self._stack.__aexit__(*exc_info)
-            self._stack = None
-
-    @classmethod
-    def build_all(cls, tools_config: Any, ctx: ToolBuildContext) -> Self:
-        """Build a ToolRegistry from all registered tools using the given config and context."""
-        registry = cls()
         for name, tool_cls in _TOOL_REGISTRY.items():
             if ctx.is_subagent and tool_cls.master_only:
-                continue  # skip agent-only tools in subagent context (no bus)
-            registry.register(tool_cls.build(getattr(tools_config, name, None), ctx))
-        return registry
+                continue  # skip master-only tools in subagent context
+            tool = tool_cls.build(getattr(tools_config, name, None), ctx)
+            self._tools[tool.name] = tool
+
+    async def __aenter__(self) -> "ToolRegistry":
+        if self._running:
+            raise RuntimeError(
+                "ToolRegistry is already running; cannot enter the same instance twice"
+            )
+        self._running = True
+        for tool in self._tools.values():
+            tool._task = asyncio.create_task(tool.background(self._master_ctx), name=tool.name)
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        for tool in self._tools.values():
+            if tool._task:
+                tool._task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(tool._task), timeout=5.0)
+                tool._task = None
+        self._running = False
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
         self._tools[tool.name] = tool
 
     def values(self, master: bool = True) -> Iterable[Tool]:
-        """Iterate over all registered tools."""
-        # TODO: If master is true, pass in all tools. Otherwise, pass in tools only subagents can use.
-        return self._tools.values()
-
-    def get_definitions(self) -> list[dict[str, Any]]:
-        """Get all tool definitions in OpenAI format."""
-        return [tool.to_schema() for tool in self._tools.values()]
-
-    async def execute(self, name: str, params: dict[str, Any]) -> str:
-        """
-        Execute a tool by name with given parameters.
+        """Iterate over registered tools.
 
         Args:
-            name: Tool name.
-            params: Tool parameters.
-
-        Returns:
-            Tool execution result as string.
-
-        Raises:
-            KeyError: If tool not found.
+            master: If True, return all tools. If False, exclude master_only tools.
         """
+        for tool in self._tools.values():
+            if not master and tool.master_only:
+                continue
+            yield tool
+
+    def get_definitions(self, master: bool = True) -> list[dict[str, Any]]:
+        """Get tool definitions in OpenAI format."""
+        return [tool.to_schema() for tool in self.values(master=master)]
+
+    async def execute(self, name: str, params: dict[str, Any], ctx: ToolBuildContext) -> str:
+        """Execute a tool by name with given parameters and call context."""
         tool = self._tools.get(name)
         if not tool:
             return f"Error: Tool '{name}' not found"
-
         try:
             errors = tool.validate_params(params)
             if errors:
                 return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors)
-            return await tool.execute(**params)
+            return await tool.execute(ctx, **params)
         except Exception as e:
             return f"Error executing {name}: {str(e)}"
 

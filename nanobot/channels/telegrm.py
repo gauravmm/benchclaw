@@ -10,7 +10,7 @@ from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from nanobot.bus import MessageBus, OutboundMessage
+from nanobot.bus import MessageAddress, MessageBus, OutboundMessage
 from nanobot.channels.base import BaseChannel, ChannelConfig, register_channel
 from nanobot.utils import get_workspace_path
 
@@ -399,7 +399,8 @@ if __name__ == "__main__":
                     msg = await bus.consume_inbound()
                     await channel.send(
                         OutboundMessage(
-                            channel="telegram", chat_id=msg.chat_id, content=msg.content
+                            address=MessageAddress(channel="telegram", chat_id=msg.chat_id),
+                            content=msg.content,
                         )
                     )
 

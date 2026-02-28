@@ -19,7 +19,7 @@ class ReadFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "ReadFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -40,7 +40,7 @@ class ReadFileTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolBuildContext, path: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
@@ -61,7 +61,7 @@ class WriteFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "WriteFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -85,7 +85,7 @@ class WriteFileTool(Tool):
             "required": ["path", "content"],
         }
 
-    async def execute(self, path: str, content: str, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolBuildContext, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +102,7 @@ class EditFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "EditFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -127,7 +127,7 @@ class EditFileTool(Tool):
             "required": ["path", "old_text", "new_text"],
         }
 
-    async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolBuildContext, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
@@ -158,7 +158,7 @@ class ListDirTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "ListDirTool":
-        return cls(allowed_dir=ctx.workspace if ctx.restrict_to_workspace else None)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -179,7 +179,7 @@ class ListDirTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolBuildContext, path: str, **kwargs: Any) -> str:
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():

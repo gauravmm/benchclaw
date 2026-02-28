@@ -3,14 +3,16 @@
 import asyncio
 from abc import abstractmethod
 from asyncio import Task
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Self
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
-from nanobot.bus import MessageBus
+from nanobot.bus import MessageAddress, MessageBus
+
+if TYPE_CHECKING:
+    pass
 
 _TOOL_REGISTRY: dict[str, type["Tool"]] = {}
 _TOOL_CONFIG_REGISTRY: dict[str, type[BaseModel]] = {}
@@ -28,16 +30,16 @@ def register_tool_config(name: str, cls: type[BaseModel]) -> None:
 
 @dataclass
 class ToolBuildContext:
-    """Runtime context passed to Tool.build() during agent initialisation."""
+    """Runtime context passed to Tool.build() and Tool.execute() during agent operation."""
 
     workspace: Path
     is_subagent: bool = False
-    restrict_to_workspace: bool = False  # TODO: Remove
     bus: MessageBus | None = None  # MessageBus; None for subagents
     subagent_manager: Any = None  # SubagentManager; None for subagents
+    address: MessageAddress | None = None  # Current session address; None for background/subagents
 
 
-class Tool(AbstractAsyncContextManager):
+class Tool:
     """
     Abstract base class for agent tools.
 
@@ -48,25 +50,8 @@ class Tool(AbstractAsyncContextManager):
     _task: Task | None = None
     master_only: ClassVar[bool] = False  # True → tool excluded from subagent registries
 
-    async def background(self) -> None:
-        """Optional long-running coroutine started on __aenter__. No-op by default."""
-        pass
-
-    async def __aenter__(self) -> Self:
-        self._task = asyncio.create_task(self.background(), name=self.name)
-        return self
-
-    async def __aexit__(self, *_) -> None:
-        if self._task:
-            try:
-                async with asyncio.timeout(5):
-                    self._task.cancel()
-            except TimeoutError:
-                pass
-            self._task = None
-
     @classmethod
-    def build(cls, config: Any, ctx: ToolBuildContext) -> "Self":
+    def build(cls, config: Any, ctx: "ToolBuildContext") -> "Tool":
         """Instantiate this tool from a config object and build context."""
         raise NotImplementedError(f"{cls.__name__}.build() is not implemented")
 
@@ -88,16 +73,21 @@ class Tool(AbstractAsyncContextManager):
         pass
 
     @abstractmethod
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, ctx: "ToolBuildContext", **kwargs: Any) -> str:
         """
         Execute the tool with given parameters.
 
         Args:
+            ctx: Runtime context including session address and bus.
             **kwargs: Tool-specific parameters.
 
         Returns:
             String result of the tool execution.
         """
+        pass
+
+    async def background(self, ctx: "ToolBuildContext") -> None:
+        """Optional long-running coroutine started by ToolRegistry.__aenter__. No-op by default."""
         pass
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:

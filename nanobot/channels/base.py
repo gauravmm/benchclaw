@@ -9,7 +9,7 @@ from anyio import AsyncContextManagerMixin
 from loguru import logger
 from pydantic import BaseModel
 
-from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
+from nanobot.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 
 _CONFIG_REGISTRY: dict[str, type["ChannelConfig"]] = {}
 
@@ -138,9 +138,8 @@ class BaseChannel(AsyncContextManagerMixin):
             return
 
         msg = InboundMessage(
-            channel=self.name,
+            address=MessageAddress(channel=self.name, chat_id=str(chat_id)),
             sender_id=str(sender_id),
-            chat_id=str(chat_id),
             content=content,
             media=media or [],
             metadata=metadata or {},

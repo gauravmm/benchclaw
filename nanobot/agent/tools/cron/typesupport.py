@@ -4,11 +4,14 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import TYPE_CHECKING, Iterable, Literal
 
 from dataclasses_json import DataClassJsonMixin, config
 from heapdict import heapdict
 from loguru import logger
+
+if TYPE_CHECKING:
+    from nanobot.bus import MessageAddress
 
 
 def _encode_ts(dt: datetime | None) -> str | None:
@@ -108,16 +111,29 @@ def _decode_schedule(d: dict) -> CronScheduleAt | CronScheduleEvery | CronSchedu
     raise ValueError(f"Unknown schedule kind: {kind!r}")
 
 
+def _encode_address(addr: "MessageAddress | None") -> dict | None:
+    return None if addr is None else {"channel": addr.channel, "chat_id": addr.chat_id}
+
+
+def _decode_address(d: dict | None) -> "MessageAddress | None":
+    if d is None:
+        return None
+    from nanobot.bus import MessageAddress
+
+    return MessageAddress(**d)
+
+
 @dataclass
 class CronPayload(DataClassJsonMixin):
     """What to do when the job runs."""
 
     kind: Literal["system_event", "agent_turn"] = "agent_turn"
     message: str = ""
-    # Deliver response to channel
-    deliver: bool = False
-    channel: str | None = None  # e.g. "whatsapp"
-    to: str | None = None  # e.g. phone number
+    # Deliver response back to address where job was created
+    deliver_to: "MessageAddress | None" = field(
+        default=None,
+        metadata=config(encoder=_encode_address, decoder=_decode_address),
+    )
 
 
 @dataclass

@@ -6,7 +6,7 @@ import json
 import websockets
 from loguru import logger
 
-from nanobot.bus import MessageBus, OutboundMessage
+from nanobot.bus import MessageAddress, MessageBus, OutboundMessage
 from nanobot.channels.base import BaseChannel, ChannelConfig, register_channel
 
 
@@ -151,8 +151,7 @@ if __name__ == "__main__":
                 if test_chat_id:
                     await channel.send(
                         OutboundMessage(
-                            channel="whatsapp",
-                            chat_id="120363405977110775@g.us",
+                            address=MessageAddress(channel="whatsapp", chat_id="120363405977110775@g.us"),
                             content="Connected!",
                         )
                     )
@@ -163,7 +162,7 @@ if __name__ == "__main__":
             msg = await bus.consume_inbound()
             print(f"[inbound] {msg}")
             await channel.send(
-                OutboundMessage(channel="whatsapp", chat_id=msg.chat_id, content=msg.content[::-1])
+                OutboundMessage(address=MessageAddress(channel="whatsapp", chat_id=msg.chat_id), content=msg.content[::-1])
             )
 
     async def main() -> None:

@@ -11,7 +11,7 @@ from loguru import logger
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.tools.base import ToolBuildContext
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
+from nanobot.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import SessionManager
 
@@ -46,20 +46,23 @@ class AgentLoop:
 
         # self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
 
-        ctx = ToolBuildContext(
+        master_ctx = ToolBuildContext(
             workspace=config.workspace_path,
             bus=bus,
             # subagent_manager=self.subagents,
         )
-        self.tools = ToolRegistry.build_all(config.tools, ctx)
+        self.tools = ToolRegistry(config.tools, master_ctx)
         self._running = False
 
-    async def _run_agent_loop(self, initial_messages: list[dict]) -> tuple[str | None, list[str]]:
+    async def _run_agent_loop(
+        self, initial_messages: list[dict], call_ctx: ToolBuildContext
+    ) -> tuple[str | None, list[str]]:
         """
         Run the agent iteration loop.
 
         Args:
             initial_messages: Starting messages for the LLM conversation.
+            call_ctx: Per-call context including session address.
 
         Returns:
             Tuple of (final_content, list_of_tools_used).
@@ -71,7 +74,7 @@ class AgentLoop:
         for _ in range(self.config.max_tool_iterations):
             response = await self.provider.chat(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=self.tools.get_definitions(master=True),
                 model=self.config.model,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
@@ -98,7 +101,7 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    result = await self.tools.execute(tool_call.name, tool_call.arguments, call_ctx)
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -131,8 +134,7 @@ class AgentLoop:
                         logger.error(f"Error processing message: {e}")
                         await self.bus.publish_outbound(
                             OutboundMessage(
-                                channel=msg.channel,
-                                chat_id=msg.chat_id,
+                                address=msg.address,
                                 content=f"Sorry, I encountered an error: {str(e)}",
                             )
                         )
@@ -159,39 +161,14 @@ class AgentLoop:
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
-        key = session_key or msg.session_key
+        key = session_key or msg.address.session_key
         session = self.sessions.get_or_create(key)
 
-        # Handle slash commands
-        # cmd = msg.content.strip().lower()
-        # if cmd == "/new":
-        #     # Capture messages before clearing (avoid race condition with background task)
-        #     messages_to_archive = session.messages.copy()
-        #     session.clear()
-        #     self.sessions.save(session)
-        #     self.sessions.invalidate(session.key)
-        #
-        #     async def _consolidate_and_cleanup():
-        #         temp_session = Session(key=session.key)
-        #         temp_session.messages = messages_to_archive
-        #         await self._consolidate_memory(temp_session, archive_all=True)
-        #
-        #     asyncio.create_task(_consolidate_and_cleanup())
-        #     return OutboundMessage(
-        #         channel=msg.channel,
-        #         chat_id=msg.chat_id,
-        #         content="New session started. Memory consolidation in progress.",
-        #     )
-        # if cmd == "/help":
-        #     return OutboundMessage(
-        #         channel=msg.channel,
-        #         chat_id=msg.chat_id,
-        #         content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands",
-        #     )
-
-        # TODO: Reenable
-        # if len(session.messages) > self.memory_window:
-        #     asyncio.create_task(self._consolidate_memory(session))
+        call_ctx = ToolBuildContext(
+            workspace=self.tools._master_ctx.workspace,
+            bus=self.bus,
+            address=msg.address,
+        )
 
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.config.memory_window),
@@ -201,7 +178,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
-        final_content, tools_used = await self._run_agent_loop(initial_messages)
+        final_content, tools_used = await self._run_agent_loop(initial_messages, call_ctx)
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
@@ -216,8 +193,7 @@ class AgentLoop:
         self.sessions.save(session)
 
         return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
+            address=msg.address,
             content=final_content,
             metadata=msg.metadata
             or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
@@ -238,7 +214,14 @@ class AgentLoop:
         else:
             origin_channel, origin_chat_id = "cli", msg.chat_id
 
-        session_key = f"{origin_channel}:{origin_chat_id}"
+        origin_address = MessageAddress(channel=origin_channel, chat_id=origin_chat_id)
+        call_ctx = ToolBuildContext(
+            workspace=self.tools._master_ctx.workspace,
+            bus=self.bus,
+            address=origin_address,
+        )
+
+        session_key = origin_address.session_key
         session = self.sessions.get_or_create(session_key)
         initial_messages = self.context.build_messages(
             history=session.get_history(max_messages=self.config.memory_window),
@@ -247,7 +230,7 @@ class AgentLoop:
             channel=origin_channel,
             chat_id=origin_chat_id,
         )
-        final_content, _ = await self._run_agent_loop(initial_messages)
+        final_content, _ = await self._run_agent_loop(initial_messages, call_ctx)
 
         if final_content is None:
             final_content = "Background task completed."
@@ -256,6 +239,4 @@ class AgentLoop:
         session.add_message("assistant", final_content)
         self.sessions.save(session)
 
-        return OutboundMessage(
-            channel=origin_channel, chat_id=origin_chat_id, content=final_content
-        )
+        return OutboundMessage(address=origin_address, content=final_content)

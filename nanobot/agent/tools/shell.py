@@ -28,7 +28,7 @@ class ExecTool(Tool):
         return cls(
             config=config or ExecToolConfig(),
             working_dir=str(ctx.workspace),
-            restrict_to_workspace=ctx.restrict_to_workspace,
+            restrict_to_workspace=ctx.is_subagent,
         )
 
     def __init__(
@@ -76,7 +76,7 @@ class ExecTool(Tool):
             "required": ["command"],
         }
 
-    async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolBuildContext, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:

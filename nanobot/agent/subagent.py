@@ -11,7 +11,7 @@ from loguru import logger
 
 from nanobot.agent.tools.base import ToolBuildContext
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.bus import InboundMessage, MessageBus
+from nanobot.bus import InboundMessage, MessageAddress, MessageBus
 from nanobot.providers.base import LLMProvider
 
 if TYPE_CHECKING:
@@ -46,8 +46,7 @@ class SubagentManager:
         self,
         task: str,
         label: str | None = None,
-        origin_channel: str = "cli",
-        origin_chat_id: str = "direct",
+        origin: MessageAddress | None = None,
     ) -> str:
         """
         Spawn a subagent to execute a task in the background.
@@ -55,19 +54,13 @@ class SubagentManager:
         Args:
             task: The task description for the subagent.
             label: Optional human-readable label for the task.
-            origin_channel: The channel to announce results to.
-            origin_chat_id: The chat ID to announce results to.
+            origin: The address to announce results to.
 
         Returns:
             Status message indicating the subagent was started.
         """
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
-
-        origin = {
-            "channel": origin_channel,
-            "chat_id": origin_chat_id,
-        }
 
         # Create background task
         bg_task = asyncio.create_task(self._run_subagent(task_id, task, display_label, origin))
@@ -84,18 +77,23 @@ class SubagentManager:
         task_id: str,
         task: str,
         label: str,
-        origin: dict[str, str],
+        origin: MessageAddress | None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info(f"Subagent [{task_id}] starting task: {label}")
 
         try:
-            ctx = ToolBuildContext(
+            build_ctx = ToolBuildContext(
                 workspace=self.workspace,
-                restrict_to_workspace=self._config.tools.restrict_to_workspace,
-                # No bus/process_direct/subagent_manager → agent_only tools are excluded
+                is_subagent=True,
+                # No bus/subagent_manager → master_only tools are excluded
             )
-            async with ToolRegistry.build_all(self._config.tools, ctx) as tools:
+            # Per-call context for subagent tool executions (no session address)
+            call_ctx = ToolBuildContext(
+                workspace=self.workspace,
+                is_subagent=True,
+            )
+            async with ToolRegistry(self._config.tools, build_ctx) as tools:
                 # Build messages with subagent-specific prompt
                 system_prompt = self._build_subagent_prompt(task)
                 messages: list[dict[str, Any]] = [
@@ -113,7 +111,7 @@ class SubagentManager:
 
                     response = await self.provider.chat(
                         messages=messages,
-                        tools=tools.get_definitions(),
+                        tools=tools.get_definitions(master=False),
                         model=self.model,
                         temperature=self.temperature,
                         max_tokens=self.max_tokens,
@@ -144,7 +142,7 @@ class SubagentManager:
                             logger.debug(
                                 f"Subagent [{task_id}] executing: {tool_call.name} with arguments: {args_str}"
                             )
-                            result = await tools.execute(tool_call.name, tool_call.arguments)
+                            result = await tools.execute(tool_call.name, tool_call.arguments, call_ctx)
                             messages.append(
                                 {
                                     "role": "tool",
@@ -174,7 +172,7 @@ class SubagentManager:
         label: str,
         task: str,
         result: str,
-        origin: dict[str, str],
+        origin: MessageAddress | None,
         status: str,
     ) -> None:
         """Announce the subagent result to the main agent via the message bus."""
@@ -190,16 +188,21 @@ Result:
 Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
 
         # Inject as system message to trigger main agent
+        # chat_id encodes the origin address for routing back
+        origin_chat_id = (
+            f"{origin.channel}:{origin.chat_id}"
+            if origin
+            else "cli:direct"
+        )
         msg = InboundMessage(
-            channel="system",
+            address=MessageAddress(channel="system", chat_id=origin_chat_id),
             sender_id="subagent",
-            chat_id=f"{origin['channel']}:{origin['chat_id']}",
             content=announce_content,
         )
 
         await self.bus.publish_inbound(msg)
         logger.debug(
-            f"Subagent [{task_id}] announced result to {origin['channel']}:{origin['chat_id']}"
+            f"Subagent [{task_id}] announced result to {origin_chat_id}"
         )
 
     def _build_subagent_prompt(self, task: str) -> str:

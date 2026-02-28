@@ -3,7 +3,7 @@
 from typing import Any, Awaitable, Callable
 
 from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
-from nanobot.bus import OutboundMessage
+from nanobot.bus import MessageAddress, OutboundMessage
 
 
 class MessageTool(Tool):
@@ -13,18 +13,13 @@ class MessageTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "MessageTool":
-        assert ctx.bus
-        return cls(send_callback=ctx.bus.publish_outbound)
+        return cls(send_callback=ctx.bus.publish_outbound if ctx.bus else None)
 
     def __init__(
         self,
         send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
-        default_channel: str = "",
-        default_chat_id: str = "",
     ):
         self._send_callback = send_callback
-        self._default_channel = default_channel
-        self._default_chat_id = default_chat_id
 
     @property
     def name(self) -> str:
@@ -50,22 +45,31 @@ class MessageTool(Tool):
         }
 
     async def execute(
-        self, content: str, channel: str | None = None, chat_id: str | None = None, **kwargs: Any
+        self,
+        ctx: ToolBuildContext,
+        content: str,
+        channel: str | None = None,
+        chat_id: str | None = None,
+        **kwargs: Any,
     ) -> str:
-        channel = channel or self._default_channel
-        chat_id = chat_id or self._default_chat_id
+        # Use explicit channel/chat_id if provided, otherwise fall back to session address
+        target_channel = channel or (ctx.address.channel if ctx.address else "")
+        target_chat_id = chat_id or (ctx.address.chat_id if ctx.address else "")
 
-        if not channel or not chat_id:
+        if not target_channel or not target_chat_id:
             return "Error: No target channel/chat specified"
 
         if not self._send_callback:
             return "Error: Message sending not configured"
 
-        msg = OutboundMessage(channel=channel, chat_id=chat_id, content=content)
+        msg = OutboundMessage(
+            address=MessageAddress(channel=target_channel, chat_id=target_chat_id),
+            content=content,
+        )
 
         try:
             await self._send_callback(msg)
-            return f"Message sent to {channel}:{chat_id}"
+            return f"Message sent to {target_channel}:{target_chat_id}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
 

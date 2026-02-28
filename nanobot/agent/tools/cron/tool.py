@@ -4,7 +4,7 @@ import contextlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from loguru import logger
 
@@ -17,9 +17,8 @@ from nanobot.agent.tools.cron.typesupport import (
     CronScheduleCron,
     CronScheduleEvery,
     CronStore,
-    _ts_now,
 )
-from nanobot.bus import InboundMessage, MessageBus
+from nanobot.bus import InboundMessage, MessageAddress, MessageBus
 
 _MAX_DT = datetime.max.replace(tzinfo=timezone.utc)
 
@@ -31,7 +30,6 @@ class CronTool(Tool):
 
     @classmethod
     def build(cls, config: None, ctx: ToolBuildContext) -> "CronTool":
-        assert ctx.bus is not None
         return cls(
             store_path=ctx.workspace / "cron" / "jobs.json",
             bus=ctx.bus,
@@ -40,12 +38,10 @@ class CronTool(Tool):
     def __init__(
         self,
         store_path: Path,
-        bus: MessageBus,
+        bus: MessageBus | None,
     ):
         self._store_path = store_path
         self._bus = bus
-        self._channel = ""
-        self._chat_id = ""
         self._store: CronStore | None = None
         self._wakeup: Any = None  # asyncio.Event, set after loop starts
 
@@ -86,16 +82,22 @@ class CronTool(Tool):
         }
 
     async def _execute_job(self, job: CronJob) -> None:
-        """Execute a job: run the agent turn and optionally deliver the response."""
+        """Execute a job: inject a synthetic inbound message to re-invoke the agent."""
         assert self._store is not None
-        start = _ts_now()
+        if self._bus is None:
+            logger.warning(f"Cron: no bus configured, skipping job '{job.name}' ({job.id})")
+            return
+        start = datetime.now().astimezone()
         logger.info(f"Cron: executing job '{job.name}' ({job.id})")
         try:
+            deliver_to = job.payload.deliver_to
             await self._bus.publish_inbound(
                 InboundMessage(
-                    channel=job.payload.channel or "cli",
+                    address=MessageAddress(
+                        channel=deliver_to.channel if deliver_to else "cli",
+                        chat_id=deliver_to.chat_id if deliver_to else "cron",
+                    ),
                     sender_id="cron",
-                    chat_id="cron",
                     content=job.payload.message,
                 )
             )
@@ -110,7 +112,7 @@ class CronTool(Tool):
         job.updated_at = start
         self._store.executed(job.id, start)
 
-    async def background(self) -> None:
+    async def background(self, ctx: ToolBuildContext) -> None:
         """Run the cron loop until cancelled."""
         import asyncio
 
@@ -119,7 +121,7 @@ class CronTool(Tool):
             async with CronStore(self._store_path) as store:
                 self._store = store
                 while True:
-                    now = _ts_now()
+                    now = datetime.now().astimezone()
                     for job in store.pop_due(now):
                         await self._execute_job(job)
 
@@ -134,6 +136,7 @@ class CronTool(Tool):
 
     async def execute(
         self,
+        ctx: ToolBuildContext,
         action: str,
         message: str = "",
         every_seconds: int | None = None,
@@ -143,7 +146,7 @@ class CronTool(Tool):
         **kwargs: Any,
     ) -> str:
         if action == "add":
-            return self._add_job(message, every_seconds, cron_expr, at)
+            return self._add_job(ctx.address, message, every_seconds, cron_expr, at)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -151,12 +154,17 @@ class CronTool(Tool):
         return f"Unknown action: {action}"
 
     def _add_job(
-        self, message: str, every_seconds: int | None, cron_expr: str | None, at: str | None
+        self,
+        address: MessageAddress | None,
+        message: str,
+        every_seconds: int | None,
+        cron_expr: str | None,
+        at: str | None,
     ) -> str:
         if not message:
             return "Error: message is required for add"
-        if not self._channel or not self._chat_id:
-            return "Error: no session context (channel/chat_id)"
+        if not address:
+            return "Error: no session context (address)"
         if self._store is None:
             return "Error: cron service not running"
 
@@ -169,7 +177,7 @@ class CronTool(Tool):
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 
-        now = _ts_now()
+        now = datetime.now().astimezone()
         job = CronJob(
             id=str(uuid.uuid4())[:8],
             name=message[:30],
@@ -177,9 +185,7 @@ class CronTool(Tool):
             payload=CronPayload(
                 kind="agent_turn",
                 message=message,
-                deliver=True,
-                channel=self._channel,
-                to=self._chat_id,
+                deliver_to=address,
             ),
             state=CronJobState(next_run_at=schedule.next_run(now)),
             created_at=now,
