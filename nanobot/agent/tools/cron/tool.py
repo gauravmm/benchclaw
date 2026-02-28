@@ -31,7 +31,7 @@ class CronTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "CronTool":
-        from nanobot.config.loader import get_data_path
+        from nanobot.config import get_data_path
 
         return cls(
             store_path=get_data_path() / "cron" / "jobs.json",

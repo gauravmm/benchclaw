@@ -18,7 +18,7 @@ from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import Config
+    from nanobot.config import Config
 
 
 class AgentLoop:

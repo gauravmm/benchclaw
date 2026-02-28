@@ -15,7 +15,7 @@ from nanobot.bus import InboundMessage, MessageBus
 from nanobot.providers.base import LLMProvider
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import Config
+    from nanobot.config import Config
 
 
 class SubagentManager:

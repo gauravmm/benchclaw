@@ -9,7 +9,7 @@ from loguru import logger
 
 from nanobot.bus import MessageBus
 from nanobot.channels.base import BaseChannel
-from nanobot.config.schema import Config
+from nanobot.config import Config
 
 
 class ChannelManager:
