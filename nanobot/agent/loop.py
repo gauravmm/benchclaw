@@ -9,13 +9,11 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
-from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.base import ToolBuildContext
-from nanobot.agent.tools.memory import MemoryStore
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 from nanobot.providers.base import LLMProvider
-from nanobot.session.manager import Session, SessionManager
+from nanobot.session.manager import SessionManager
 
 if TYPE_CHECKING:
     from nanobot.config import Config
@@ -38,20 +36,19 @@ class AgentLoop:
         config: Config,
         bus: MessageBus,
         provider: LLMProvider,
-        session_manager: SessionManager | None = None,
     ):
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
 
         self.context = ContextBuilder(config.workspace_path)
-        self.sessions = session_manager or SessionManager(config.workspace_path / "sessions")
+        self.sessions = SessionManager(config.workspace_path / "sessions")
+
         # self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
 
         ctx = ToolBuildContext(
             workspace=config.workspace_path,
             bus=bus,
-            process_direct=self.process_direct,
             # subagent_manager=self.subagents,
         )
         self.tools = ToolRegistry.build_all(config.tools, ctx)
@@ -262,27 +259,3 @@ class AgentLoop:
         return OutboundMessage(
             channel=origin_channel, chat_id=origin_chat_id, content=final_content
         )
-
-    async def process_direct(
-        self,
-        content: str,
-        session_key: str = "cli:direct",
-        channel: str = "cli",
-        chat_id: str = "direct",
-    ) -> str:
-        """
-        Process a message directly (for CLI or cron usage).
-
-        Args:
-            content: The message content.
-            session_key: Session identifier (overrides channel:chat_id for session lookup).
-            channel: Source channel (for tool context routing).
-            chat_id: Source chat ID (for tool context routing).
-
-        Returns:
-            The agent's response.
-        """
-        msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-
-        response = await self._process_message(msg, session_key=session_key)
-        return response.content if response else ""

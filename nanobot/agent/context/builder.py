@@ -16,7 +16,7 @@ from nanobot.agent.tools.memory import MemoryStore
 if TYPE_CHECKING:
     from nanobot.agent.tools.base import Tool
 
-BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"]
 
 
 class ContextBuilder:
@@ -43,21 +43,15 @@ class ContextBuilder:
             for f in BOOTSTRAP_FILES
             if (self.workspace / f).exists()
         ]
-        tool_data = [
-            {
-                "name": t.name,
-                "description": t.description,
-            }
-            for t in (tools or [])
-        ]
+        all_skills = self.skills.get_all_skills()
         return self._jinja.get_template("system_prompt.j2").render(
             now=datetime.now().strftime("%Y-%m-%d %H:%M (%A)"),
             runtime=f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}",
             workspace_path=str(self.workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,
             memory=self.memory.get_memory_context() or "",
-            skills=self.skills.get_all_skills(),
-            tools=tool_data,
+            skills=all_skills,
+            tools=[{"name": t.name, "description": t.description} for t in (tools or [])],
             channel=channel,
             chat_id=chat_id,
         )

@@ -34,7 +34,6 @@ class ToolBuildContext:
     is_subagent: bool = False
     restrict_to_workspace: bool = False  # TODO: Remove
     bus: MessageBus | None = None  # MessageBus; None for subagents
-    process_direct: Any = None  # AgentLoop.process_direct; None for subagents
     subagent_manager: Any = None  # SubagentManager; None for subagents
 
 

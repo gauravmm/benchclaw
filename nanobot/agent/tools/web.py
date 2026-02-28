@@ -64,7 +64,7 @@ class WebSearchTool(Tool):
 
     @property
     def description(self) -> str | None:
-        return "Search the web. Returns titles, URLs, and snippets."
+        return "Search the web using Brave Search API. Returns search results with titles, URLs, and snippets."
 
     # TODO: review — no dedicated skill; consider "weather" or "github" if context is known
     @property
@@ -129,7 +129,7 @@ class WebFetchTool(Tool):
 
     @property
     def description(self) -> str | None:
-        return "Fetch URL and extract readable content (HTML → markdown/text)."
+        return "Fetch and extract main content from a URL as markdown or plain text, truncated at 50,000 characters by default."
 
     @property
     def parameters(self) -> dict[str, Any]:

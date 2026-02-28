@@ -1,7 +1,6 @@
 """Memory tool: read/write long-term memory and search conversation history."""
 
 import asyncio
-import subprocess
 from pathlib import Path
 from typing import Any
 

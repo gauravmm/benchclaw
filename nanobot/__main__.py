@@ -23,13 +23,11 @@ def gateway(args) -> None:
     with ConfigManager(args.config) as config:
         bus = MessageBus()
         provider = LiteLLMProvider(config.provider)
-        session_manager = SessionManager(config.workspace_path)
 
         agent = AgentLoop(
             config=config,
             bus=bus,
             provider=provider,
-            session_manager=session_manager,
         )
 
         channels = ChannelManager(config, bus)

@@ -60,7 +60,7 @@ class ExecTool(Tool):
 
     @property
     def description(self) -> str | None:
-        return "Execute a shell command and return its output. Use with caution."
+        return "Execute a shell command and return output. Commands have a configurable timeout; dangerous commands are blocked; output is truncated at 10,000 characters."
 
     @property
     def parameters(self) -> dict[str, Any]:

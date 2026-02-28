@@ -39,7 +39,7 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
   </skill>
 {% endfor %}</skills>{% endif %}
 
-{% if tools %}
+{%- if tools %}
 ## Tools
 
 {% for tool in tools %}
@@ -55,6 +55,8 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 {% if bootstrap_files %}
 
 ---
+
+These files are located in the workspace directory and should be kept updated.
 
 {% for file in bootstrap_files %}
 ## {{ file.name }}
