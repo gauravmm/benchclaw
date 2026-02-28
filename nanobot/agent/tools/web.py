@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
+from readability import Document
 
 from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool, register_tool_config
 
@@ -57,23 +58,30 @@ def _validate_url(url: str) -> tuple[bool, str]:
 class WebSearchTool(Tool):
     """Search the web using Brave Search API."""
 
-    name = "web_search"
-    description = "Search the web. Returns titles, URLs, and snippets."
+    @property
+    def name(self) -> str:
+        return "web_search"
+
+    @property
+    def description(self) -> str | None:
+        return "Search the web. Returns titles, URLs, and snippets."
+
     # TODO: review — no dedicated skill; consider "weather" or "github" if context is known
-    skill = None
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "Search query"},
-            "count": {
-                "type": "integer",
-                "description": "Results (1-10)",
-                "minimum": 1,
-                "maximum": 10,
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "count": {
+                    "type": "integer",
+                    "description": "Results (1-10)",
+                    "minimum": 1,
+                    "maximum": 10,
+                },
             },
-        },
-        "required": ["query"],
-    }
+            "required": ["query"],
+        }
 
     @classmethod
     def build(cls, config: "WebSearchConfig | None", ctx: ToolBuildContext) -> "WebSearchTool":
@@ -115,19 +123,29 @@ class WebSearchTool(Tool):
 class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
 
-    name = "web_fetch"
-    description = "Fetch URL and extract readable content (HTML → markdown/text)."
-    # TODO: review — "summarize" skill is related but uses the summarize CLI rather than web_fetch
-    skill = None
-    parameters = {
-        "type": "object",
-        "properties": {
-            "url": {"type": "string", "description": "URL to fetch"},
-            "extractMode": {"type": "string", "enum": ["markdown", "text"], "default": "markdown"},
-            "maxChars": {"type": "integer", "minimum": 100},
-        },
-        "required": ["url"],
-    }
+    @property
+    def name(self) -> str:
+        return "web_fetch"
+
+    @property
+    def description(self) -> str | None:
+        return "Fetch URL and extract readable content (HTML → markdown/text)."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+                "extractMode": {
+                    "type": "string",
+                    "enum": ["markdown", "text"],
+                    "default": "markdown",
+                },
+                "maxChars": {"type": "integer", "minimum": 100},
+            },
+            "required": ["url"],
+        }
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolBuildContext) -> "WebFetchTool":
@@ -137,11 +155,9 @@ class WebFetchTool(Tool):
         self.max_chars = max_chars
 
     async def execute(
-        self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any
+        self, url: str, extract_mode: str = "markdown", max_chars: int | None = None, **kwargs: Any
     ) -> str:
-        from readability import Document
-
-        max_chars = maxChars or self.max_chars
+        max_chars = max_chars or self.max_chars
 
         # Validate URL before fetching
         is_valid, error_msg = _validate_url(url)
@@ -165,7 +181,7 @@ class WebFetchTool(Tool):
                 doc = Document(r.text)
                 content = (
                     self._to_markdown(doc.summary())
-                    if extractMode == "markdown"
+                    if extract_mode == "markdown"
                     else _strip_tags(doc.summary())
                 )
                 text = f"# {doc.title()}\n\n{content}" if doc.title() else content

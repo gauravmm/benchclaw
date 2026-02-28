@@ -55,10 +55,6 @@ class MemoryTool(Tool):
         return "memory"
 
     @property
-    def skill(self) -> str | None:
-        return "memory"
-
-    @property
     def description(self) -> str:
         return (
             "Manage persistent memory. Actions: read (load MEMORY.md), "

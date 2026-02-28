@@ -13,6 +13,7 @@ class MessageTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "MessageTool":
+        assert ctx.bus
         return cls(send_callback=ctx.bus.publish_outbound)
 
     def __init__(
@@ -37,11 +38,6 @@ class MessageTool(Tool):
     @property
     def name(self) -> str:
         return "message"
-
-    @property
-    def skill(self) -> str | None:
-        # TODO: review — no dedicated skill for message delivery
-        return None
 
     @property
     def description(self) -> str:

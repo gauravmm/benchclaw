@@ -29,10 +29,6 @@ class ReadFileTool(Tool):
         return "read_file"
 
     @property
-    def skill(self) -> str | None:
-        return "memory"
-
-    @property
     def description(self) -> str:
         return "Read the contents of a file at the given path."
 
@@ -75,11 +71,7 @@ class WriteFileTool(Tool):
         return "write_file"
 
     @property
-    def skill(self) -> str | None:
-        return "memory"
-
-    @property
-    def description(self) -> str:
+    def description(self) -> str | None:
         return "Write content to a file at the given path. Creates parent directories if needed."
 
     @property
@@ -118,10 +110,6 @@ class EditFileTool(Tool):
     @property
     def name(self) -> str:
         return "edit_file"
-
-    @property
-    def skill(self) -> str | None:
-        return "memory"
 
     @property
     def description(self) -> str:
@@ -178,11 +166,6 @@ class ListDirTool(Tool):
     @property
     def name(self) -> str:
         return "list_dir"
-
-    @property
-    def skill(self) -> str | None:
-        # TODO: review — no dedicated skill; possibly "memory" if used for workspace navigation
-        return None
 
     @property
     def description(self) -> str:

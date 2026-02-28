@@ -43,12 +43,10 @@ class ContextBuilder:
             for f in BOOTSTRAP_FILES
             if (self.workspace / f).exists()
         ]
-        all_skills = self.skills.get_all_skills()
         tool_data = [
             {
                 "name": t.name,
                 "description": t.description,
-                "skill": all_skills[t.skill].body if t.skill and t.skill in all_skills else None,
             }
             for t in (tools or [])
         ]
@@ -58,7 +56,7 @@ class ContextBuilder:
             workspace_path=str(self.workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,
             memory=self.memory.get_memory_context() or "",
-            skills=all_skills,
+            skills=self.skills.get_all_skills(),
             tools=tool_data,
             channel=channel,
             chat_id=chat_id,

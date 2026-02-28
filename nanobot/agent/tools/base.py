@@ -4,7 +4,7 @@ import asyncio
 from abc import abstractmethod
 from asyncio import Task
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
@@ -82,15 +82,9 @@ class Tool(AbstractAsyncContextManager):
         pass
 
     @property
-    def skill(self) -> str | None:
-        """Skill name to inject into agent context when this tool is selected. None if no skill applies."""
+    def description(self) -> str | None:
+        """Skill usage instruction to inject into agent context. Its always injected, so keep it short."""
         return None
-
-    @property
-    @abstractmethod
-    def description(self) -> str:
-        """Description of what the tool does."""
-        pass
 
     @property
     @abstractmethod
