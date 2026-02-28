@@ -45,7 +45,6 @@ def _ts_now():
 class CronScheduleAt(DataClassJsonMixin):
     """Run once at a specific datetime."""
 
-    kind: Literal["at"] = "at"
     at: datetime | None = _ts()
 
     def next_run(self, dt: datetime) -> datetime | None:
@@ -56,7 +55,6 @@ class CronScheduleAt(DataClassJsonMixin):
 class CronScheduleEvery(DataClassJsonMixin):
     """Run repeatedly with a fixed interval, anchored to a starting time."""
 
-    kind: Literal["every"] = "every"
     every: timedelta = field(
         default=timedelta(hours=1), metadata=config(encoder=_encode_td, decoder=_decode_td)
     )
@@ -74,7 +72,6 @@ class CronScheduleEvery(DataClassJsonMixin):
 class CronScheduleCron(DataClassJsonMixin):
     """Run on a cron expression schedule."""
 
-    kind: Literal["cron"] = "cron"
     expr: str = ""  # required; empty string is invalid
     tz: str = ""  # IANA timezone name; empty = local timezone
 
@@ -101,14 +98,13 @@ def _encode_schedule(s: CronScheduleAt | CronScheduleEvery | CronScheduleCron) -
 
 
 def _decode_schedule(d: dict) -> CronScheduleAt | CronScheduleEvery | CronScheduleCron:
-    kind = d.get("kind")
-    if kind == "at":
+    if "at" in d:
         return CronScheduleAt.from_dict(d)
-    if kind == "every":
+    if "every" in d:
         return CronScheduleEvery.from_dict(d)
-    if kind == "cron":
+    if "cron" in d:
         return CronScheduleCron.from_dict(d)
-    raise ValueError(f"Unknown schedule kind: {kind!r}")
+    raise ValueError(f"Unknown schedule kind: {', '.join(d.keys())}")
 
 
 def _encode_address(addr: "MessageAddress | None") -> dict | None:
@@ -127,13 +123,9 @@ def _decode_address(d: dict | None) -> "MessageAddress | None":
 class CronPayload(DataClassJsonMixin):
     """What to do when the job runs."""
 
-    kind: Literal["system_event", "agent_turn"] = "agent_turn"
-    message: str = ""
+    message: str
     # Deliver response back to address where job was created
-    deliver_to: "MessageAddress | None" = field(
-        default=None,
-        metadata=config(encoder=_encode_address, decoder=_decode_address),
-    )
+    deliver_to: MessageAddress
 
 
 @dataclass

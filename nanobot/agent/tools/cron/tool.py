@@ -182,11 +182,7 @@ class CronTool(Tool):
             id=str(uuid.uuid4())[:8],
             name=message[:30],
             schedule=schedule,
-            payload=CronPayload(
-                kind="agent_turn",
-                message=message,
-                deliver_to=address,
-            ),
+            payload=CronPayload(message=message, deliver_to=address),
             state=CronJobState(next_run_at=schedule.next_run(now)),
             created_at=now,
             updated_at=now,

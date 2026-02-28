@@ -7,6 +7,8 @@ from pathlib import Path
 
 from nanobot import __logo__
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.base import ToolContext
+from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus import MessageBus
 from nanobot.channels.manager import ChannelManager
 from nanobot.config import ConfigManager
@@ -21,13 +23,14 @@ def gateway(args) -> None:
 
     with ConfigManager(args.config) as config:
         provider = LiteLLMProvider(config.provider)
-        agent = AgentLoop(
-            config=config,
-            bus=bus,
-            provider=provider,
-        )
-
         channels = ChannelManager(config, bus)
+
+        master_ctx = ToolContext(
+            workspace=config.workspace_path,
+            bus=bus,
+            # subagent_manager=self.subagents,
+        )
+        tools = ToolRegistry(config.tools, master_ctx)
 
         print(f"{__logo__} nanobot gateway starting")
         if channels.channels:
@@ -36,8 +39,10 @@ def gateway(args) -> None:
             print("Warning: no channels enabled")
 
         async def run():
+            agent = AgentLoop(config=config, bus=bus, provider=provider, tools=tools)
+
             try:
-                async with channels:
+                async with channels, tools:
                     await agent.run()
             except KeyboardInterrupt:
                 print("\nShutting down...")

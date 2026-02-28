@@ -31,27 +31,17 @@ class AgentLoop:
     5. Sends responses back
     """
 
-    def __init__(
-        self,
-        config: Config,
-        bus: MessageBus,
-        provider: LLMProvider,
-    ):
+    def __init__(self, config: Config, bus: MessageBus, provider: LLMProvider, tools: ToolRegistry):
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
+        self.tools = tools
 
         self.context = ContextBuilder(config.workspace_path)
         self.sessions = SessionManager(config.workspace_path / "sessions")
 
         # self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
 
-        master_ctx = ToolContext(
-            workspace=config.workspace_path,
-            bus=bus,
-            # subagent_manager=self.subagents,
-        )
-        self.tools = ToolRegistry(config.tools, master_ctx)
         self._running = False
 
     async def _run_agent_loop(
