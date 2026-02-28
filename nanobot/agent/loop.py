@@ -241,7 +241,7 @@ class AgentLoop:
         session_key = f"{origin_channel}:{origin_chat_id}"
         session = self.sessions.get_or_create(session_key)
         initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.memory_window),
+            history=session.get_history(max_messages=self.config.memory_window),
             current_message=msg.content,
             tools=self.tools.values(),
             channel=origin_channel,

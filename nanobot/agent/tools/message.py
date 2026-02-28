@@ -26,15 +26,6 @@ class MessageTool(Tool):
         self._default_channel = default_channel
         self._default_chat_id = default_chat_id
 
-    def set_context(self, channel: str, chat_id: str) -> None:
-        """Set the current message context."""
-        self._default_channel = channel
-        self._default_chat_id = chat_id
-
-    def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
-        """Set the callback for sending messages."""
-        self._send_callback = callback
-
     @property
     def name(self) -> str:
         return "message"

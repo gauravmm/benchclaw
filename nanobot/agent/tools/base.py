@@ -70,10 +70,6 @@ class Tool(AbstractAsyncContextManager):
         """Instantiate this tool from a config object and build context."""
         raise NotImplementedError(f"{cls.__name__}.build() is not implemented")
 
-    def set_context(self, channel: str, chat_id: str) -> None:
-        """Update per-message routing context. Override in tools that need it."""
-        pass
-
     @property
     @abstractmethod
     def name(self) -> str:

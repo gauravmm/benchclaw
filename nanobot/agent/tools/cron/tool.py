@@ -19,7 +19,7 @@ from nanobot.agent.tools.cron.typesupport import (
     CronStore,
     _ts_now,
 )
-from nanobot.bus import MessageBus, OutboundMessage
+from nanobot.bus import InboundMessage, MessageBus
 
 _MAX_DT = datetime.max.replace(tzinfo=timezone.utc)
 
@@ -34,28 +34,20 @@ class CronTool(Tool):
         assert ctx.bus is not None
         return cls(
             store_path=ctx.workspace / "cron" / "jobs.json",
-            process_direct=ctx.process_direct,
             bus=ctx.bus,
         )
 
     def __init__(
         self,
         store_path: Path,
-        process_direct: Callable[..., Coroutine[Any, Any, str]],
         bus: MessageBus,
     ):
         self._store_path = store_path
-        self._process_direct = process_direct
         self._bus = bus
         self._channel = ""
         self._chat_id = ""
         self._store: CronStore | None = None
         self._wakeup: Any = None  # asyncio.Event, set after loop starts
-
-    def set_context(self, channel: str, chat_id: str) -> None:
-        """Set the current session context for delivery."""
-        self._channel = channel
-        self._chat_id = chat_id
 
     @property
     def name(self) -> str:
@@ -99,20 +91,14 @@ class CronTool(Tool):
         start = _ts_now()
         logger.info(f"Cron: executing job '{job.name}' ({job.id})")
         try:
-            response = await self._process_direct(
-                job.payload.message,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
-            )
-            if job.payload.deliver and job.payload.to:
-                await self._bus.publish_outbound(
-                    OutboundMessage(
-                        channel=job.payload.channel or "cli",
-                        chat_id=job.payload.to,
-                        content=response or "",
-                    )
+            await self._bus.publish_inbound(
+                InboundMessage(
+                    channel=job.payload.channel or "cli",
+                    sender_id="cron",
+                    chat_id="cron",
+                    content=job.payload.message,
                 )
+            )
             job.state.last_status = "ok"
             job.state.last_error = None
             logger.info(f"Cron: job '{job.name}' completed")
