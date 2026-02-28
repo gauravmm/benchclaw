@@ -10,6 +10,8 @@ from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel
 
+from nanobot.bus import MessageBus
+
 _TOOL_REGISTRY: dict[str, type["Tool"]] = {}
 _TOOL_CONFIG_REGISTRY: dict[str, type[BaseModel]] = {}
 
@@ -29,8 +31,9 @@ class ToolBuildContext:
     """Runtime context passed to Tool.build() during agent initialisation."""
 
     workspace: Path
-    restrict_to_workspace: bool = False
-    bus: Any = None             # MessageBus; None for subagents
+    is_subagent: bool = False
+    restrict_to_workspace: bool = False  # TODO: Remove
+    bus: MessageBus | None = None  # MessageBus; None for subagents
     process_direct: Any = None  # AgentLoop.process_direct; None for subagents
     subagent_manager: Any = None  # SubagentManager; None for subagents
 
@@ -44,7 +47,7 @@ class Tool(AbstractAsyncContextManager):
     """
 
     _task: Task | None = None
-    agent_only: ClassVar[bool] = False  # True → tool excluded from subagent registries
+    master_only: ClassVar[bool] = False  # True → tool excluded from subagent registries
 
     async def background(self) -> None:
         """Optional long-running coroutine started on __aenter__. No-op by default."""

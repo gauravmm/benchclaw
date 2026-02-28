@@ -27,14 +27,13 @@ _MAX_DT = datetime.max.replace(tzinfo=timezone.utc)
 class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
 
-    agent_only = True
+    master_only = True
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "CronTool":
-        from nanobot.config import get_data_path
-
+    def build(cls, config: None, ctx: ToolBuildContext) -> "CronTool":
+        assert ctx.bus is not None
         return cls(
-            store_path=get_data_path() / "cron" / "jobs.json",
+            store_path=ctx.workspace / "cron" / "jobs.json",
             process_direct=ctx.process_direct,
             bus=ctx.bus,
         )

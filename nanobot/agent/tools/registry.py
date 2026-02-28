@@ -1,9 +1,10 @@
 """Tool registry for dynamic tool management."""
 
 from contextlib import AsyncExitStack
-from typing import Any, Iterable
+from typing import Any, Iterable, Self
 
 from nanobot.agent.tools.base import _TOOL_REGISTRY, Tool, ToolBuildContext
+from nanobot.config import _ToolConfigsBase
 
 
 class ToolRegistry:
@@ -18,7 +19,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._stack: AsyncExitStack | None = None
 
-    async def __aenter__(self) -> "ToolRegistry":
+    async def __aenter__(self) -> Self:
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
         for tool in self._tools.values():
@@ -31,31 +32,18 @@ class ToolRegistry:
             self._stack = None
 
     @classmethod
-    def build_all(cls, tools_config: Any, ctx: ToolBuildContext) -> "ToolRegistry":
+    def build_all(cls, tools_config: _ToolConfigsBase, ctx: ToolBuildContext) -> Self:
         """Build a ToolRegistry from all registered tools using the given config and context."""
         registry = cls()
         for name, tool_cls in _TOOL_REGISTRY.items():
-            if ctx.bus is None and tool_cls.agent_only:
+            if ctx.is_subagent and tool_cls.master_only:
                 continue  # skip agent-only tools in subagent context (no bus)
-            tool_config = getattr(tools_config, name, None)
-            registry.register(tool_cls.build(tool_config, ctx))
+            registry.register(tool_cls.build(getattr(tools_config, name, None), ctx))
         return registry
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
         self._tools[tool.name] = tool
-
-    def unregister(self, name: str) -> None:
-        """Unregister a tool by name."""
-        self._tools.pop(name, None)
-
-    def get(self, name: str) -> Tool | None:
-        """Get a tool by name."""
-        return self._tools.get(name)
-
-    def has(self, name: str) -> bool:
-        """Check if a tool is registered."""
-        return name in self._tools
 
     def values(self) -> Iterable[Tool]:
         """Iterate over all registered tools."""
@@ -90,11 +78,6 @@ class ToolRegistry:
             return await tool.execute(**params)
         except Exception as e:
             return f"Error executing {name}: {str(e)}"
-
-    @property
-    def tool_names(self) -> list[str]:
-        """Get list of registered tool names."""
-        return list(self._tools.keys())
 
     def __len__(self) -> int:
         return len(self._tools)

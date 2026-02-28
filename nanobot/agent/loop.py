@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.base import ToolBuildContext
 from nanobot.agent.tools.memory import MemoryStore
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.subagent import SubagentManager
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
@@ -55,7 +55,6 @@ class AgentLoop:
 
         ctx = ToolBuildContext(
             workspace=self.workspace,
-            restrict_to_workspace=config.tools.restrict_to_workspace,
             bus=bus,
             process_direct=self.process_direct,
             subagent_manager=self.subagents,

@@ -8,7 +8,7 @@ import litellm
 from litellm import acompletion
 
 from .base import LLMProvider, LLMResponse, ToolCallRequest
-from .registry import find_by_name
+from .registry import provider_by_name
 
 
 class LiteLLMProvider(LLMProvider):
@@ -29,7 +29,7 @@ class LiteLLMProvider(LLMProvider):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
-        self._spec = find_by_name(provider_name)
+        self._spec = provider_by_name(provider_name)
 
         if api_key:
             self._setup_env(api_key, api_base)

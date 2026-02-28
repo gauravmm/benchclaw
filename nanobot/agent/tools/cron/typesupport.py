@@ -173,7 +173,7 @@ class CronStore:
                     self._queue[j.id] = next_run
                     j.state.next_run_at = next_run
         except IOError as e:
-            logger.warning(f"Failed to load cron store: {e}")
+            logger.warning(f"No cron store at {e}. Creating one from scratch.")
         return self
 
     async def __aexit__(self, *_) -> None:

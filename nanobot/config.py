@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import yaml
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_settings import BaseSettings
 
@@ -11,6 +12,8 @@ import nanobot.agent.tools  # noqa: F401  # triggers register_tool_config() call
 import nanobot.channels  # noqa: F401  # triggers register_channel() calls in all channel modules
 from nanobot.agent.tools.base import _TOOL_CONFIG_REGISTRY
 from nanobot.channels.base import _CONFIG_REGISTRY, ChannelConfig
+
+
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
 
@@ -47,13 +50,13 @@ class GatewayConfig(BaseModel):
 class _ToolConfigsBase(BaseModel):
     """Base class for dynamically-built ToolsConfig."""
 
-    restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
+    pass
 
 
 ToolsConfig: type[_ToolConfigsBase] = create_model(
     "ToolsConfig",
     __base__=_ToolConfigsBase,
-    **{name: (cls, Field(default_factory=cls)) for name, cls in _TOOL_CONFIG_REGISTRY.items()},
+    **{name: (cls, Field(default_factory=cls)) for name, cls in _TOOL_CONFIG_REGISTRY.items()},  # type: ignore[arg-type]
 )
 
 
@@ -77,7 +80,7 @@ class Config(BaseSettings):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     channels: _ChannelConfigsBase = Field(default_factory=ChannelConfigs)
-    tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    tools: _ToolConfigsBase = Field(default_factory=ToolsConfig)
 
     @property
     def workspace_path(self) -> Path:
@@ -103,8 +106,8 @@ class ConfigManager:
                 self.config = Config.model_validate(data)
                 return self.config
             except (yaml.YAMLError, ValueError) as e:
-                print(f"Warning: Failed to load config from {self._path}: {e}")
-                print("Using default configuration.")
+                logger.warning(f"Failed to load config from {self._path}: {e}")
+                logger.warning("Using default configuration.")
 
         self.config = Config()
         return self.config

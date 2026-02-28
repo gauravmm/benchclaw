@@ -9,7 +9,7 @@ from nanobot.bus import OutboundMessage
 class MessageTool(Tool):
     """Tool to send messages to users on chat channels."""
 
-    agent_only = True
+    master_only = True
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "MessageTool":

@@ -16,7 +16,7 @@ class SpawnTool(Tool):
     to the main agent when complete.
     """
 
-    agent_only = True
+    master_only = True
 
     @classmethod
     def build(cls, _config: None, ctx: ToolBuildContext) -> "SpawnTool":

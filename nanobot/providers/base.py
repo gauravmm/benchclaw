@@ -65,8 +65,3 @@ class LLMProvider(ABC):
             LLMResponse with content and/or tool calls.
         """
         pass
-
-    @abstractmethod
-    def get_default_model(self) -> str:
-        """Get the default model for this provider."""
-        pass

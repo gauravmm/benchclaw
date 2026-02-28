@@ -20,7 +20,7 @@ class ProviderSpec:
 
     Placeholders in env_extras values:
       {api_key}  — the user's API key
-      {api_base} — api_base from config, or this spec's default_api_base
+      {api_base} — api_base from config
     """
 
     name: str  # config field name, e.g. "dashscope"
@@ -136,9 +136,12 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
 # ---------------------------------------------------------------------------
 
 
-def find_by_name(name: str) -> ProviderSpec | None:
+def provider_by_name(name: str) -> ProviderSpec:
     """Find a provider spec by name, e.g. "dashscope"."""
     for spec in PROVIDERS:
         if spec.name == name:
             return spec
-    return None
+
+    raise RuntimeError(
+        f"LLM Provider {name} not found. Valid names are: {', '.join(p.name for p in PROVIDERS)}"
+    )
