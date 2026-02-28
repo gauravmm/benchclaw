@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
-from nanobot.agent.tools.base import ToolBuildContext
+from nanobot.agent.tools.base import ToolContext
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 from nanobot.providers.base import LLMProvider
@@ -46,7 +46,7 @@ class AgentLoop:
 
         # self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
 
-        master_ctx = ToolBuildContext(
+        master_ctx = ToolContext(
             workspace=config.workspace_path,
             bus=bus,
             # subagent_manager=self.subagents,
@@ -55,7 +55,7 @@ class AgentLoop:
         self._running = False
 
     async def _run_agent_loop(
-        self, initial_messages: list[dict], call_ctx: ToolBuildContext
+        self, initial_messages: list[dict], call_ctx: ToolContext
     ) -> tuple[str | None, list[str]]:
         """
         Run the agent iteration loop.
@@ -164,7 +164,7 @@ class AgentLoop:
         key = session_key or msg.address.session_key
         session = self.sessions.get_or_create(key)
 
-        call_ctx = ToolBuildContext(
+        call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
             address=msg.address,
@@ -215,7 +215,7 @@ class AgentLoop:
             origin_channel, origin_chat_id = "cli", msg.chat_id
 
         origin_address = MessageAddress(channel=origin_channel, chat_id=origin_chat_id)
-        call_ctx = ToolBuildContext(
+        call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
             address=origin_address,

@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
+from nanobot.agent.tools.base import Tool, ToolContext, register_tool
 from nanobot.utils import _ensure_dir
 
 
@@ -89,7 +89,7 @@ class MemoryTool(Tool):
     """Manage persistent memory with semantic tags."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "MemoryTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "MemoryTool":
         return cls(workspace=ctx.workspace)
 
     def __init__(self, workspace: Path):
@@ -131,7 +131,7 @@ class MemoryTool(Tool):
 
     async def execute(
         self,
-        ctx: ToolBuildContext,
+        ctx: ToolContext,
         action: str,
         tag: str = "",
         content: str = "",
@@ -213,7 +213,7 @@ class LogTool(Tool):
     """Append-only interaction log."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "LogTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "LogTool":
         return cls(workspace=ctx.workspace)
 
     def __init__(self, workspace: Path):
@@ -262,7 +262,7 @@ class LogTool(Tool):
 
     async def execute(
         self,
-        ctx: ToolBuildContext,
+        ctx: ToolContext,
         action: str,
         content: str = "",
         entry_id: str = "",

@@ -3,12 +3,12 @@
 import asyncio
 import contextlib
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Self
 
 from nanobot.agent.tools.base import (
     _TOOL_REGISTRY,
     Tool,
-    ToolBuildContext,
+    ToolContext,
 )
 
 
@@ -21,7 +21,7 @@ class ToolRegistry:
     Raises RuntimeError if entered more than once on the same instance.
     """
 
-    def __init__(self, tools_config: Any, ctx: ToolBuildContext):
+    def __init__(self, tools_config: Any, ctx: ToolContext):
         self._tools: dict[str, Tool] = {}
         self._master_ctx = ctx
         self._running = False
@@ -32,7 +32,7 @@ class ToolRegistry:
             tool = tool_cls.build(getattr(tools_config, name, None), ctx)
             self._tools[tool.name] = tool
 
-    async def __aenter__(self) -> "ToolRegistry":
+    async def __aenter__(self) -> Self:
         if self._running:
             raise RuntimeError(
                 "ToolRegistry is already running; cannot enter the same instance twice"
@@ -51,10 +51,6 @@ class ToolRegistry:
                 tool._task = None
         self._running = False
 
-    def register(self, tool: Tool) -> None:
-        """Register a tool."""
-        self._tools[tool.name] = tool
-
     def values(self, master: bool = True) -> Iterable[Tool]:
         """Iterate over registered tools.
 
@@ -70,7 +66,7 @@ class ToolRegistry:
         """Get tool definitions in OpenAI format."""
         return [tool.to_schema() for tool in self.values(master=master)]
 
-    async def execute(self, name: str, params: dict[str, Any], ctx: ToolBuildContext) -> str:
+    async def execute(self, name: str, params: dict[str, Any], ctx: ToolContext) -> str:
         """Execute a tool by name with given parameters and call context."""
         tool = self._tools.get(name)
         if not tool:

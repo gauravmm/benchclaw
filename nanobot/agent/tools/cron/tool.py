@@ -8,7 +8,7 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext
+from nanobot.agent.tools.base import Tool, ToolContext
 from nanobot.agent.tools.cron.typesupport import (
     CronJob,
     CronJobState,
@@ -29,7 +29,7 @@ class CronTool(Tool):
     master_only = True
 
     @classmethod
-    def build(cls, config: None, ctx: ToolBuildContext) -> "CronTool":
+    def build(cls, config: None, ctx: ToolContext) -> "CronTool":
         return cls(
             store_path=ctx.workspace / "cron" / "jobs.json",
             bus=ctx.bus,
@@ -112,7 +112,7 @@ class CronTool(Tool):
         job.updated_at = start
         self._store.executed(job.id, start)
 
-    async def background(self, ctx: ToolBuildContext) -> None:
+    async def background(self, ctx: ToolContext) -> None:
         """Run the cron loop until cancelled."""
         import asyncio
 
@@ -136,7 +136,7 @@ class CronTool(Tool):
 
     async def execute(
         self,
-        ctx: ToolBuildContext,
+        ctx: ToolContext,
         action: str,
         message: str = "",
         every_seconds: int | None = None,

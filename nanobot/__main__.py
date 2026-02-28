@@ -17,10 +17,10 @@ def gateway(args) -> None:
     """Start the nanobot gateway."""
     logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)
 
-    with ConfigManager(args.config) as config:
-        bus = MessageBus()
-        provider = LiteLLMProvider(config.provider)
+    bus = MessageBus()
 
+    with ConfigManager(args.config) as config:
+        provider = LiteLLMProvider(config.provider)
         agent = AgentLoop(
             config=config,
             bus=bus,

@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool, register_tool_config
+from nanobot.agent.tools.base import Tool, ToolContext, register_tool, register_tool_config
 
 
 class ExecToolConfig(BaseModel):
@@ -24,7 +24,7 @@ class ExecTool(Tool):
     """Tool to execute shell commands."""
 
     @classmethod
-    def build(cls, config: "ExecToolConfig | None", ctx: ToolBuildContext) -> "ExecTool":
+    def build(cls, config: "ExecToolConfig | None", ctx: ToolContext) -> "ExecTool":
         return cls(
             config=config or ExecToolConfig(),
             working_dir=str(ctx.workspace),
@@ -77,7 +77,7 @@ class ExecTool(Tool):
         }
 
     async def execute(
-        self, ctx: ToolBuildContext, command: str, working_dir: str | None = None, **kwargs: Any
+        self, ctx: ToolContext, command: str, working_dir: str | None = None, **kwargs: Any
     ) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)

@@ -28,7 +28,7 @@ def register_tool_config(name: str, cls: type[BaseModel]) -> None:
 
 
 @dataclass
-class ToolBuildContext:
+class ToolContext:
     """Runtime context passed to Tool.build() and Tool.execute() during agent operation."""
 
     workspace: Path
@@ -50,7 +50,7 @@ class Tool:
     master_only: ClassVar[bool] = False  # True → tool excluded from subagent registries
 
     @classmethod
-    def build(cls, config: Any, ctx: "ToolBuildContext") -> "Tool":
+    def build(cls, config: Any, ctx: "ToolContext") -> "Tool":
         """Instantiate this tool from a config object and build context."""
         raise NotImplementedError(f"{cls.__name__}.build() is not implemented")
 
@@ -72,7 +72,7 @@ class Tool:
         pass
 
     @abstractmethod
-    async def execute(self, ctx: "ToolBuildContext", **kwargs: Any) -> str:
+    async def execute(self, ctx: "ToolContext", **kwargs: Any) -> str:
         """
         Execute the tool with given parameters.
 
@@ -85,7 +85,7 @@ class Tool:
         """
         pass
 
-    async def background(self, ctx: "ToolBuildContext") -> None:
+    async def background(self, ctx: "ToolContext") -> None:
         """Optional long-running coroutine started by ToolRegistry.__aenter__. No-op by default."""
         pass
 

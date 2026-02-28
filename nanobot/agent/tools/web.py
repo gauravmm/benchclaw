@@ -11,7 +11,7 @@ import httpx
 from pydantic import BaseModel
 from readability import Document
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool, register_tool_config
+from nanobot.agent.tools.base import Tool, ToolContext, register_tool, register_tool_config
 
 
 class WebSearchConfig(BaseModel):
@@ -84,7 +84,7 @@ class WebSearchTool(Tool):
         }
 
     @classmethod
-    def build(cls, config: "WebSearchConfig | None", ctx: ToolBuildContext) -> "WebSearchTool":
+    def build(cls, config: "WebSearchConfig | None", ctx: ToolContext) -> "WebSearchTool":
         return cls(config=config or WebSearchConfig())
 
     def __init__(self, config: WebSearchConfig):
@@ -92,7 +92,7 @@ class WebSearchTool(Tool):
         self.max_results = config.max_results
 
     async def execute(
-        self, ctx: ToolBuildContext, query: str, count: int | None = None, **kwargs: Any
+        self, ctx: ToolContext, query: str, count: int | None = None, **kwargs: Any
     ) -> str:
         if not self.api_key:
             return "Error: BRAVE_API_KEY not configured"
@@ -150,7 +150,7 @@ class WebFetchTool(Tool):
         }
 
     @classmethod
-    def build(cls, _config: None, _ctx: ToolBuildContext) -> "WebFetchTool":
+    def build(cls, _config: None, _ctx: ToolContext) -> "WebFetchTool":
         return cls()
 
     def __init__(self, max_chars: int = 50000):
@@ -158,7 +158,7 @@ class WebFetchTool(Tool):
 
     async def execute(
         self,
-        ctx: ToolBuildContext,
+        ctx: ToolContext,
         url: str,
         extract_mode: str = "markdown",
         max_chars: int | None = None,

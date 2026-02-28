@@ -159,13 +159,13 @@ class ContextBuilder:
 if __name__ == "__main__":
     import asyncio
 
-    from nanobot.agent.tools.base import ToolBuildContext
+    from nanobot.agent.tools.base import ToolContext
     from nanobot.agent.tools.registry import ToolRegistry
     from nanobot.config import ConfigManager
 
     async def main() -> None:
         with ConfigManager() as config:
-            ctx = ToolBuildContext(workspace=config.workspace_path)
+            ctx = ToolContext(workspace=config.workspace_path)
             async with ToolRegistry(config.tools, ctx) as tools:
                 print(ContextBuilder(config.workspace_path).build_system_prompt(tools.values()))
 

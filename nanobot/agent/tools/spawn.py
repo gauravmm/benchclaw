@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
+from nanobot.agent.tools.base import Tool, ToolContext, register_tool
 
 if TYPE_CHECKING:
     from nanobot.agent.subagent import SubagentManager
@@ -19,7 +19,7 @@ class SpawnTool(Tool):
     master_only = True
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "SpawnTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "SpawnTool":
         return cls(manager=ctx.subagent_manager)
 
     def __init__(self, manager: "SubagentManager"):
@@ -55,7 +55,7 @@ class SpawnTool(Tool):
         }
 
     async def execute(
-        self, ctx: ToolBuildContext, task: str, label: str | None = None, **kwargs: Any
+        self, ctx: ToolContext, task: str, label: str | None = None, **kwargs: Any
     ) -> str:
         """Spawn a subagent to execute the given task."""
         return await self._manager.spawn(

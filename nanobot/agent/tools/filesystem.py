@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
+from nanobot.agent.tools.base import Tool, ToolContext, register_tool
 
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
@@ -18,7 +18,7 @@ class ReadFileTool(Tool):
     """Tool to read file contents."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "ReadFileTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "ReadFileTool":
         return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
@@ -40,7 +40,7 @@ class ReadFileTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, ctx: ToolBuildContext, path: str, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
@@ -60,7 +60,7 @@ class WriteFileTool(Tool):
     """Tool to write content to a file."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "WriteFileTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "WriteFileTool":
         return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
@@ -85,7 +85,7 @@ class WriteFileTool(Tool):
             "required": ["path", "content"],
         }
 
-    async def execute(self, ctx: ToolBuildContext, path: str, content: str, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolContext, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,7 +101,7 @@ class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "EditFileTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "EditFileTool":
         return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
@@ -128,7 +128,7 @@ class EditFileTool(Tool):
         }
 
     async def execute(
-        self, ctx: ToolBuildContext, path: str, old_text: str, new_text: str, **kwargs: Any
+        self, ctx: ToolContext, path: str, old_text: str, new_text: str, **kwargs: Any
     ) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
@@ -159,7 +159,7 @@ class ListDirTool(Tool):
     """Tool to list directory contents."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "ListDirTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "ListDirTool":
         return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
@@ -181,7 +181,7 @@ class ListDirTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, ctx: ToolBuildContext, path: str, **kwargs: Any) -> str:
+    async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():

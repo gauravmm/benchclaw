@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from nanobot.agent.tools.base import ToolBuildContext
+from nanobot.agent.tools.base import ToolContext
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus import InboundMessage, MessageAddress, MessageBus
 from nanobot.providers.base import LLMProvider
@@ -83,13 +83,13 @@ class SubagentManager:
         logger.info(f"Subagent [{task_id}] starting task: {label}")
 
         try:
-            build_ctx = ToolBuildContext(
+            build_ctx = ToolContext(
                 workspace=self.workspace,
                 is_subagent=True,
                 # No bus/subagent_manager → master_only tools are excluded
             )
             # Per-call context for subagent tool executions (no session address)
-            call_ctx = ToolBuildContext(
+            call_ctx = ToolContext(
                 workspace=self.workspace,
                 is_subagent=True,
             )

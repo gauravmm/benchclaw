@@ -2,7 +2,7 @@
 
 from typing import Any, Awaitable, Callable
 
-from nanobot.agent.tools.base import Tool, ToolBuildContext, register_tool
+from nanobot.agent.tools.base import Tool, ToolContext, register_tool
 from nanobot.bus import MessageAddress, OutboundMessage
 
 
@@ -12,7 +12,7 @@ class MessageTool(Tool):
     master_only = True
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolBuildContext) -> "MessageTool":
+    def build(cls, _config: None, ctx: ToolContext) -> "MessageTool":
         return cls(send_callback=ctx.bus.publish_outbound if ctx.bus else None)
 
     def __init__(
@@ -46,7 +46,7 @@ class MessageTool(Tool):
 
     async def execute(
         self,
-        ctx: ToolBuildContext,
+        ctx: ToolContext,
         content: str,
         channel: str | None = None,
         chat_id: str | None = None,
