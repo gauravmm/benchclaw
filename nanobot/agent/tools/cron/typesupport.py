@@ -10,8 +10,10 @@ from dataclasses_json import DataClassJsonMixin, config
 from heapdict import heapdict
 from loguru import logger
 
+from nanobot.bus import MessageAddress
+
 if TYPE_CHECKING:
-    from nanobot.bus import MessageAddress
+    pass
 
 
 def _encode_ts(dt: datetime | None) -> str | None:
@@ -116,7 +118,7 @@ def _decode_schedule(d: dict) -> CronScheduleAt | CronScheduleEvery | CronSchedu
         return CronScheduleAt.from_dict(d)
     if "every" in d:
         return CronScheduleEvery.from_dict(d)
-    if "cron" in d:
+    if "expr" in d:
         return CronScheduleCron.from_dict(d)
     raise ValueError(f"Unknown schedule kind: {', '.join(d.keys())}")
 
@@ -139,7 +141,10 @@ class CronPayload(DataClassJsonMixin):
 
     message: str
     # Deliver response back to address where job was created
-    deliver_to: MessageAddress
+    deliver_to: MessageAddress = field(
+        default=None,  # type: ignore[assignment]
+        metadata=config(encoder=_encode_address, decoder=_decode_address),
+    )
 
 
 @dataclass
@@ -187,7 +192,7 @@ class CronStore:
     async def __aenter__(self) -> "CronStore":
         try:
             data = CronData.from_json(self._path.read_text())
-            now = _ts_now()
+            now = datetime.now().astimezone()
             for j in data.jobs:
                 self._store[j.id] = j
                 if j.enabled and (next_run := j.schedule.next_run(now)) is not None:
@@ -281,3 +286,60 @@ class CronStore:
             if job is not None and job.enabled:
                 due.append(job)
         return due
+
+
+if __name__ == "__main__":
+    import asyncio
+    import tempfile
+
+    from nanobot.bus import MessageAddress
+
+    async def main() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "jobs.json"
+            address = MessageAddress(channel="telegram", chat_id="123456")
+
+            jobs_in = [
+                CronJob(
+                    id="aaa00001",
+                    name="daily standup",
+                    schedule=CronScheduleCron(expr="0 9 * * 1-5"),
+                    payload=CronPayload(message="Time for standup!", deliver_to=address),
+                    state=CronJobState(),
+                ),
+                CronJob(
+                    id="aaa00002",
+                    name="heartbeat",
+                    schedule=CronScheduleEvery(every=timedelta(minutes=30)),
+                    payload=CronPayload(message="Heartbeat check", deliver_to=address),
+                    state=CronJobState(),
+                ),
+                CronJob(
+                    id="aaa00003",
+                    name="one-time reminder",
+                    schedule=CronScheduleAt(at=datetime(2026, 6, 1, 10, 0).astimezone()),
+                    payload=CronPayload(message="Project deadline!", deliver_to=address),
+                    state=CronJobState(),
+                ),
+            ]
+
+            async with CronStore(path) as store:
+                for job in jobs_in:
+                    store.add(job)
+
+            print(f"Written to {path}:\n{path.read_text()}")
+
+            # Read back and verify round-trip
+            async with CronStore(path) as store:
+                jobs_out = {j.id: j for j in store.jobs()}
+
+            assert len(jobs_out) == 3
+            assert isinstance(jobs_out["aaa00001"].schedule, CronScheduleCron)
+            assert jobs_out["aaa00001"].schedule.expr == "0 9 * * 1-5"
+            assert isinstance(jobs_out["aaa00002"].schedule, CronScheduleEvery)
+            assert jobs_out["aaa00002"].schedule.every == timedelta(minutes=30)
+            assert isinstance(jobs_out["aaa00003"].schedule, CronScheduleAt)
+            assert jobs_out["aaa00003"].schedule.at == datetime(2026, 6, 1, 10, 0).astimezone()
+            print("All assertions passed — serialization round-trip OK.")
+
+    asyncio.run(main())

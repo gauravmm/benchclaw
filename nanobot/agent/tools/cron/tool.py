@@ -52,7 +52,7 @@ class CronTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Schedule one-time or recurring tasks that inject a message into the agent's conversation at the specified time. "
+            "Schedule one-time or recurring tasks that sends a message into the agent's conversation at a specified future time. "
             "Supports three schedule types: a fixed ISO datetime (`at`), a repeat interval in seconds (`every_seconds`), or a cron expression (`cron_expr`). "
             "Example: `{'action': 'add', 'message': 'Time to review weekly goals', 'cron_expr': '0 9 * * 1'}`."
         )

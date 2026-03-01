@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -12,11 +11,9 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.tools.base import ToolContext
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
+from nanobot.config import Config
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import SessionManager
-
-if TYPE_CHECKING:
-    from nanobot.config import Config
 
 
 class AgentLoop:
