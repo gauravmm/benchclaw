@@ -5,7 +5,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from nanobot import __art__
+from nanobot import __art__, __version__
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus import MessageBus
 from nanobot.channels.manager import ChannelManager
@@ -15,6 +15,7 @@ from nanobot.providers.litellm_provider import LiteLLMProvider
 
 def run(args) -> None:
     """Start the BenchClaw process"""
+    print(__art__ + f"{__version__:>51s}")
     logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)
 
     bus = MessageBus()
@@ -23,7 +24,6 @@ def run(args) -> None:
         provider = LiteLLMProvider(config.provider)
         channels = ChannelManager(config, bus)
 
-        print(__art__)
         print("BenchClaw starting")
         if channels.channels:
             print(f"Channels: {', '.join(channels.channels)}")
