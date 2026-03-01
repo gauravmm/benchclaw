@@ -64,21 +64,29 @@ class CronScheduleEvery(DataClassJsonMixin):
         default=timedelta(hours=1), metadata=config(encoder=_encode_td, decoder=_decode_td)
     )
     anchor: datetime = _ts_now()
+    until: datetime | None = _ts()
 
     def next_run(self, dt: datetime) -> datetime | None:
         if self.every <= timedelta(0):
             return None
         elapsed_s = (dt - self.anchor).total_seconds()
         n = math.floor(elapsed_s / self.every.total_seconds()) + 1
-        return self.anchor + n * self.every
+        t = self.anchor + n * self.every
+        if self.until is not None and t > self.until:
+            return None
+        return t
 
     def __str__(self) -> str:
         s = int(self.every.total_seconds())
         if s % 3600 == 0:
-            return f"every {s // 3600}h"
-        if s % 60 == 0:
-            return f"every {s // 60}m"
-        return f"every {s}s"
+            base = f"every {s // 3600}h"
+        elif s % 60 == 0:
+            base = f"every {s // 60}m"
+        else:
+            base = f"every {s}s"
+        if self.until is not None:
+            return f"{base} until {self.until.strftime('%Y-%m-%d %H:%M')}"
+        return base
 
 
 @dataclass
@@ -194,8 +202,11 @@ class CronStore:
             data = CronData.from_json(self._path.read_text())
             now = datetime.now().astimezone()
             for j in data.jobs:
+                next_run = j.schedule.next_run(now)
+                if next_run is None:
+                    continue  # expired; skip so it's dropped on next write
                 self._store[j.id] = j
-                if j.enabled and (next_run := j.schedule.next_run(now)) is not None:
+                if j.enabled:
                     self._queue[j.id] = next_run
         except IOError as e:
             logger.warning(f"No cron store at {e}. Creating one from scratch.")
@@ -251,17 +262,17 @@ class CronStore:
         return True
 
     def executed(self, jid: str, now: datetime) -> None:
-        """Post-execution: remove CronScheduleAt jobs, reschedule recurring ones."""
+        """Post-execution: remove one-shot or expired jobs, reschedule recurring ones."""
         if (job := self._store.get(jid)) is None:
             return
         if isinstance(job.schedule, CronScheduleAt):
             self.remove(jid)
+            return
+        next_run = job.schedule.next_run(now)
+        if next_run is not None:
+            self._queue[jid] = next_run
         else:
-            next_run = job.schedule.next_run(now)
-            if next_run is not None:
-                self._queue[jid] = next_run
-            elif jid in self._queue:
-                del self._queue[jid]
+            self.remove(jid)  # auto-delete expired recurring jobs
 
     def next_run_for(self, jid: str) -> datetime | None:
         """Return the queued next run time for a specific job, or None."""

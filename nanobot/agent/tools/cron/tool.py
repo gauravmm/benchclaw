@@ -80,6 +80,10 @@ class CronTool(Tool):
                     "type": "string",
                     "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')",
                 },
+                "until_iso": {
+                    "type": "string",
+                    "description": "ISO datetime after which a recurring job stops firing and is deleted (e.g. '2026-03-15T18:00:00+05:30'). Only applies to every_seconds jobs.",
+                },
                 "job_id": {"type": "string", "description": "Job ID (for remove)"},
             },
             "required": ["action"],
@@ -146,11 +150,12 @@ class CronTool(Tool):
         every_seconds: int | None = None,
         cron_expr: str | None = None,
         at: str | None = None,
+        until_iso: str | None = None,
         job_id: str | None = None,
         **kwargs: Any,
     ) -> str:
         if action == "add":
-            return self._add_job(ctx.address, message, every_seconds, cron_expr, at)
+            return self._add_job(ctx.address, message, every_seconds, cron_expr, at, until_iso)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -164,6 +169,7 @@ class CronTool(Tool):
         every_seconds: int | None,
         cron_expr: str | None,
         at: str | None,
+        until_iso: str | None = None,
     ) -> str:
         if not message:
             return "Error: message is required for add"
@@ -173,7 +179,8 @@ class CronTool(Tool):
             return "Error: cron service not running"
 
         if every_seconds:
-            schedule = CronScheduleEvery(every=timedelta(seconds=every_seconds))
+            until = datetime.fromisoformat(until_iso) if until_iso else None
+            schedule = CronScheduleEvery(every=timedelta(seconds=every_seconds), until=until)
         elif cron_expr:
             schedule = CronScheduleCron(expr=cron_expr)
         elif at:

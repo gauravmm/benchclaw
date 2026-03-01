@@ -101,7 +101,7 @@ class AgentLoop:
                 messages.append(
                     {
                         "role": "system",
-                        "content": "Process the results and continue computation. If no further processing is required, produce a concluding message for the user.",
+                        "content": "Process the results and continue computation. If no further processing is required, produce a concluding message for the user or (no message) if one is not required",
                     }
                 )
             else:
