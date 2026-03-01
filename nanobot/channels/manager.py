@@ -55,6 +55,7 @@ class ChannelManager:
         logger.info("Stopping all channels...")
         await self._stack.__aexit__(*exc_info)
 
+    # TODO: Remove this and use updated logic in bus/
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""
         logger.info("Outbound dispatcher started")

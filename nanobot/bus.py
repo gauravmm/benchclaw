@@ -8,17 +8,20 @@ from typing import Any, Awaitable, Callable
 from loguru import logger
 
 
-@dataclass
+@dataclass(frozen=True)
 class MessageAddress:
     """Identifies a conversation endpoint (channel + chat_id)."""
 
     channel: str
     chat_id: str
 
+    # TODO: Change this to __str__:
     @property
     def session_key(self) -> str:
         """Unique key for session identification."""
         return f"{self.channel}:{self.chat_id}"
+
+    # TODO: add a classmethod from_string(s) -> MessageAddress
 
 
 @dataclass
@@ -26,12 +29,13 @@ class InboundMessage:
     """Message received from a chat channel."""
 
     address: MessageAddress  # Channel + chat_id endpoint
-    sender_id: str  # User identifier
+    sender_id: str  # User identifier (the specific person within the group chat)
     content: str  # Message text
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=list)  # Media URLs
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
 
+    # TODO: Remove these and use .address directly.
     @property
     def channel(self) -> str:
         return self.address.channel
@@ -67,6 +71,11 @@ class MessageBus:
     Channels push messages to the inbound queue, and the agent processes
     them and pushes responses to the outbound queue.
     """
+
+    # TODO: Split this into separate outbound queues per channel.
+    # Add a method wait_outbound(channel : str) that listens to the channel specific queue and use it
+
+    # FUTURE: (Scheduled for next sprint) Support a channel bias (that is, if messages are recieved on multiple channels, prioritize the channel currently being worked on.)
 
     def __init__(self):
         self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
@@ -122,6 +131,7 @@ class MessageBus:
         """Stop the dispatcher loop."""
         self._running = False
 
+    # TODO: Proper status reporting.
     @property
     def inbound_size(self) -> int:
         """Number of pending inbound messages."""

@@ -20,6 +20,7 @@ class Session:
     Important: Messages are append-only for LLM cache efficiency.
     """
 
+    # TODO: Change the key to MessageAddress.
     key: str  # channel:chat_id
     messages: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
@@ -38,7 +39,7 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """Get recent messages in LLM format (role + content only)."""
         return [{"role": m["role"], "content": m["content"]} for m in self.messages[-max_messages:]]
 
@@ -49,6 +50,7 @@ class Session:
         self.updated_at = datetime.now()
 
 
+# TODO: Make this an AsyncContextManager that reads all session states on __aenter__, writes all session state on __aexit__, writes individual session states on consolidation, and archives individual session files when a session is cleared.
 class SessionManager:
     """
     Manages conversation sessions.
@@ -59,6 +61,7 @@ class SessionManager:
     def __init__(self, sessions_dir: Path):
         self.sessions_dir = sessions_dir
         sessions_dir.mkdir(parents=True, exist_ok=True)
+        # TODO: Limit the number of sessions to 50. Retire old sessions when we have too many.
 
         self._cache: dict[str, Session] = {}
 
@@ -86,6 +89,7 @@ class SessionManager:
         self._cache[key] = session
         return session
 
+    # TODO: Move the _load to a classmethod of Session. Have it accept a path argument and read the address from the serialized file. (No backwards compatiblity required -- this is a new project.)
     def _load(self, key: str) -> Session | None:
         """Load a session from disk."""
         path = self._get_session_path(key)
@@ -129,6 +133,7 @@ class SessionManager:
             logger.warning(f"Failed to load session {key}: {e}")
             return None
 
+    # TODO: Move save to a method of Session. Have it accept a path argument.
     def save(self, session: Session) -> None:
         """Save a session to disk."""
         path = self._get_session_path(session.key)
@@ -147,36 +152,7 @@ class SessionManager:
 
         self._cache[session.key] = session
 
-    def invalidate(self, key: str) -> None:
-        """Remove a session from the in-memory cache."""
+    def clear(self, key: str) -> None:
+        """Remove a session from the in-memory cache and archive it on disk (if it exists)"""
         self._cache.pop(key, None)
-
-    def list_sessions(self) -> list[dict[str, Any]]:
-        """
-        List all sessions.
-
-        Returns:
-            List of session info dicts.
-        """
-        sessions = []
-
-        for path in self.sessions_dir.glob("*.jsonl"):
-            try:
-                # Read just the metadata line
-                with open(path) as f:
-                    first_line = f.readline().strip()
-                    if first_line:
-                        data = json.loads(first_line)
-                        if data.get("_type") == "metadata":
-                            sessions.append(
-                                {
-                                    "key": path.stem.replace("_", ":"),
-                                    "created_at": data.get("created_at"),
-                                    "updated_at": data.get("updated_at"),
-                                    "path": str(path),
-                                }
-                            )
-            except Exception:
-                continue
-
-        return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+        # TODO: Append the current timestamp to the name and move the conversation file to config/sessions/.archive.

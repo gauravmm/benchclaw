@@ -10,10 +10,10 @@ from loguru import logger
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.tools.base import ToolContext
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
+from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 from nanobot.config import Config
 from nanobot.providers.base import LLMProvider
-from nanobot.session.manager import SessionManager
+from nanobot.session import SessionManager
 
 
 class AgentLoop:
@@ -45,8 +45,6 @@ class AgentLoop:
             # subagent_manager=self.subagents,
         )
         self.tools = ToolRegistry(config.tools, master_ctx)
-
-        self._running = False
 
     async def _run_agent_loop(
         self, initial_messages: list[dict], call_ctx: ToolContext
@@ -90,7 +88,7 @@ class AgentLoop:
                     reasoning_content=response.reasoning_content,
                 )
 
-                # TODO: Dispatch these and lazily wait for responses.
+                # FUTURE: Dispatch these and lazily wait for responses.
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
@@ -99,7 +97,7 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
-                # TODO: Break this off into its own file:
+                # FUTURE: Break this off into its own file:
                 messages.append(
                     {
                         "role": "system",
@@ -127,7 +125,9 @@ class AgentLoop:
         """
         # System messages route back via chat_id ("channel:chat_id")
         if msg.channel == "system":
-            return await self._process_system_message(msg)
+            # TODO: Remove this.
+            logger.error("Handle this type of message.")
+            # return await self._process_system_message(msg)
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
@@ -192,46 +192,3 @@ class AgentLoop:
                         )
                 except asyncio.TimeoutError:
                     continue
-
-    async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
-        """
-        Process a system message (e.g., subagent announce).
-
-        The chat_id field contains "original_channel:original_chat_id" to route
-        the response back to the correct destination.
-        """
-        # TODO: Make this work asynchronously.
-        logger.info(f"Processing system message from {msg.sender_id}")
-
-        # Parse origin from chat_id (format: "channel:chat_id")
-        if ":" in msg.chat_id:
-            origin_channel, origin_chat_id = msg.chat_id.split(":", 1)
-        else:
-            origin_channel, origin_chat_id = "cli", msg.chat_id
-
-        origin_address = MessageAddress(channel=origin_channel, chat_id=origin_chat_id)
-        call_ctx = ToolContext(
-            workspace=self.tools._master_ctx.workspace,
-            bus=self.bus,
-            address=origin_address,
-        )
-
-        session_key = origin_address.session_key
-        session = self.sessions.get_or_create(session_key)
-        initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.config.memory_window),
-            current_message=msg.content,
-            tools=self.tools,
-            channel=origin_channel,
-            chat_id=origin_chat_id,
-        )
-        final_content, _ = await self._run_agent_loop(initial_messages, call_ctx)
-
-        if final_content is None:
-            final_content = "Background task completed."
-
-        session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
-        session.add_message("assistant", final_content)
-        self.sessions.save(session)
-
-        return OutboundMessage(address=origin_address, content=final_content)
