@@ -69,3 +69,12 @@ testpaths = ["tests"]
 
 [tool.pyright]
 reportIncompatibleMethodOverride = "none"
+
+[tool.vulture]
+min_confidence = 80
+paths = ["nanobot"]
+
+[dependency-groups]
+dev = [
+    "vulture>=2.14",
+]

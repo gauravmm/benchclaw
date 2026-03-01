@@ -123,17 +123,10 @@ class AgentLoop:
         Returns:
             The response message, or None if no response needed.
         """
-        # System messages route back via chat_id ("channel:chat_id")
-        if msg.channel == "system":
-            # TODO: Remove this.
-            logger.error("Handle this type of message.")
-            # return await self._process_system_message(msg)
-
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
+        logger.info(f"Processing message from {msg.address}: {preview}")
 
-        address = session_key or msg.address
-        session = self.sessions.get_or_create(address)
+        session = self.sessions.get_or_create(msg.address)
 
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,

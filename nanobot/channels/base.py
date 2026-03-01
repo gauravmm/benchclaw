@@ -64,7 +64,7 @@ class BaseChannel(AsyncContextManagerMixin):
         self._task = asyncio.create_task(self.background())
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, *args):
         if self._task:
             try:
                 async with asyncio.timeout(5):
