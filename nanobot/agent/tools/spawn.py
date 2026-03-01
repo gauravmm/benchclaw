@@ -32,9 +32,9 @@ class SpawnTool(Tool):
     @property
     def description(self) -> str | None:
         return (
-            "Spawn a subagent to handle a task in the background. "
-            "Use this for complex or time-consuming tasks that can run independently. "
-            "The subagent will complete the task and report back when done."
+            "Spawn a subagent to execute a long-running or complex task asynchronously so the main agent can return immediately. "
+            "The subagent has access to filesystem, shell, and web tools but cannot send messages or spawn further subagents. "
+            "Example: `{'task': 'Scrape the top 10 Hacker News links and save them to workspace/hn.md', 'label': 'HN scraper'}`."
         )
 
     @property

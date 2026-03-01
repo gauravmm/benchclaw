@@ -102,9 +102,9 @@ class MemoryTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Manage persistent memory with semantic tags. "
-            "Actions: read (list available tags, or load a specific tag's content), "
-            "write (create or update a memory by tag name)."
+            "Store and retrieve persistent notes organized by named tags; each tag is a separate YAML file that survives across sessions. "
+            "Use `read` with no tag to list all available tags, or with a tag name to load its content; use `write` to create or overwrite a tag. "
+            "Example: `{'action': 'write', 'tag': 'preferences', 'content': 'User prefers metric units.'}`."
         )
 
     @property
@@ -226,12 +226,9 @@ class LogTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Append-only interaction log. "
-            "**Log interactions that involve changing anything** "
-            "(files written, commands run, messages sent, cron jobs created, etc.). "
-            "Actions: append (create a timestamped entry, returns entry ID for future amendments), "
-            "amend (add a correction or follow-up to a previous entry by ID), "
-            "search (regex search across log)."
+            "Append-only timestamped log for recording every action that changes state (files written, commands run, messages sent, cron jobs created). "
+            "Use `append` to add a new entry (returns an 8-char ID), `amend` to attach a correction to a prior entry by ID, or `search` to regex-search past entries. "
+            "Example: `{'action': 'append', 'content': 'Edited config.yaml to add Telegram token'}`."
         )
 
     @property

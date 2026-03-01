@@ -30,7 +30,11 @@ class ReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Read the contents of a file at the given path."
+        return (
+            "Read the full text content of a file at the given absolute or relative path. "
+            "Returns an error if the file does not exist or is not a regular file. "
+            "Example: `{'path': '/home/user/notes.txt'}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -72,7 +76,11 @@ class WriteFileTool(Tool):
 
     @property
     def description(self) -> str | None:
-        return "Write content to a file at the given path. Creates parent directories if needed."
+        return (
+            "Write (or overwrite) a file at the given path with the supplied content string, creating intermediate directories as needed. "
+            "Use `edit_file` instead when making targeted changes to an existing file to avoid discarding surrounding content. "
+            "Example: `{'path': '/home/user/output.txt', 'content': 'Hello, world!'}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -113,7 +121,11 @@ class EditFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Edit a file by replacing specific text. The old_text must exist exactly once in the file."
+        return (
+            "Replace an exact substring in an existing file; `old_text` must appear exactly once or the edit is rejected. "
+            "Prefer this over `write_file` for targeted changes to avoid accidentally overwriting surrounding content. "
+            "Example: `{'path': 'config.yaml', 'old_text': 'port: 8080', 'new_text': 'port: 9090'}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -171,7 +183,11 @@ class ListDirTool(Tool):
 
     @property
     def description(self) -> str:
-        return "List the contents of a directory."
+        return (
+            "List the files and subdirectories in a directory, sorted alphabetically with a folder/file prefix icon on each entry. "
+            "Returns an error if the path does not exist or is not a directory. "
+            "Example: `{'path': '/home/user/projects'}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:

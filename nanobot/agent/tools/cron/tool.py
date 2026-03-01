@@ -51,7 +51,11 @@ class CronTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Schedule reminders and recurring tasks. Actions: add, list, remove."
+        return (
+            "Schedule one-time or recurring tasks that inject a message into the agent's conversation at the specified time. "
+            "Supports three schedule types: a fixed ISO datetime (`at`), a repeat interval in seconds (`every_seconds`), or a cron expression (`cron_expr`). "
+            "Example: `{'action': 'add', 'message': 'Time to review weekly goals', 'cron_expr': '0 9 * * 1'}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:

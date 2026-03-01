@@ -27,7 +27,11 @@ class MessageTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Send a message to the user (used internally)."
+        return (
+            "Deliver a text message to a user on a chat channel (Telegram, Discord, etc.) that is not the current conversation channel. "
+            "Specify `channel` and `chat_id` explicitly to redirect a message to a different conversation. "
+            "Example: `{'content': 'Your report is ready!', 'channel': 'telegram', 'chat_id': '123456'}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:

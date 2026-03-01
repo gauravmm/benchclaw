@@ -60,7 +60,11 @@ class ExecTool(Tool):
 
     @property
     def description(self) -> str | None:
-        return "Execute a shell command and return output. Commands have a configurable timeout; dangerous commands are blocked; output is truncated at 10,000 characters."
+        return (
+            "Execute a shell command and return its combined stdout and stderr. "
+            "Dangerous patterns (e.g. `rm -rf`, disk writes) are blocked; subagents are restricted to the workspace directory; output is truncated at 10,000 characters. "
+            "Example: `{'command': 'git log --oneline -5', 'working_dir': '/home/user/project'}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:

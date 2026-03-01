@@ -64,7 +64,11 @@ class WebSearchTool(Tool):
 
     @property
     def description(self) -> str | None:
-        return "Search the web using Brave Search API. Returns search results with titles, URLs, and snippets."
+        return (
+            "Query the Brave Search API and return up to 10 results, each with a title, URL, and description snippet. "
+            "Requires `BRAVE_API_KEY` to be configured; returns an error if the key is missing. "
+            "Example: `{'query': 'python asyncio best practices 2025', 'count': 5}`."
+        )
 
     # TODO: review — no dedicated skill; consider "weather" or "github" if context is known
     @property
@@ -131,7 +135,11 @@ class WebFetchTool(Tool):
 
     @property
     def description(self) -> str | None:
-        return "Fetch and extract main content from a URL as markdown or plain text, truncated at 50,000 characters by default."
+        return (
+            "Fetch a URL and extract its main readable content using Readability, returning JSON with the extracted text in markdown or plain-text format. "
+            "Handles HTML pages, JSON APIs, and raw text; content is truncated at `maxChars` (default 50,000). "
+            "Example: `{'url': 'https://example.com/article', 'extractMode': 'markdown', 'maxChars': 10000}`."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
