@@ -1,6 +1,7 @@
 """Session management for conversation history."""
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,10 @@ from typing import Any
 
 from loguru import logger
 from pathvalidate import sanitize_filename
+
+from nanobot.bus import MessageAddress
+
+MAX_SESSIONS = 50
 
 
 @dataclass
@@ -20,8 +25,7 @@ class Session:
     Important: Messages are append-only for LLM cache efficiency.
     """
 
-    # TODO: Change the key to MessageAddress.
-    key: str  # channel:chat_id
+    key: MessageAddress
     messages: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
@@ -49,51 +53,9 @@ class Session:
         self.last_consolidated = 0
         self.updated_at = datetime.now()
 
-
-# TODO: Make this an AsyncContextManager that reads all session states on __aenter__, writes all session state on __aexit__, writes individual session states on consolidation, and archives individual session files when a session is cleared.
-class SessionManager:
-    """
-    Manages conversation sessions.
-
-    Sessions are stored as JSONL files in the sessions directory.
-    """
-
-    def __init__(self, sessions_dir: Path):
-        self.sessions_dir = sessions_dir
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        # TODO: Limit the number of sessions to 50. Retire old sessions when we have too many.
-
-        self._cache: dict[str, Session] = {}
-
-    def _get_session_path(self, key: str) -> Path:
-        """Get the file path for a session."""
-        return self.sessions_dir / f"{sanitize_filename(key)}.jsonl"
-
-    def get_or_create(self, key: str) -> Session:
-        """
-        Get an existing session or create a new one.
-
-        Args:
-            key: Session key (usually channel:chat_id).
-
-        Returns:
-            The session.
-        """
-        if key in self._cache:
-            return self._cache[key]
-
-        session = self._load(key)
-        if session is None:
-            session = Session(key=key)
-
-        self._cache[key] = session
-        return session
-
-    # TODO: Move the _load to a classmethod of Session. Have it accept a path argument and read the address from the serialized file. (No backwards compatiblity required -- this is a new project.)
-    def _load(self, key: str) -> Session | None:
-        """Load a session from disk."""
-        path = self._get_session_path(key)
-
+    @classmethod
+    def load(cls, path: Path) -> "Session | None":
+        """Load a session from a JSONL file. Returns None if file missing or invalid."""
         if not path.exists():
             return None
 
@@ -102,6 +64,7 @@ class SessionManager:
             metadata = {}
             created_at = None
             last_consolidated = 0
+            key = None
 
             with open(path) as f:
                 for line in f:
@@ -119,10 +82,16 @@ class SessionManager:
                             else None
                         )
                         last_consolidated = data.get("last_consolidated", 0)
+                        if data.get("address"):
+                            key = MessageAddress.from_string(data["address"])
                     else:
                         messages.append(data)
 
-            return Session(
+            if key is None:
+                logger.warning(f"No address in session file {path}, skipping")
+                return None
+
+            return cls(
                 key=key,
                 messages=messages,
                 created_at=created_at or datetime.now(),
@@ -130,29 +99,89 @@ class SessionManager:
                 last_consolidated=last_consolidated,
             )
         except Exception as e:
-            logger.warning(f"Failed to load session {key}: {e}")
+            logger.warning(f"Failed to load session from {path}: {e}")
             return None
 
-    # TODO: Move save to a method of Session. Have it accept a path argument.
-    def save(self, session: Session) -> None:
-        """Save a session to disk."""
-        path = self._get_session_path(session.key)
-
+    def save(self, path: Path) -> None:
+        """Save this session to a JSONL file."""
         with open(path, "w") as f:
             metadata_line = {
                 "_type": "metadata",
-                "created_at": session.created_at.isoformat(timespec="seconds"),
-                "updated_at": session.updated_at.isoformat(timespec="seconds"),
-                "metadata": session.metadata,
-                "last_consolidated": session.last_consolidated,
+                "address": str(self.key),
+                "created_at": self.created_at.isoformat(timespec="seconds"),
+                "updated_at": self.updated_at.isoformat(timespec="seconds"),
+                "metadata": self.metadata,
+                "last_consolidated": self.last_consolidated,
             }
             f.write(json.dumps(metadata_line) + "\n")
-            for msg in session.messages:
+            for msg in self.messages:
                 f.write(json.dumps(msg) + "\n")
 
+
+class SessionManager:
+    """
+    Manages conversation sessions.
+
+    Sessions are stored as JSONL files in the sessions directory.
+    Use as an async context manager: all sessions are loaded on enter and flushed on exit.
+    Individual sessions can be saved mid-session via save() for durability.
+    """
+
+    def __init__(self, sessions_dir: Path):
+        self.sessions_dir = sessions_dir
+        self._archive_dir = sessions_dir / ".archive"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._cache: dict[MessageAddress, Session] = {}
+
+    async def __aenter__(self) -> "SessionManager":
+        """Load all sessions from disk, enforcing the MAX_SESSIONS limit."""
+        sessions: dict[MessageAddress, Session] = {}
+        for path in self.sessions_dir.glob("*.jsonl"):
+            session = Session.load(path)
+            if session is not None:
+                sessions[session.key] = session
+
+        if len(sessions) > MAX_SESSIONS:
+            sorted_by_age = sorted(sessions.values(), key=lambda s: s.updated_at)
+            for old_session in sorted_by_age[: len(sessions) - MAX_SESSIONS]:
+                self._archive(old_session.key)
+                del sessions[old_session.key]
+
+        self._cache = sessions
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        """Write all cached sessions to disk."""
+        for session in self._cache.values():
+            path = self._get_session_path(session.key)
+            session.save(path)
+
+    def _get_session_path(self, key: MessageAddress) -> Path:
+        return self.sessions_dir / f"{sanitize_filename(str(key))}.jsonl"
+
+    def _archive(self, key: MessageAddress) -> None:
+        """Move a session file to the archive directory with a timestamp suffix."""
+        path = self._get_session_path(key)
+        if not path.exists():
+            return
+        self._archive_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        archive_path = self._archive_dir / f"{path.stem}_{timestamp}{path.suffix}"
+        shutil.move(str(path), archive_path)
+
+    def get_or_create(self, key: MessageAddress) -> Session:
+        """Get an existing session or create a new one."""
+        if key not in self._cache:
+            self._cache[key] = Session(key=key)
+        return self._cache[key]
+
+    def save(self, session: Session) -> None:
+        """Save a session to disk (consolidation write)."""
+        path = self._get_session_path(session.key)
+        session.save(path)
         self._cache[session.key] = session
 
-    def clear(self, key: str) -> None:
-        """Remove a session from the in-memory cache and archive it on disk (if it exists)"""
+    def clear(self, key: MessageAddress) -> None:
+        """Remove a session from the in-memory cache and archive it on disk."""
         self._cache.pop(key, None)
-        # TODO: Append the current timestamp to the name and move the conversation file to config/sessions/.archive.
+        self._archive(key)

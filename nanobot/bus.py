@@ -3,9 +3,7 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Awaitable, Callable
-
-from loguru import logger
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -15,13 +13,13 @@ class MessageAddress:
     channel: str
     chat_id: str
 
-    # TODO: Change this to __str__:
-    @property
-    def session_key(self) -> str:
-        """Unique key for session identification."""
+    def __str__(self) -> str:
         return f"{self.channel}:{self.chat_id}"
 
-    # TODO: add a classmethod from_string(s) -> MessageAddress
+    @classmethod
+    def from_string(cls, s: str) -> "MessageAddress":
+        channel, chat_id = s.split(":", 1)
+        return cls(channel=channel, chat_id=chat_id)
 
 
 @dataclass
@@ -68,22 +66,20 @@ class MessageBus:
     """
     Async message bus that decouples chat channels from the agent core.
 
-    Channels push messages to the inbound queue, and the agent processes
-    them and pushes responses to the outbound queue.
+    Outbound messages are queued per-channel; any consumer for that channel
+    receives the next message regardless of which chat it came from.
+
+    Usage:
+        await bus.publish_outbound(msg)          # enqueues to msg.channel queue
+        await bus.consume_outbound(channel="x")  # next message for channel x
     """
 
-    # TODO: Split this into separate outbound queues per channel.
-    # Add a method wait_outbound(channel : str) that listens to the channel specific queue and use it
-
-    # FUTURE: (Scheduled for next sprint) Support a channel bias (that is, if messages are recieved on multiple channels, prioritize the channel currently being worked on.)
+    # FUTURE: Support a channel bias (that is, if messages are recieved on multiple channels, prioritize the channel currently being worked on.)
 
     def __init__(self):
         self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
-        self.outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
-        self._outbound_subscribers: dict[
-            str, list[Callable[[OutboundMessage], Awaitable[None]]]
-        ] = {}
-        self._running = False
+        self.outbound: dict[str, asyncio.Queue[OutboundMessage]] = {}
+        self._channel_created = asyncio.Condition()
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
         """Publish a message from a channel to the agent."""
@@ -94,50 +90,25 @@ class MessageBus:
         return await self.inbound.get()
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """Publish a response from the agent to channels."""
-        await self.outbound.put(msg)
+        """Enqueue a response into the channel's outbound queue, creating it if needed."""
+        if msg.channel not in self.outbound:
+            # NOTE: The order here REQUIRES that only one thread be publishing on each channel.
+            # There's a race condition that can happen here if two threads simultaneously run publish_outbound.
+            # The fix is to protect the check with the lock, but that would slow down the single-thread case
+            # considerably. The setdefault here doesn't fix the issue!
+            # (Consider optimistic locking for a decent trade-off?)
+            async with self._channel_created:
+                self.outbound.setdefault(msg.channel, asyncio.Queue())
+                self._channel_created.notify_all()
+        await self.outbound[msg.channel].put(msg)
 
-    async def consume_outbound(self) -> OutboundMessage:
-        """Consume the next outbound message (blocks until available)."""
-        return await self.outbound.get()
+    async def consume_outbound(self, *, channel: str) -> OutboundMessage:
+        """Block until the next outbound message for the given channel is available.
 
-    def subscribe_outbound(
-        self, channel: str, callback: Callable[[OutboundMessage], Awaitable[None]]
-    ) -> None:
-        """Subscribe to outbound messages for a specific channel."""
-        if channel not in self._outbound_subscribers:
-            self._outbound_subscribers[channel] = []
-        self._outbound_subscribers[channel].append(callback)
-
-    async def dispatch_outbound(self) -> None:
+        If the channel queue does not exist yet, waits until it is created by
+        the first publish_outbound call for that channel.
         """
-        Dispatch outbound messages to subscribed channels.
-        Run this as a background task.
-        """
-        self._running = True
-        while self._running:
-            try:
-                msg = await asyncio.wait_for(self.outbound.get(), timeout=1.0)
-                subscribers = self._outbound_subscribers.get(msg.channel, [])
-                for callback in subscribers:
-                    try:
-                        await callback(msg)
-                    except Exception as e:
-                        logger.error(f"Error dispatching to {msg.channel}: {e}")
-            except asyncio.TimeoutError:
-                continue
-
-    def stop(self) -> None:
-        """Stop the dispatcher loop."""
-        self._running = False
-
-    # TODO: Proper status reporting.
-    @property
-    def inbound_size(self) -> int:
-        """Number of pending inbound messages."""
-        return self.inbound.qsize()
-
-    @property
-    def outbound_size(self) -> int:
-        """Number of pending outbound messages."""
-        return self.outbound.qsize()
+        if channel not in self.outbound:
+            async with self._channel_created:
+                await self._channel_created.wait_for(lambda: channel in self.outbound)
+        return await self.outbound[channel].get()

@@ -10,7 +10,7 @@ from loguru import logger
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.tools.base import ToolContext
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
+from nanobot.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 from nanobot.config import Config
 from nanobot.providers.base import LLMProvider
 from nanobot.session import SessionManager
@@ -111,14 +111,14 @@ class AgentLoop:
         return final_content, tools_used
 
     async def _process_message(
-        self, msg: InboundMessage, session_key: str | None = None
+        self, msg: InboundMessage, session_key: MessageAddress | None = None
     ) -> OutboundMessage | None:
         """
         Process a single inbound message.
 
         Args:
             msg: The inbound message to process.
-            session_key: Override session key (used by process_direct).
+            session_key: Override session address (used by process_direct).
 
         Returns:
             The response message, or None if no response needed.
@@ -132,8 +132,8 @@ class AgentLoop:
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
 
-        key = session_key or msg.address.session_key
-        session = self.sessions.get_or_create(key)
+        address = session_key or msg.address
+        session = self.sessions.get_or_create(address)
 
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
@@ -172,23 +172,24 @@ class AgentLoop:
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
-        async with self.tools:  # starts all tool background() tasks (cron, heartbeat, etc.)
-            logger.info("Agent loop started")
+        async with self.sessions:
+            async with self.tools:  # starts all tool background() tasks (cron, heartbeat, etc.)
+                logger.info("Agent loop started")
 
-            while True:
-                try:
-                    msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                while True:
                     try:
-                        response = await self._process_message(msg)
-                        if response:
-                            await self.bus.publish_outbound(response)
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                address=msg.address,
-                                content=f"Sorry, I encountered an error: {str(e)}",
+                        msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                        try:
+                            response = await self._process_message(msg)
+                            if response:
+                                await self.bus.publish_outbound(response)
+                        except Exception as e:
+                            logger.error(f"Error processing message: {e}")
+                            await self.bus.publish_outbound(
+                                OutboundMessage(
+                                    address=msg.address,
+                                    content=f"Sorry, I encountered an error: {str(e)}",
+                                )
                             )
-                        )
-                except asyncio.TimeoutError:
-                    continue
+                    except asyncio.TimeoutError:
+                        continue
