@@ -93,6 +93,7 @@ class SubagentManager:
                 workspace=self.workspace,
                 is_subagent=True,
             )
+            # TODO: Remove this call
             async with ToolRegistry(self._config.tools, build_ctx) as tools:
                 # Build messages with subagent-specific prompt
                 system_prompt = self._build_subagent_prompt(task)

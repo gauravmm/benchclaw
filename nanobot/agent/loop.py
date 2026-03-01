@@ -31,16 +31,23 @@ class AgentLoop:
     5. Sends responses back
     """
 
-    def __init__(self, config: Config, bus: MessageBus, provider: LLMProvider, tools: ToolRegistry):
+    def __init__(self, config: Config, bus: MessageBus, provider: LLMProvider):
+        self.workspace_path = config.workspace_path
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
-        self.tools = tools
 
         self.context = ContextBuilder(config.workspace_path)
         self.sessions = SessionManager(config.workspace_path / "sessions")
 
         # self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
+
+        master_ctx = ToolContext(
+            workspace=config.workspace_path,
+            bus=bus,
+            # subagent_manager=self.subagents,
+        )
+        self.tools = ToolRegistry(config.tools, master_ctx)
 
         self._running = False
 
@@ -108,29 +115,6 @@ class AgentLoop:
 
         return final_content, tools_used
 
-    async def run(self) -> None:
-        """Run the agent loop, processing messages from the bus."""
-        async with self.tools:  # starts all tool background() tasks (cron, heartbeat, etc.)
-            logger.info("Agent loop started")
-
-            while True:
-                try:
-                    msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-                    try:
-                        response = await self._process_message(msg)
-                        if response:
-                            await self.bus.publish_outbound(response)
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
-                        await self.bus.publish_outbound(
-                            OutboundMessage(
-                                address=msg.address,
-                                content=f"Sorry, I encountered an error: {str(e)}",
-                            )
-                        )
-                except asyncio.TimeoutError:
-                    continue
-
     async def _process_message(
         self, msg: InboundMessage, session_key: str | None = None
     ) -> OutboundMessage | None:
@@ -189,6 +173,29 @@ class AgentLoop:
             or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
 
+    async def run(self) -> None:
+        """Run the agent loop, processing messages from the bus."""
+        async with self.tools:  # starts all tool background() tasks (cron, heartbeat, etc.)
+            logger.info("Agent loop started")
+
+            while True:
+                try:
+                    msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                    try:
+                        response = await self._process_message(msg)
+                        if response:
+                            await self.bus.publish_outbound(response)
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                        await self.bus.publish_outbound(
+                            OutboundMessage(
+                                address=msg.address,
+                                content=f"Sorry, I encountered an error: {str(e)}",
+                            )
+                        )
+                except asyncio.TimeoutError:
+                    continue
+
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a system message (e.g., subagent announce).
@@ -196,6 +203,7 @@ class AgentLoop:
         The chat_id field contains "original_channel:original_chat_id" to route
         the response back to the correct destination.
         """
+        # TODO: Make this work asynchronously.
         logger.info(f"Processing system message from {msg.sender_id}")
 
         # Parse origin from chat_id (format: "channel:chat_id")
