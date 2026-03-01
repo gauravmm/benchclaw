@@ -5,7 +5,25 @@ While this is technically built on Nanobot, its pretty much a rewrite. I wanted 
 Here's what we have:
 
  1. Unified system prompt (TODO: Where?)
- 2. Simpler loading and unloading.
+ 2. Consistent architecture
+   a.
+ 3. A lot less dead code
+ 4. Asynchronous tool use (LLM can recieve messages while using tools!)
+ 5. Easily extensible.
+ 6. Fewer dumb LLM design choices:
+   a. Bus dispatches on multiple queues immediately instead of passing through a contested queue.
+   b. Fewer redundant tools (HEARTBEAT now operates with CRON)
+   c. Simpler LLM provider configuration
+
+```sh
+echo -e "\033[38;2;255;170;0m      _  _      \033[0m"
+echo -e "\033[38;2;255;170;0m     / \/ \     \033[38;2;120;170;255m  ____                  _      ____ _                \033[0m"
+echo -e "\033[38;2;255;170;0m    ( \033[38;2;0;255;255mO  O\033[38;2;255;170;0m )    \033[38;2;120;170;255m | __ )  ___ _ __   ___| |__  / ___| | __ ___      __\033[0m"
+echo -e "\033[38;2;255;170;0m     \033[38;2;255;170;0m| \033[38;2;0;255;255m--\033[38;2;255;170;0m |     \033[38;2;120;170;255m |  _ \ / _ \ '_ \ / __| '_ \| |   | |/ _\` \ \ /\ / /\033[0m"
+echo -e "\033[38;2;255;170;0m    / \__/ \    \033[38;2;120;170;255m | |_) |  __/ | | | (__| | | | |___| | (_| |\ V  V / \033[0m"
+echo -e "\033[38;2;255;170;0m   _|      |_   \033[38;2;120;170;255m |____/ \___|_| |_|\___|_| |_|\____|_|\__,_| \_/\_/  \033[0m"
+echo -e "\033[38;2;255;170;0m  (__/    \__)  \033[0m"
+```
 
 TODOS:
 

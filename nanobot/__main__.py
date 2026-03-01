@@ -5,7 +5,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from nanobot import __logo__
+from nanobot import __art__
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus import MessageBus
 from nanobot.channels.manager import ChannelManager
@@ -13,8 +13,8 @@ from nanobot.config import ConfigManager
 from nanobot.providers.litellm_provider import LiteLLMProvider
 
 
-def gateway(args) -> None:
-    """Start the nanobot gateway."""
+def run(args) -> None:
+    """Start the BenchClaw process"""
     logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)
 
     bus = MessageBus()
@@ -23,7 +23,8 @@ def gateway(args) -> None:
         provider = LiteLLMProvider(config.provider)
         channels = ChannelManager(config, bus)
 
-        print(f"{__logo__} nanobot gateway starting")
+        print(__art__)
+        print("BenchClaw starting")
         if channels.channels:
             print(f"Channels: {', '.join(channels.channels)}")
         else:
@@ -58,7 +59,7 @@ def main() -> None:
         help="enable info logging",
     )
     args = parser.parse_args()
-    gateway(args)
+    run(args)
 
 
 if __name__ == "__main__":

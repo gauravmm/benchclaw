@@ -92,14 +92,15 @@ class MessageBus:
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """Enqueue a response into the channel's outbound queue, creating it if needed."""
         if msg.channel not in self.outbound:
-            # NOTE: The order here REQUIRES that only one thread be publishing on each channel.
-            # There's a race condition that can happen here if two threads simultaneously run publish_outbound.
-            # The fix is to protect the check with the lock, but that would slow down the single-thread case
-            # considerably. The setdefault here doesn't fix the issue!
-            # (Consider optimistic locking for a decent trade-off?)
+            # NOTE: The check (msg.channel not in self.outbound) is NOT redundant.
+            # There's a race condition where two threads fail the check above, then one clobbers the other's
+            # queue assignment. The fix is to protect the check with the lock. To avoid the slowdown of acquiring
+            # locks on every publish (when only the first call will fail the check), we guard the lock itself
+            # with the check above.
             async with self._channel_created:
-                self.outbound.setdefault(msg.channel, asyncio.Queue())
-                self._channel_created.notify_all()
+                if msg.channel not in self.outbound:
+                    self.outbound.setdefault(msg.channel, asyncio.Queue())
+                    self._channel_created.notify_all()
         await self.outbound[msg.channel].put(msg)
 
     async def consume_outbound(self, *, channel: str) -> OutboundMessage:

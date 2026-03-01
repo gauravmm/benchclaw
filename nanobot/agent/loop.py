@@ -156,12 +156,7 @@ class AgentLoop:
         )
         self.sessions.save(session)
 
-        return OutboundMessage(
-            address=msg.address,
-            content=final_content,
-            metadata=msg.metadata
-            or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
-        )
+        return OutboundMessage(address=msg.address, content=final_content, metadata=msg.metadata)
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
