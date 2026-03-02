@@ -1,7 +1,6 @@
 """Session management for conversation history."""
 
 import json
-import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -134,6 +133,9 @@ class SessionManager:
         sessions_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[MessageAddress, Session] = {}
 
+    def _get_session_path(self, key: MessageAddress) -> Path:
+        return self.sessions_dir / f"{sanitize_filename(str(key))}.jsonl"
+
     async def __aenter__(self) -> "SessionManager":
         """Load all sessions from disk, enforcing the MAX_SESSIONS limit."""
         sessions: list[Session] = []
@@ -144,7 +146,7 @@ class SessionManager:
         if len(sessions) > MAX_SESSIONS:
             sessions.sort(key=lambda s: s.updated_at, reverse=True)
             for old_session in sessions[MAX_SESSIONS:]:
-                self._archive(old_session.addr)
+                self._archive(old_session)
             sessions = sessions[MAX_SESSIONS:]
 
         self._cache = {s.addr: s for s in sessions}
@@ -153,23 +155,21 @@ class SessionManager:
     async def __aexit__(self, *_: Any) -> None:
         """Write all cached sessions to disk."""
         for session in self._cache.values():
-            path = self._get_session_path(session.addr)
-            session.save(path)
+            session.save(self._get_session_path(session.addr))
 
-    def _get_session_path(self, key: MessageAddress) -> Path:
-        return self.sessions_dir / f"{sanitize_filename(str(key))}.jsonl"
-
-    def _archive(self, key: MessageAddress) -> None:
+    def _archive(self, s: Session) -> None:
         """Move a session file to the archive directory with a timestamp suffix."""
-        path = self._get_session_path(key)
-        if not path.exists():
-            return
-        self._archive_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-        archive_path = self._archive_dir / f"{path.stem}_{timestamp}{path.suffix}"
-        shutil.move(str(path), archive_path)
+        path = self._get_session_path(s.addr)
+        archive_path = (
+            self._archive_dir
+            / f"{path.stem}_{datetime.now().strftime('%Y%m%dT%H%M%S')}{path.suffix}"
+        )
 
-    def get_or_create(self, key: MessageAddress) -> Session:
+        self._archive_dir.mkdir(parents=True, exist_ok=True)
+        s.save(archive_path)  # Save the latest state to the archive
+        path.unlink(missing_ok=True)  # Remove the original file.
+
+    def get(self, key: MessageAddress) -> Session:
         """Get an existing session or create a new one."""
         if key not in self._cache:
             self._cache[key] = Session(addr=key)
@@ -178,17 +178,18 @@ class SessionManager:
                     (s for s in self._cache.values() if s.addr != key),
                     key=lambda s: s.updated_at,
                 )
-                self._archive(oldest.addr)
+                self._archive(oldest)
                 del self._cache[oldest.addr]
         return self._cache[key]
 
     def save(self, session: Session) -> None:
         """Save a session to disk (consolidation write)."""
+        # TODO: Remove this. The context manager handles saving.
         path = self._get_session_path(session.addr)
         session.save(path)
         self._cache[session.addr] = session
 
     def clear(self, key: MessageAddress) -> None:
         """Remove a session from the in-memory cache and archive it on disk."""
-        self._cache.pop(key, None)
-        self._archive(key)
+        if s := self._cache.pop(key, None):
+            self._archive(s)

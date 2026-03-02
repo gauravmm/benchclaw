@@ -126,7 +126,7 @@ class AgentLoop:
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info(f"Processing message from {msg.address}: {preview}")
 
-        session = self.sessions.get_or_create(msg.address)
+        session = self.sessions.get(msg.address)
 
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
