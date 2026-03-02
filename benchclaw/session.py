@@ -182,13 +182,6 @@ class SessionManager:
                 del self._cache[oldest.addr]
         return self._cache[key]
 
-    def save(self, session: Session) -> None:
-        """Save a session to disk (consolidation write)."""
-        # TODO: Remove this. The context manager handles saving.
-        path = self._get_session_path(session.addr)
-        session.save(path)
-        self._cache[session.addr] = session
-
     def clear(self, key: MessageAddress) -> None:
         """Remove a session from the in-memory cache and archive it on disk."""
         if s := self._cache.pop(key, None):

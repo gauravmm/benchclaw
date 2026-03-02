@@ -154,8 +154,6 @@ class AgentLoop:
         session.add_message(
             "assistant", final_content, tools_used=tools_used if tools_used else None
         )
-        self.sessions.save(session)
-
         return OutboundMessage(address=msg.address, content=final_content, metadata=msg.metadata)
 
     async def run(self) -> None:
