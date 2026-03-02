@@ -25,7 +25,7 @@ class Session:
     Important: Messages are append-only for LLM cache efficiency.
     """
 
-    key: MessageAddress
+    addr: MessageAddress
     messages: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
@@ -65,7 +65,7 @@ class Session:
             metadata = {}
             created_at = None
             last_consolidated = 0
-            key = None
+            addr: MessageAddress | None = None
 
             with open(path) as f:
                 for line in f:
@@ -84,16 +84,16 @@ class Session:
                         )
                         last_consolidated = data.get("last_consolidated", 0)
                         if data.get("address"):
-                            key = MessageAddress.from_string(data["address"])
+                            addr = MessageAddress.from_string(data["address"])
                     else:
                         messages.append(data)
 
-            if key is None:
+            if addr is None:
                 logger.warning(f"No address in session file {path}, skipping")
                 return None
 
             return cls(
-                key=key,
+                addr=addr,
                 messages=messages,
                 created_at=created_at or datetime.now(),
                 metadata=metadata,
@@ -108,7 +108,7 @@ class Session:
         with open(path, "w") as f:
             metadata_line = {
                 "_type": "metadata",
-                "address": str(self.key),
+                "address": str(self.addr),
                 "created_at": self.created_at.isoformat(timespec="seconds"),
                 "updated_at": self.updated_at.isoformat(timespec="seconds"),
                 "metadata": self.metadata,
@@ -136,25 +136,24 @@ class SessionManager:
 
     async def __aenter__(self) -> "SessionManager":
         """Load all sessions from disk, enforcing the MAX_SESSIONS limit."""
-        sessions: dict[MessageAddress, Session] = {}
+        sessions: list[Session] = []
         for path in self.sessions_dir.glob("*.jsonl"):
-            session = Session.load(path)
-            if session is not None:
-                sessions[session.key] = session
+            if (session := Session.load(path)) is not None:
+                sessions.append(session)
 
         if len(sessions) > MAX_SESSIONS:
-            sorted_by_age = sorted(sessions.values(), key=lambda s: s.updated_at)
-            for old_session in sorted_by_age[: len(sessions) - MAX_SESSIONS]:
-                self._archive(old_session.key)
-                del sessions[old_session.key]
+            sessions.sort(key=lambda s: s.updated_at, reverse=True)
+            for old_session in sessions[MAX_SESSIONS:]:
+                self._archive(old_session.addr)
+            sessions = sessions[MAX_SESSIONS:]
 
-        self._cache = sessions
+        self._cache = {s.addr: s for s in sessions}
         return self
 
     async def __aexit__(self, *_: Any) -> None:
         """Write all cached sessions to disk."""
         for session in self._cache.values():
-            path = self._get_session_path(session.key)
+            path = self._get_session_path(session.addr)
             session.save(path)
 
     def _get_session_path(self, key: MessageAddress) -> Path:
@@ -173,14 +172,15 @@ class SessionManager:
     def get_or_create(self, key: MessageAddress) -> Session:
         """Get an existing session or create a new one."""
         if key not in self._cache:
-            self._cache[key] = Session(key=key)
+            self._cache[key] = Session(addr=key)
+            # TODO: Enforce MAX_SESSIONS here
         return self._cache[key]
 
     def save(self, session: Session) -> None:
         """Save a session to disk (consolidation write)."""
-        path = self._get_session_path(session.key)
+        path = self._get_session_path(session.addr)
         session.save(path)
-        self._cache[session.key] = session
+        self._cache[session.addr] = session
 
     def clear(self, key: MessageAddress) -> None:
         """Remove a session from the in-memory cache and archive it on disk."""
