@@ -173,7 +173,13 @@ class SessionManager:
         """Get an existing session or create a new one."""
         if key not in self._cache:
             self._cache[key] = Session(addr=key)
-            # TODO: Enforce MAX_SESSIONS here
+            if len(self._cache) > MAX_SESSIONS:
+                oldest = min(
+                    (s for s in self._cache.values() if s.addr != key),
+                    key=lambda s: s.updated_at,
+                )
+                self._archive(oldest.addr)
+                del self._cache[oldest.addr]
         return self._cache[key]
 
     def save(self, session: Session) -> None:
