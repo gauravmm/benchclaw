@@ -63,6 +63,8 @@ class AgentLoop:
         """Execute a single tool call and post a ToolResultEvent to the bus when done."""
         try:
             result = await self.tools.execute(tc.name, tc.arguments, call_ctx)
+        except asyncio.CancelledError:
+            result = "Cancelled."
         except Exception as e:
             result = f"Error executing {tc.name}: {e}"
         await self.bus.publish_tool_result(
@@ -141,16 +143,18 @@ class AgentLoop:
                 else:
                     # Iteration was closed by a user message; deliver as background notification.
                     notification = (
-                        f"[Background tool '{event.tool_name}' completed]: {event.result}"
+                        f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
                     )
                     messages.append({"role": "user", "content": notification})
                     session.add_message("user", notification)
 
-            # Call LLM (shared path for both event types)
+            # Check if the iterations have maxed out.
             if iteration_count >= self.config.max_tool_iterations:
                 logger.warning(f"Max tool iterations reached for {addr}")
                 continue
+            iteration_count += 1
 
+            # Call LLM (shared path for both event types)
             try:
                 response = await self.provider.chat(
                     messages=messages,
@@ -169,8 +173,7 @@ class AgentLoop:
                 )
                 continue
 
-            iteration_count += 1
-
+            # Process LLM response
             if response.has_tool_calls:
                 tool_call_dicts = [
                     {
@@ -186,12 +189,6 @@ class AgentLoop:
                     tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": "Process the results and continue computation. If no further processing is required, produce a concluding message for the user or (no message) if one is not required",
-                    }
-                )
 
                 for tc in response.tool_calls:
                     in_flight[tc.id] = tc.name
@@ -199,7 +196,7 @@ class AgentLoop:
                     logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
                     asyncio.create_task(
                         self._run_tool_and_post(tc, call_ctx, addr),
-                        name=f"tool-{tc.name}-{tc.id[:8]}",
+                        name=f"tool-{tc.id[:8]}",
                     )
 
                 if response.content:
