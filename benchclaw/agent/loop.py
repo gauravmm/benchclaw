@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 
 from loguru import logger
 
@@ -21,15 +20,6 @@ from benchclaw.bus import (
 from benchclaw.config import Config
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
 from benchclaw.session import SessionManager
-
-
-@dataclass
-class PendingIteration:
-    """Tracks in-flight tool calls for one LLM response."""
-
-    id: int
-    results: dict[str, str | None]  # tool_call_id -> result, None if still running
-    tool_names: dict[str, str]  # tool_call_id -> tool_name
 
 
 class AgentLoop:
@@ -67,7 +57,6 @@ class AgentLoop:
     async def _run_tool_and_post(
         self,
         tc: ToolCallRequest,
-        iter_id: int,
         call_ctx: ToolContext,
         addr: MessageAddress,
     ) -> None:
@@ -78,12 +67,7 @@ class AgentLoop:
             result = f"Error executing {tc.name}: {e}"
         await self.bus.publish_tool_result(
             addr,
-            ToolResultEvent(
-                iteration_id=iter_id,
-                tool_call_id=tc.id,
-                tool_name=tc.name,
-                result=result,
-            ),
+            ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
         )
 
     async def _address_loop(self, addr: MessageAddress) -> None:
@@ -91,8 +75,12 @@ class AgentLoop:
         Event-driven processing loop for a single address.
 
         Reads AddressEvent (InboundMessage | ToolResultEvent) directly from
-        bus.inbound[addr], calling the LLM after each and dispatching any
+        bus.inbound[addr], calling the LLM after each event and dispatching
         tool calls as background tasks via _run_tool_and_post.
+
+        in_flight tracks tool call IDs currently executing. When a user message
+        arrives while tools are running, synthetic results are added to satisfy
+        the API format, and a system message lists which tools are still running.
         """
         session = self.sessions.get(addr)
         call_ctx = ToolContext(
@@ -101,24 +89,28 @@ class AgentLoop:
             address=addr,
         )
         messages: list[dict] = []
-        pending: PendingIteration | None = None
+        in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
         iteration_count = 0
 
         while True:
             event = await self.bus.consume_inbound(address=addr)
 
             if isinstance(event, InboundMessage):
-                # Close any pending tool iteration with synthetic results so the
-                # conversation remains valid for the next LLM call.
-                if pending is not None:
-                    for tool_id, result in pending.results.items():
+                if in_flight:
+                    # Satisfy the API format (tool results required before next user message),
+                    # then tell the LLM which tools are still running in the background.
+                    for tool_id, tool_name in in_flight.items():
                         messages = self.context.add_tool_result(
-                            messages,
-                            tool_id,
-                            pending.tool_names[tool_id],
-                            result if result is not None else "[Tool still running in background]",
+                            messages, tool_id, tool_name, "[executing in background]"
                         )
-                    pending = None
+                    tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in in_flight.items())
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": f"The following tools are still executing in the background: {tool_list}. Their results will arrive as new messages.",
+                        }
+                    )
+                    in_flight.clear()
 
                 preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
                 logger.info(f"Processing message from {addr}: {preview}")
@@ -139,24 +131,20 @@ class AgentLoop:
                 iteration_count = 0
 
             elif isinstance(event, ToolResultEvent):
-                if pending is None or event.iteration_id != pending.id:
-                    # The iteration was already closed by a user message that arrived
-                    # while the tool was still running. Deliver as a background notification.
+                if event.tool_call_id in in_flight:
+                    del in_flight[event.tool_call_id]
+                    messages = self.context.add_tool_result(
+                        messages, event.tool_call_id, event.tool_name, event.result
+                    )
+                    if in_flight:
+                        continue  # still waiting for other tools in this batch
+                else:
+                    # Iteration was closed by a user message; deliver as background notification.
                     notification = (
                         f"[Background tool '{event.tool_name}' completed]: {event.result}"
                     )
                     messages.append({"role": "user", "content": notification})
                     session.add_message("user", notification)
-                else:
-                    pending.results[event.tool_call_id] = event.result
-                    if any(v is None for v in pending.results.values()):
-                        continue  # still waiting for other tools in this iteration
-                    for tool_id, result in pending.results.items():
-                        if result is not None:
-                            messages = self.context.add_tool_result(
-                                messages, tool_id, pending.tool_names[tool_id], result
-                            )
-                    pending = None
 
             # Call LLM (shared path for both event types)
             if iteration_count >= self.config.max_tool_iterations:
@@ -205,17 +193,12 @@ class AgentLoop:
                     }
                 )
 
-                iter_id = id(response)
-                pending = PendingIteration(
-                    id=iter_id,
-                    results={tc.id: None for tc in response.tool_calls},
-                    tool_names={tc.id: tc.name for tc in response.tool_calls},
-                )
                 for tc in response.tool_calls:
+                    in_flight[tc.id] = tc.name
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
                     asyncio.create_task(
-                        self._run_tool_and_post(tc, iter_id, call_ctx, addr),
+                        self._run_tool_and_post(tc, call_ctx, addr),
                         name=f"tool-{tc.name}-{tc.id[:8]}",
                     )
 

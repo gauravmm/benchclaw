@@ -66,7 +66,6 @@ class OutboundMessage:
 class ToolResultEvent:
     """A completed background tool call, routed through bus.inbound[addr]."""
 
-    iteration_id: int
     tool_call_id: str
     tool_name: str
     result: str
