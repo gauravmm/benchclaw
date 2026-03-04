@@ -62,19 +62,35 @@ class OutboundMessage:
         return self.address.chat_id
 
 
+@dataclass
+class ToolResultEvent:
+    """A completed background tool call, routed through bus.inbound[addr]."""
+
+    iteration_id: int
+    tool_call_id: str
+    tool_name: str
+    result: str
+
+
+# All events that flow through bus.inbound[addr]
+AddressEvent = InboundMessage | ToolResultEvent
+
+
 class MessageBus:
     """
     Async message bus that decouples chat channels from the agent core.
 
-    Inbound messages are queued per-address; the agent subscribes to new-address
-    notifications via subscribe_new_addresses() and spawns a handler per address.
+    Inbound events (user messages and tool results) are queued per-address;
+    the agent subscribes to new-address notifications via subscribe_new_addresses()
+    and spawns a handler per address.
 
     Outbound messages are queued per-channel; any consumer for that channel
     receives the next message regardless of which chat it came from.
 
     Usage:
-        await bus.publish_inbound(msg)              # enqueues to msg.address queue
-        await bus.consume_inbound(address=addr)     # next message for that address
+        await bus.publish_inbound(msg)              # enqueues InboundMessage to msg.address queue
+        await bus.publish_tool_result(addr, event)  # enqueues ToolResultEvent to addr queue
+        await bus.consume_inbound(address=addr)     # next AddressEvent for that address
         new_addrs = bus.subscribe_new_addresses()   # Queue[MessageAddress] of new addresses
 
         await bus.publish_outbound(msg)             # enqueues to msg.channel queue
@@ -84,7 +100,7 @@ class MessageBus:
     # FUTURE: Support a channel bias (that is, if messages are received on multiple channels, prioritize the channel currently being worked on.)
 
     def __init__(self):
-        self.inbound: dict[MessageAddress, asyncio.Queue[InboundMessage]] = {}
+        self.inbound: dict[MessageAddress, asyncio.Queue[AddressEvent]] = {}
         self._address_subscribers: list[asyncio.Queue[MessageAddress]] = []
         self.outbound: dict[str, asyncio.Queue[OutboundMessage]] = {}
         self._channel_created = asyncio.Condition()
@@ -100,7 +116,7 @@ class MessageBus:
         return q
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
-        """Publish a message from a channel to the agent.
+        """Publish a user message from a channel to the agent.
 
         Creates a new per-address queue on first use and notifies all subscribers.
         No lock needed: asyncio is single-threaded so the check-then-set is atomic.
@@ -111,8 +127,12 @@ class MessageBus:
                 sub.put_nowait(msg.address)
         await self.inbound[msg.address].put(msg)
 
-    async def consume_inbound(self, *, address: MessageAddress) -> InboundMessage:
-        """Consume the next inbound message for the given address (blocks until available)."""
+    async def publish_tool_result(self, addr: MessageAddress, event: ToolResultEvent) -> None:
+        """Post a completed tool result to an existing per-address queue."""
+        await self.inbound[addr].put(event)
+
+    async def consume_inbound(self, *, address: MessageAddress) -> AddressEvent:
+        """Consume the next inbound event for the given address (blocks until available)."""
         return await self.inbound[address].get()
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:

@@ -11,20 +11,16 @@ from loguru import logger
 from benchclaw.agent.context import ContextBuilder
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.registry import ToolRegistry
-from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import (
+    InboundMessage,
+    MessageAddress,
+    MessageBus,
+    OutboundMessage,
+    ToolResultEvent,
+)
 from benchclaw.config import Config
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
 from benchclaw.session import SessionManager
-
-
-@dataclass
-class ToolResultEvent:
-    """Posted to the per-address event queue when a background tool task completes."""
-
-    iteration_id: int
-    tool_call_id: str
-    tool_name: str
-    result: str
 
 
 @dataclass
@@ -46,7 +42,7 @@ class AgentLoop:
        messages (InboundMessage) and background tool results (ToolResultEvent)
     3. Calls the LLM whenever there is something to process
     4. Dispatches tool calls as background asyncio tasks; results are posted
-       back to the per-address event queue when done
+       back via bus.publish_tool_result() when done
     5. Sends final responses back via the bus
     """
 
@@ -68,39 +64,35 @@ class AgentLoop:
         )
         self.tools = ToolRegistry(config.tools, master_ctx)
 
-    async def _fanin(self, addr: MessageAddress, event_queue: asyncio.Queue) -> None:
-        """Bridge bus.inbound[addr] (InboundMessages) into the shared per-address event queue."""
-        while True:
-            msg = await self.bus.consume_inbound(address=addr)
-            await event_queue.put(msg)
-
     async def _run_tool_and_post(
         self,
         tc: ToolCallRequest,
         iter_id: int,
         call_ctx: ToolContext,
-        event_queue: asyncio.Queue,
+        addr: MessageAddress,
     ) -> None:
-        """Execute a single tool call and post a ToolResultEvent when done."""
+        """Execute a single tool call and post a ToolResultEvent to the bus when done."""
         try:
             result = await self.tools.execute(tc.name, tc.arguments, call_ctx)
         except Exception as e:
             result = f"Error executing {tc.name}: {e}"
-        await event_queue.put(
+        await self.bus.publish_tool_result(
+            addr,
             ToolResultEvent(
                 iteration_id=iter_id,
                 tool_call_id=tc.id,
                 tool_name=tc.name,
                 result=result,
-            )
+            ),
         )
 
-    async def _address_loop(self, addr: MessageAddress, queue: asyncio.Queue) -> None:
+    async def _address_loop(self, addr: MessageAddress) -> None:
         """
         Event-driven processing loop for a single address.
 
-        Processes InboundMessage and ToolResultEvent events from the queue,
-        calling the LLM after each and dispatching any tool calls as background tasks.
+        Reads AddressEvent (InboundMessage | ToolResultEvent) directly from
+        bus.inbound[addr], calling the LLM after each and dispatching any
+        tool calls as background tasks via _run_tool_and_post.
         """
         session = self.sessions.get(addr)
         call_ctx = ToolContext(
@@ -113,7 +105,7 @@ class AgentLoop:
         iteration_count = 0
 
         while True:
-            event = await queue.get()
+            event = await self.bus.consume_inbound(address=addr)
 
             if isinstance(event, InboundMessage):
                 # Close any pending tool iteration with synthetic results so the
@@ -223,7 +215,7 @@ class AgentLoop:
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
                     asyncio.create_task(
-                        self._run_tool_and_post(tc, iter_id, call_ctx, queue),
+                        self._run_tool_and_post(tc, iter_id, call_ctx, addr),
                         name=f"tool-{tc.name}-{tc.id[:8]}",
                     )
 
@@ -247,29 +239,23 @@ class AgentLoop:
             async with self.tools:
                 logger.info("Agent loop started")
                 new_addr_queue = self.bus.subscribe_new_addresses()
-                fanin_tasks: dict[MessageAddress, asyncio.Task] = {}
                 addr_tasks: dict[MessageAddress, asyncio.Task] = {}
 
                 async def _dispatch() -> None:
                     while True:
                         addr = await new_addr_queue.get()
-                        q: asyncio.Queue[InboundMessage | ToolResultEvent] = asyncio.Queue()
-                        fanin_tasks[addr] = asyncio.create_task(
-                            self._fanin(addr, q), name=f"fanin-{addr}"
-                        )
                         addr_tasks[addr] = asyncio.create_task(
-                            self._address_loop(addr, q), name=f"agent-{addr}"
+                            self._address_loop(addr), name=f"agent-{addr}"
                         )
 
                 dispatch_task = asyncio.create_task(_dispatch())
                 try:
                     await asyncio.get_event_loop().create_future()  # run forever
                 except asyncio.CancelledError:
-                    for t in [dispatch_task, *fanin_tasks.values(), *addr_tasks.values()]:
+                    for t in [dispatch_task, *addr_tasks.values()]:
                         t.cancel()
                     await asyncio.gather(
                         dispatch_task,
-                        *fanin_tasks.values(),
                         *addr_tasks.values(),
                         return_exceptions=True,
                     )
