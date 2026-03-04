@@ -29,6 +29,9 @@ TODOS:
 
 1. All data paths in the config.
 2. Add support for an external connection interface (a unix socket)
+3. Tool ideas:
+  a. glob
+  b. exec (with async support -- prints last few new lines every 30s)
 
 Make this a heartbeat cron job that fires periodically and asks the agent to read HEARTBEAT.md
 

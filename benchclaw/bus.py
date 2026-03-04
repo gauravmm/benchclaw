@@ -66,28 +66,54 @@ class MessageBus:
     """
     Async message bus that decouples chat channels from the agent core.
 
+    Inbound messages are queued per-address; the agent subscribes to new-address
+    notifications via subscribe_new_addresses() and spawns a handler per address.
+
     Outbound messages are queued per-channel; any consumer for that channel
     receives the next message regardless of which chat it came from.
 
     Usage:
-        await bus.publish_outbound(msg)          # enqueues to msg.channel queue
-        await bus.consume_outbound(channel="x")  # next message for channel x
+        await bus.publish_inbound(msg)              # enqueues to msg.address queue
+        await bus.consume_inbound(address=addr)     # next message for that address
+        new_addrs = bus.subscribe_new_addresses()   # Queue[MessageAddress] of new addresses
+
+        await bus.publish_outbound(msg)             # enqueues to msg.channel queue
+        await bus.consume_outbound(channel="x")     # next message for channel x
     """
 
-    # FUTURE: Support a channel bias (that is, if messages are recieved on multiple channels, prioritize the channel currently being worked on.)
+    # FUTURE: Support a channel bias (that is, if messages are received on multiple channels, prioritize the channel currently being worked on.)
 
     def __init__(self):
-        self.inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
+        self.inbound: dict[MessageAddress, asyncio.Queue[InboundMessage]] = {}
+        self._address_subscribers: list[asyncio.Queue[MessageAddress]] = []
         self.outbound: dict[str, asyncio.Queue[OutboundMessage]] = {}
         self._channel_created = asyncio.Condition()
 
-    async def publish_inbound(self, msg: InboundMessage) -> None:
-        """Publish a message from a channel to the agent."""
-        await self.inbound.put(msg)
+    def subscribe_new_addresses(self) -> asyncio.Queue[MessageAddress]:
+        """Return a queue that receives each new MessageAddress as it first appears.
 
-    async def consume_inbound(self) -> InboundMessage:
-        """Consume the next inbound message (blocks until available)."""
-        return await self.inbound.get()
+        The caller owns the returned queue; it must be consumed to avoid memory growth.
+        All registered subscribers receive every new address.
+        """
+        q: asyncio.Queue[MessageAddress] = asyncio.Queue()
+        self._address_subscribers.append(q)
+        return q
+
+    async def publish_inbound(self, msg: InboundMessage) -> None:
+        """Publish a message from a channel to the agent.
+
+        Creates a new per-address queue on first use and notifies all subscribers.
+        No lock needed: asyncio is single-threaded so the check-then-set is atomic.
+        """
+        if msg.address not in self.inbound:
+            self.inbound[msg.address] = asyncio.Queue()
+            for sub in self._address_subscribers:
+                sub.put_nowait(msg.address)
+        await self.inbound[msg.address].put(msg)
+
+    async def consume_inbound(self, *, address: MessageAddress) -> InboundMessage:
+        """Consume the next inbound message for the given address (blocks until available)."""
+        return await self.inbound[address].get()
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """Enqueue a response into the channel's outbound queue, creating it if needed."""

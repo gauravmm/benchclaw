@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -12,8 +13,27 @@ from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.config import Config
-from benchclaw.providers.base import LLMProvider
+from benchclaw.providers.base import LLMProvider, ToolCallRequest
 from benchclaw.session import SessionManager
+
+
+@dataclass
+class ToolResultEvent:
+    """Posted to the per-address event queue when a background tool task completes."""
+
+    iteration_id: int
+    tool_call_id: str
+    tool_name: str
+    result: str
+
+
+@dataclass
+class PendingIteration:
+    """Tracks in-flight tool calls for one LLM response."""
+
+    id: int
+    results: dict[str, str | None]  # tool_call_id -> result, None if still running
+    tool_names: dict[str, str]  # tool_call_id -> tool_name
 
 
 class AgentLoop:
@@ -21,11 +41,13 @@ class AgentLoop:
     The agent loop is the core processing engine.
 
     It:
-    1. Receives messages from the bus
-    2. Builds context with history, memory, skills
-    3. Calls the LLM
-    4. Executes tool calls
-    5. Sends responses back
+    1. Subscribes to per-address inbound queues from the bus
+    2. For each address, runs an event-driven loop that processes both user
+       messages (InboundMessage) and background tool results (ToolResultEvent)
+    3. Calls the LLM whenever there is something to process
+    4. Dispatches tool calls as background asyncio tasks; results are posted
+       back to the per-address event queue when done
+    5. Sends final responses back via the bus
     """
 
     def __init__(self, config: Config, bus: MessageBus, provider: LLMProvider):
@@ -46,31 +68,128 @@ class AgentLoop:
         )
         self.tools = ToolRegistry(config.tools, master_ctx)
 
-    async def _run_agent_loop(
-        self, initial_messages: list[dict], call_ctx: ToolContext
-    ) -> tuple[str | None, list[str]]:
-        """
-        Run the agent iteration loop.
+    async def _fanin(self, addr: MessageAddress, event_queue: asyncio.Queue) -> None:
+        """Bridge bus.inbound[addr] (InboundMessages) into the shared per-address event queue."""
+        while True:
+            msg = await self.bus.consume_inbound(address=addr)
+            await event_queue.put(msg)
 
-        Args:
-            initial_messages: Starting messages for the LLM conversation.
-            call_ctx: Per-call context including session address.
-
-        Returns:
-            Tuple of (final_content, list_of_tools_used).
-        """
-        messages = initial_messages
-        final_content = None
-        tools_used: list[str] = []
-
-        for _ in range(self.config.max_tool_iterations):
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(master=True),
-                model=self.config.model,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
+    async def _run_tool_and_post(
+        self,
+        tc: ToolCallRequest,
+        iter_id: int,
+        call_ctx: ToolContext,
+        event_queue: asyncio.Queue,
+    ) -> None:
+        """Execute a single tool call and post a ToolResultEvent when done."""
+        try:
+            result = await self.tools.execute(tc.name, tc.arguments, call_ctx)
+        except Exception as e:
+            result = f"Error executing {tc.name}: {e}"
+        await event_queue.put(
+            ToolResultEvent(
+                iteration_id=iter_id,
+                tool_call_id=tc.id,
+                tool_name=tc.name,
+                result=result,
             )
+        )
+
+    async def _address_loop(self, addr: MessageAddress, queue: asyncio.Queue) -> None:
+        """
+        Event-driven processing loop for a single address.
+
+        Processes InboundMessage and ToolResultEvent events from the queue,
+        calling the LLM after each and dispatching any tool calls as background tasks.
+        """
+        session = self.sessions.get(addr)
+        call_ctx = ToolContext(
+            workspace=self.tools._master_ctx.workspace,
+            bus=self.bus,
+            address=addr,
+        )
+        messages: list[dict] = []
+        pending: PendingIteration | None = None
+        iteration_count = 0
+
+        while True:
+            event = await queue.get()
+
+            if isinstance(event, InboundMessage):
+                # Close any pending tool iteration with synthetic results so the
+                # conversation remains valid for the next LLM call.
+                if pending is not None:
+                    for tool_id, result in pending.results.items():
+                        messages = self.context.add_tool_result(
+                            messages,
+                            tool_id,
+                            pending.tool_names[tool_id],
+                            result if result is not None else "[Tool still running in background]",
+                        )
+                    pending = None
+
+                preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
+                logger.info(f"Processing message from {addr}: {preview}")
+
+                if not messages:
+                    messages = self.context.build_messages(
+                        history=session.get_history(max_messages=self.config.memory_window),
+                        current_message=event.content,
+                        tools=self.tools,
+                        media=event.media or None,
+                        channel=event.channel,
+                        chat_id=event.chat_id,
+                    )
+                else:
+                    messages.append({"role": "user", "content": event.content})
+
+                session.add_message("user", event.content)
+                iteration_count = 0
+
+            elif isinstance(event, ToolResultEvent):
+                if pending is None or event.iteration_id != pending.id:
+                    # The iteration was already closed by a user message that arrived
+                    # while the tool was still running. Deliver as a background notification.
+                    notification = (
+                        f"[Background tool '{event.tool_name}' completed]: {event.result}"
+                    )
+                    messages.append({"role": "user", "content": notification})
+                    session.add_message("user", notification)
+                else:
+                    pending.results[event.tool_call_id] = event.result
+                    if any(v is None for v in pending.results.values()):
+                        continue  # still waiting for other tools in this iteration
+                    for tool_id, result in pending.results.items():
+                        if result is not None:
+                            messages = self.context.add_tool_result(
+                                messages, tool_id, pending.tool_names[tool_id], result
+                            )
+                    pending = None
+
+            # Call LLM (shared path for both event types)
+            if iteration_count >= self.config.max_tool_iterations:
+                logger.warning(f"Max tool iterations reached for {addr}")
+                continue
+
+            try:
+                response = await self.provider.chat(
+                    messages=messages,
+                    tools=self.tools.get_definitions(master=True),
+                    model=self.config.model,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                )
+            except Exception as e:
+                logger.error(f"LLM error for {addr}: {e}")
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        address=addr,
+                        content=f"Sorry, I encountered an error: {e}",
+                    )
+                )
+                continue
+
+            iteration_count += 1
 
             if response.has_tool_calls:
                 tool_call_dicts = [
@@ -87,95 +206,70 @@ class AgentLoop:
                     tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
-
-                # FUTURE: Dispatch these and lazily wait for responses.
-                for tool_call in response.tool_calls:
-                    tools_used.append(tool_call.name)
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments, call_ctx)
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
-                    )
-                # FUTURE: Break this off into its own file:
                 messages.append(
                     {
                         "role": "system",
                         "content": "Process the results and continue computation. If no further processing is required, produce a concluding message for the user or (no message) if one is not required",
                     }
                 )
+
+                iter_id = id(response)
+                pending = PendingIteration(
+                    id=iter_id,
+                    results={tc.id: None for tc in response.tool_calls},
+                    tool_names={tc.id: tc.name for tc in response.tool_calls},
+                )
+                for tc in response.tool_calls:
+                    args_str = json.dumps(tc.arguments, ensure_ascii=False)
+                    logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
+                    asyncio.create_task(
+                        self._run_tool_and_post(tc, iter_id, call_ctx, queue),
+                        name=f"tool-{tc.name}-{tc.id[:8]}",
+                    )
+
+                if response.content:
+                    await self.bus.publish_outbound(
+                        OutboundMessage(address=addr, content=response.content)
+                    )
             else:
-                final_content = response.content
-                break
-
-        return final_content, tools_used
-
-    async def _process_message(
-        self, msg: InboundMessage, session_key: MessageAddress | None = None
-    ) -> OutboundMessage | None:
-        """
-        Process a single inbound message.
-
-        Args:
-            msg: The inbound message to process.
-            session_key: Override session address (used by process_direct).
-
-        Returns:
-            The response message, or None if no response needed.
-        """
-        preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-        logger.info(f"Processing message from {msg.address}: {preview}")
-
-        session = self.sessions.get(msg.address)
-
-        call_ctx = ToolContext(
-            workspace=self.tools._master_ctx.workspace,
-            bus=self.bus,
-            address=msg.address,
-        )
-
-        initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.config.memory_window),
-            current_message=msg.content,
-            tools=self.tools,
-            media=msg.media if msg.media else None,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-        )
-        final_content, tools_used = await self._run_agent_loop(initial_messages, call_ctx)
-
-        if final_content is None:
-            final_content = "I've completed processing but have no response to give."
-
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
-
-        session.add_message("user", msg.content)
-        session.add_message(
-            "assistant", final_content, tools_used=tools_used if tools_used else None
-        )
-        return OutboundMessage(address=msg.address, content=final_content, metadata=msg.metadata)
+                final = (
+                    response.content or "I've completed processing but have no response to give."
+                )
+                messages = self.context.add_assistant_message(messages, final)
+                session.add_message("assistant", final)
+                preview = final[:120] + "..." if len(final) > 120 else final
+                logger.info(f"Response to {addr}: {preview}")
+                await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         async with self.sessions:
-            async with self.tools:  # starts all tool background() tasks (cron, heartbeat, etc.)
+            async with self.tools:
                 logger.info("Agent loop started")
+                new_addr_queue = self.bus.subscribe_new_addresses()
+                fanin_tasks: dict[MessageAddress, asyncio.Task] = {}
+                addr_tasks: dict[MessageAddress, asyncio.Task] = {}
 
-                while True:
-                    try:
-                        msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-                        try:
-                            response = await self._process_message(msg)
-                            if response:
-                                await self.bus.publish_outbound(response)
-                        except Exception as e:
-                            logger.error(f"Error processing message: {e}")
-                            await self.bus.publish_outbound(
-                                OutboundMessage(
-                                    address=msg.address,
-                                    content=f"Sorry, I encountered an error: {str(e)}",
-                                )
-                            )
-                    except asyncio.TimeoutError:
-                        continue
+                async def _dispatch() -> None:
+                    while True:
+                        addr = await new_addr_queue.get()
+                        q: asyncio.Queue[InboundMessage | ToolResultEvent] = asyncio.Queue()
+                        fanin_tasks[addr] = asyncio.create_task(
+                            self._fanin(addr, q), name=f"fanin-{addr}"
+                        )
+                        addr_tasks[addr] = asyncio.create_task(
+                            self._address_loop(addr, q), name=f"agent-{addr}"
+                        )
+
+                dispatch_task = asyncio.create_task(_dispatch())
+                try:
+                    await asyncio.get_event_loop().create_future()  # run forever
+                except asyncio.CancelledError:
+                    for t in [dispatch_task, *fanin_tasks.values(), *addr_tasks.values()]:
+                        t.cancel()
+                    await asyncio.gather(
+                        dispatch_task,
+                        *fanin_tasks.values(),
+                        *addr_tasks.values(),
+                        return_exceptions=True,
+                    )
