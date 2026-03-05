@@ -6,11 +6,17 @@ from typing import Any
 from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
 
 
-def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
+def _resolve_path(path: str, ctx: ToolContext) -> Path:
     """Resolve path and optionally enforce directory restriction."""
-    resolved = Path(path).expanduser().resolve()
-    if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
-        raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
+    if path.startswith("/"):
+        resolved = Path(path)
+    else:
+        resolved = ctx.workspace / path
+    resolved = resolved.expanduser().resolve()
+
+    # TODO: Support allowed_dir
+    # if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
+    #     raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
     return resolved
 
 
@@ -46,7 +52,7 @@ class ReadFileTool(Tool):
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_path(path, ctx)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
@@ -77,9 +83,9 @@ class WriteFileTool(Tool):
     @property
     def description(self) -> str | None:
         return (
-            "Write (or overwrite) a file at the given path with the supplied content string, creating intermediate directories as needed. "
+            "Write (or overwrite) a file at the given path relative to the workspace dir with the supplied content string, creating intermediate directories as needed. "
             "Use `edit_file` instead when making targeted changes to an existing file to avoid discarding surrounding content. "
-            "Example: `{'path': '/home/user/output.txt', 'content': 'Hello, world!'}`."
+            "Example: `{'path': 'output.txt', 'content': 'Hello, world!'}`."
         )
 
     @property
@@ -87,7 +93,10 @@ class WriteFileTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "The file path to write to"},
+                "path": {
+                    "type": "string",
+                    "description": "The file path to write to relative to the workspace dir",
+                },
                 "content": {"type": "string", "description": "The content to write"},
             },
             "required": ["path", "content"],
@@ -95,7 +104,7 @@ class WriteFileTool(Tool):
 
     async def execute(self, ctx: ToolContext, path: str, content: str, **kwargs: Any) -> str:
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_path(path, ctx)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} bytes to {path}"
@@ -143,7 +152,7 @@ class EditFileTool(Tool):
         self, ctx: ToolContext, path: str, old_text: str, new_text: str, **kwargs: Any
     ) -> str:
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_path(path, ctx)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
 
@@ -184,9 +193,9 @@ class ListDirTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "List the files and subdirectories in a directory, sorted alphabetically with a folder/file prefix icon on each entry. "
+            "List the files and subdirectories in a directory relative to the workspace, sorted alphabetically with a folder/file prefix icon on each entry. "
             "Returns an error if the path does not exist or is not a directory. "
-            "Example: `{'path': '/home/user/projects'}`."
+            "Example: `{'path': 'memory/'}`."
         )
 
     @property
@@ -199,7 +208,7 @@ class ListDirTool(Tool):
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
         try:
-            dir_path = _resolve_path(path, self._allowed_dir)
+            dir_path = _resolve_path(path, ctx)
             if not dir_path.exists():
                 return f"Error: Directory not found: {path}"
             if not dir_path.is_dir():

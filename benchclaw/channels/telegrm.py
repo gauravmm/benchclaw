@@ -192,6 +192,8 @@ class TelegramChannel(BaseChannel):
 
         try:
             await asyncio.Future()  # Wait forever until CancelledError
+        except asyncio.CancelledError:
+            pass
         finally:
             # Cancel all typing indicators
             for chat_id in list(self._typing_tasks):
@@ -248,7 +250,7 @@ class TelegramChannel(BaseChannel):
         await self._handle_message(
             sender_id=str(update.effective_user.id),
             chat_id=str(update.message.chat_id),
-            content=update.message.text,
+            content=update.message.text or "(no text)",
         )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -276,7 +278,7 @@ class TelegramChannel(BaseChannel):
         if message.text:
             content_parts.append(message.text)
         if message.caption:
-            content_parts.append(message.caption)
+            content_parts.append(f"caption: {message.caption}")
 
         # Handle media files
         media_file = None

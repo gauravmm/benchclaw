@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "nanobot",
+      "name": "benchclaw",
       "type": "debugpy",
       "request": "launch",
-      "module": "nanobot",
+      "module": "benchclaw",
       "args": ["--verbose"],
       "cwd": "${workspaceFolder}",
       "justMyCode": true

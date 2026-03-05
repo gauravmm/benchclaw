@@ -130,6 +130,9 @@ class WhatsAppChannel(BaseChannel):
         elif msg_type == "error":
             logger.error(f"WhatsApp bridge error: {data.get('error')}")
 
+        elif msg_type == "sent":
+            pass  # Ignore the acknowledgement.
+
         else:
             logger.error(f"Unknown type: {msg_type}: " + str(data))
 

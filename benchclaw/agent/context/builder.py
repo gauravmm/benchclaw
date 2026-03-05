@@ -28,7 +28,7 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         self._jinja = Environment(
-            loader=PackageLoader("nanobot.agent.context", "templates"),
+            loader=PackageLoader("benchclaw.agent.context", "templates"),
             keep_trailing_newline=True,
         )
 
