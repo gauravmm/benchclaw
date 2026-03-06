@@ -1,60 +1,114 @@
-# nanobot — Claude Code Guide
+# benchclaw — Claude Code Guide
 
-nanobot is an ultra-lightweight personal AI assistant (~4,000 lines of core code). It connects one or more chat channels (Telegram, WhatsApp, Email, …) to an LLM agent via an async message bus.
+benchclaw is an ultra-lightweight personal AI assistant. It connects one or more chat channels (Telegram, WhatsApp, Email, …) to an LLM agent via an async message bus.
 
 ## Package Layout
 
 ```
-nanobot/
-  agent/       AgentLoop, memory, context, skills, subagent
-  bus/         Async message bus (InboundMessage / OutboundMessage events)
-  channels/    One file per chat platform + base.py + manager.py
-  cli/         Typer CLI entry point (commands.py)
-  config/      Pydantic schema (schema.py) + YAML loader (loader.py)
-  cron/        Scheduled task service
-  heartbeat/   Periodic self-prompting service
-  providers/   LLM provider registry + transcription
-  session/     Conversation session manager
-  skills/      Bundled agent skill prompts
-bridge/        Node.js WhatsApp bridge (@whiskeysockets/baileys)
-config/        Runtime config file location (config.yaml)
+benchclaw/
+  agent/
+    loop.py          Event-driven AgentLoop (one asyncio task per address)
+    context/         ContextBuilder: assembles system prompt + message history
+    skills.py        Skill prompt loader
+    subagent.py      SubagentManager (not yet wired up)
+    tools/
+      base.py        Tool, ToolContext, register_tool()
+      registry.py    ToolRegistry: lifecycle + execution
+      filesystem.py  read_file, write_file, glob, …
+      shell.py       exec
+      web.py         web_fetch
+      memory.py      memory read/write
+      message.py     send_message (routes OutboundMessage via bus)
+      kill.py        kill (cancel a background tool task by tool_call_id)
+      spawn.py       spawn (subagent, master_only; SubagentManager not yet wired)
+      cron/          cron tool + type helpers
+  bus.py             MessageBus: per-address inbound queues, per-channel outbound queues
+  channels/
+    base.py          ChannelConfig, BaseChannel, register_channel()
+    manager.py       ChannelManager: owns channel tasks + outbound dispatchers
+    telegrm.py       Telegram
+    whatsapp.py      WhatsApp (requires bridge/)
+    smtp_email.py    SMTP email
+  config.py          Config (pydantic_settings), ConfigManager (YAML load/save)
+  providers/         LLM provider registry; litellm_provider.py wraps LiteLLM
+  session.py         SessionManager: per-address JSONL conversation history
+  __main__.py        Entry point
+
+bridge/              Node.js WhatsApp bridge (@whiskeysockets/baileys)
+config/              Runtime config (config/config.yaml)
 ```
 
-## Key Conventions
+## Message Bus (`bus.py`)
 
-**Channels** — each platform lives in `nanobot/channels/<name>.py` and follows this pattern:
-- Define `<Name>Config(ChannelConfig)` in the same file (no `enabled` field — presence in config is sufficient)
-- Define `<Name>Channel(BaseChannel)` with `background()` and `send()`
-- `background()` runs forever until `CancelledError`; do cleanup in a `finally` block
+```
+bus.inbound:  dict[MessageAddress, Queue[InboundMessage | ToolResultEvent]]
+bus.outbound: dict[str (channel), Queue[OutboundMessage]]
+```
+
+- `publish_inbound(msg)` — channel → bus; creates the per-address queue on first use and notifies `subscribe_new_addresses()` subscribers
+- `publish_tool_result(addr, event)` — background tool task → bus; posts to existing per-address queue
+- `consume_inbound(address=addr)` — agent loop reads from per-address queue
+- `subscribe_new_addresses()` — returns a `Queue[MessageAddress]` that receives each new address as it first appears; used by `AgentLoop.run()` to spawn per-address tasks
+- `consume_outbound(channel=name)` — channel dispatcher reads its own queue
+
+`ToolResultEvent(tool_call_id, tool_name, result)` and `AddressEvent = InboundMessage | ToolResultEvent` are defined in `bus.py`.
+
+## Agent Loop (`agent/loop.py`)
+
+Fully event-driven. `run()` subscribes to new addresses and spawns one `_address_loop` task per `MessageAddress`. Each address loop:
+
+1. Reads `AddressEvent` directly from `bus.consume_inbound(address=addr)`
+2. On `InboundMessage`: if tools are in-flight, adds synthetic tool results + a system message listing them, then processes the user message normally
+3. On `ToolResultEvent`: records the result; calls LLM once all in-flight tools for the current batch are done; if the iteration was already closed by an earlier user message, delivers the result as a background notification instead
+4. Calls LLM after each event (respecting `max_tool_iterations`)
+5. On LLM tool calls: stores `asyncio.Task` handles in `background_tasks` (keyed by `tool_call_id`), tracks names in `in_flight`, dispatches `_run_tool_and_post` tasks
+6. `_run_tool_and_post` catches `CancelledError` and posts `"Cancelled."` as the result so the conversation stays consistent
+
+`ToolContext.background_tasks` (`dict[str, Task]`) is set per-address and gives tools (like `kill`) access to the task handles.
+
+## Tools
+
+**Conventions:**
+
+- Each tool lives in `benchclaw/agent/tools/<name>.py`
+- Define a class inheriting `Tool`, implement `name`, `description`, `parameters`, `execute(ctx, **kwargs)`
+- Call `register_tool("name", ToolClass)` at module level
+- Call `register_tool_config("name", ConfigClass)` if the tool has config; the config becomes a field on `ToolsConfig`
+- Import the module in `benchclaw/agent/tools/__init__.py`
+- `master_only = True` excludes the tool from subagent registries
+
+**`ToolContext` fields:**
+
+- `workspace: Path`
+- `bus: MessageBus | None`
+- `address: MessageAddress | None` — current session
+- `background_tasks: dict[str, Task] | None` — master loop only; keyed by `tool_call_id`
+- `is_subagent: bool`
+- `subagent_manager` — not yet wired
+
+## Channels
+
+Each platform lives in `benchclaw/channels/<name>.py`:
+
+- Define `<Name>Config(ChannelConfig)` with `make_channel(bus)` — no `enabled` field; presence in config is sufficient
+- Define `<Name>Channel(BaseChannel)` with `background()` and `send(msg)`
+- `background()` runs forever; do cleanup in a `finally` block on `CancelledError`
 - `send()` is called by the dispatcher to deliver outbound messages
-- `ChannelManager` (in `manager.py`) owns all channel tasks and cancels them on shutdown
+- Call `register_channel("name", ConfigClass)` at module level
+- `ChannelManager` owns all channel tasks and outbound dispatcher tasks; cancels them on shutdown
 
-**Config** — `nanobot/config/schema.py` is the single source of truth:
+## Config (`config.py`)
+
 - `Config` is a `pydantic_settings.BaseSettings` (env prefix `NANOBOT_`, delimiter `__`)
-- `ChannelConfigs` aggregates all channel configs via class-body imports (avoids circular deps with the `nanobot.channels.*` → `nanobot.config` import chain)
-- Config is loaded from `config/config.yaml` (YAML, not JSON)
-
-**Message Bus** — `InboundMessage` flows channel → `bus.inbound` → `AgentLoop`; `OutboundMessage` flows `AgentLoop` → `bus.outbound` → dispatcher → channel.
-
-**Async task ownership** — `ChannelManager` creates and cancels all tasks; individual channels do not manage their own task handles.
-
-## Active Refactor
-
-The codebase is undergoing a large refactor to improve code quality. Key changes already made or in progress:
-
-- Channel configs moved from `config/schema.py` into their respective channel files
-- `enabled` removed from all channel configs
-- `BaseChannel.start()` / `stop()` replaced with `background()` + asyncio task cancellation
-- `ChannelManager` now takes `Config` and initialises all channels; stopping is via task cancellation, not `channel.stop()`
-- Config serialisation switched from JSON to YAML
-
-When editing channel or config code, follow the new patterns above rather than the old ones (which may still appear in git history or other channels not yet migrated).
+- `ToolsConfig` and `ChannelConfigs` are built dynamically from the tool/channel registries
+- Loaded from `config/config.yaml`; written on first run with defaults
+- Channel configs live in their channel files, not in `config.py`
 
 ## Running Locally
 
 ```bash
-uv run nanobot gateway          # start all configured channels + agent
-python -m nanobot.channels.whatsapp [ws://localhost:3001] [chat_id]  # test WhatsApp bridge
+uv run benchclaw          # start all configured channels + agent
+python -m benchclaw.channels.whatsapp [ws://localhost:3001] [chat_id]  # test WhatsApp bridge
 ```
 
 Config file: `config/config.yaml` (created automatically on first run with defaults).
