@@ -37,9 +37,10 @@ class ReadFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Read the full text content of a file at the given absolute or relative path. "
-            "Returns an error if the file does not exist or is not a regular file. "
-            "Example: `{'path': '/home/user/notes.txt'}`."
+            "Read the complete contents of a file from the file system. "
+            "Use this tool when you need to examine the contents of a single file. "
+            "Returns a detailed error if the file cannot be read or is not a regular file. "
+            "Example: `{'path': 'README.md'}`."
         )
 
     @property
@@ -83,9 +84,10 @@ class WriteFileTool(Tool):
     @property
     def description(self) -> str | None:
         return (
-            "Write (or overwrite) a file at the given path relative to the workspace dir with the supplied content string, creating intermediate directories as needed. "
-            "Use `edit_file` instead when making targeted changes to an existing file to avoid discarding surrounding content. "
-            "Example: `{'path': 'output.txt', 'content': 'Hello, world!'}`."
+            "Create a new file or completely overwrite an existing file with new content. "
+            "Use with caution because it replaces the full file contents. "
+            "Creates parent directories as needed and returns a detailed error if the write fails. "
+            "Example: `{'path': 'notes/output.txt', 'content': 'Hello, world!'}`."
         )
 
     @property
@@ -131,9 +133,10 @@ class EditFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Replace an exact substring in an existing file; `old_text` must appear exactly once or the edit is rejected. "
-            "Prefer this over `write_file` for targeted changes to avoid accidentally overwriting surrounding content. "
-            "Example: `{'path': 'config.yaml', 'old_text': 'port: 8080', 'new_text': 'port: 9090'}`."
+            "Make a targeted edit to an existing text file by replacing an exact string match. "
+            "This is safer than overwriting the whole file when you only need to change part of it. "
+            "The edit is rejected if the original text is missing or appears more than once. "
+            "Example: `{'path': 'config/config.yaml', 'old_text': 'port: 8080', 'new_text': 'port: 9090'}`."
         )
 
     @property
@@ -193,9 +196,10 @@ class ListDirTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "List the files and subdirectories in a directory relative to the workspace, sorted alphabetically with a folder/file prefix icon on each entry. "
-            "Returns an error if the path does not exist or is not a directory. "
-            "Example: `{'path': 'memory/'}`."
+            "Get a detailed listing of the files and directories in a specified path. "
+            "Results clearly distinguish between files and directories and are sorted alphabetically. "
+            "This tool is useful for understanding directory structure and locating files before reading or editing them. "
+            "Example: `{'path': 'benchclaw/agent/tools'}`."
         )
 
     @property
