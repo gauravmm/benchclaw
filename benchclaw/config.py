@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings
 import benchclaw.agent.tools  # noqa: F401  # triggers register_tool_config() calls in all tool modules
 import benchclaw.channels  # noqa: F401  # triggers register_channel() calls in all channel modules
 from benchclaw.agent.tools.base import _TOOL_CONFIG_REGISTRY
+from benchclaw.agent.tools.mcp_manager import MCPServerConfig
 from benchclaw.channels.base import _CONFIG_REGISTRY, ChannelConfig
 
 
@@ -81,6 +82,7 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)  # pyright: ignore[reportInvalidTypeForm]
     tools: ToolsConfig = Field(default_factory=ToolsConfig)  # pyright: ignore[reportInvalidTypeForm]
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
     @property
     def workspace_path(self) -> Path:

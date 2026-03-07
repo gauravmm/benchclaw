@@ -9,6 +9,7 @@ from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
 from benchclaw.agent.tools.base import ToolContext
+from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import (
     InboundMessage,
@@ -52,7 +53,8 @@ class AgentLoop:
             bus=bus,
             # subagent_manager=self.subagents,
         )
-        self.tools = ToolRegistry(config.tools, master_ctx)
+        mcp_manager = MCPManager(config.mcp_servers) if config.mcp_servers else None
+        self.tools = ToolRegistry(config.tools, master_ctx, mcp_manager=mcp_manager)
 
     async def _run_tool_and_post(
         self,

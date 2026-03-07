@@ -10,6 +10,7 @@ from benchclaw.agent.tools.base import (
     Tool,
     ToolContext,
 )
+from benchclaw.agent.tools.mcp_manager import MCPManager
 
 
 class ToolRegistry:
@@ -21,9 +22,10 @@ class ToolRegistry:
     Raises RuntimeError if entered more than once on the same instance.
     """
 
-    def __init__(self, tools_config: Any, ctx: ToolContext):
+    def __init__(self, tools_config: Any, ctx: ToolContext, mcp_manager: MCPManager | None = None):
         self._tools: dict[str, Tool] = {}
         self._master_ctx = ctx
+        self._mcp_manager = mcp_manager
         self._running = False
 
         for name, tool_cls in _TOOL_REGISTRY.items():
@@ -40,6 +42,8 @@ class ToolRegistry:
         self._running = True
         for tool in self._tools.values():
             tool._task = asyncio.create_task(tool.background(self._master_ctx), name=tool.name)
+        if self._mcp_manager:
+            await self._mcp_manager.__aenter__()
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
@@ -49,6 +53,8 @@ class ToolRegistry:
                 with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                     await asyncio.wait_for(asyncio.shield(tool._task), timeout=5.0)
                 tool._task = None
+        if self._mcp_manager:
+            await self._mcp_manager.__aexit__(*exc_info)
         self._running = False
 
     def values(self, master: bool = True) -> Iterable[Tool]:
@@ -64,10 +70,18 @@ class ToolRegistry:
 
     def get_definitions(self, master: bool = True) -> list[dict[str, Any]]:
         """Get tool definitions in OpenAI format."""
-        return [tool.to_schema() for tool in self.values(master=master)]
+        defs = [tool.to_schema() for tool in self.values(master=master)]
+        if self._mcp_manager:
+            defs.extend(self._mcp_manager.get_definitions())
+        return defs
 
     async def execute(self, name: str, params: dict[str, Any], ctx: ToolContext) -> str:
         """Execute a tool by name with given parameters and call context."""
+        if self._mcp_manager and name in self._mcp_manager:
+            try:
+                return await self._mcp_manager.execute(name, params)
+            except Exception as e:
+                return f"Error executing MCP tool '{name}': {e}"
         tool = self._tools.get(name)
         if not tool:
             return f"Error: Tool '{name}' not found"
@@ -83,4 +97,4 @@ class ToolRegistry:
         return len(self._tools)
 
     def __contains__(self, name: str) -> bool:
-        return name in self._tools
+        return name in self._tools or (self._mcp_manager is not None and name in self._mcp_manager)
