@@ -20,7 +20,6 @@ benchclaw/
       memory.py      memory read/write
       message.py     send_message (routes OutboundMessage via bus)
       kill.py        kill (cancel a background tool task by tool_call_id)
-      spawn.py       spawn (subagent, master_only; SubagentManager not yet wired)
       cron/          cron tool + type helpers
   bus.py             MessageBus: per-address inbound queues, per-channel outbound queues
   channels/

@@ -7,7 +7,6 @@ import benchclaw.agent.tools.filesystem  # noqa: F401
 import benchclaw.agent.tools.memory  # noqa: F401
 import benchclaw.agent.tools.message  # noqa: F401
 import benchclaw.agent.tools.shell  # noqa: F401
-import benchclaw.agent.tools.spawn  # noqa: F401
 import benchclaw.agent.tools.web  # noqa: F401
 from benchclaw.agent.tools.base import (
     _TOOL_CONFIG_REGISTRY,
