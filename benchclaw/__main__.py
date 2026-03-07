@@ -1,0 +1,66 @@
+"""Entry point for nanobot: python -m nanobot [options]"""
+
+import argparse
+import asyncio
+import logging
+from pathlib import Path
+
+from benchclaw import __art__, __version__
+from benchclaw.agent.loop import AgentLoop
+from benchclaw.bus import MessageBus
+from benchclaw.channels.manager import ChannelManager
+from benchclaw.config import ConfigManager
+from benchclaw.providers.litellm_provider import LiteLLMProvider
+
+
+def run(args) -> None:
+    """Start the BenchClaw process"""
+    print(__art__ + f"{__version__:>51s}")
+    logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)
+
+    bus = MessageBus()
+
+    with ConfigManager(args.config) as config:
+        provider = LiteLLMProvider(config.provider)
+        channels = ChannelManager(config, bus)
+
+        print("BenchClaw starting")
+        if channels.channels:
+            print(f"Channels: {', '.join(channels.channels)}")
+        else:
+            print("Warning: no channels enabled")
+
+        async def run():
+            agent = AgentLoop(config=config, bus=bus, provider=provider)
+
+            try:
+                async with channels:
+                    await agent.run()
+            except KeyboardInterrupt:
+                print("\nShutting down...")
+            except asyncio.CancelledError:
+                return
+
+        asyncio.run(run())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="nanobot",
+        description="nanobot — personal AI assistant gateway",
+    )
+    parser.add_argument(
+        "--config", type=Path, default="config/config.yaml", help="config.yaml file to use"
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="enable info logging",
+    )
+    args = parser.parse_args()
+    run(args)
+
+
+if __name__ == "__main__":
+    main()

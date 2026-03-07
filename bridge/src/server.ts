@@ -22,7 +22,7 @@ export class BridgeServer {
   private wa: WhatsAppClient | null = null;
   private clients: Set<WebSocket> = new Set();
 
-  constructor(private port: number, private authDir: string, private token?: string) {}
+  constructor(private port: number, private authDir: string, private token?: string) { }
 
   async start(): Promise<void> {
     // Bind to localhost only — never expose to external network

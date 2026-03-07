@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "benchclaw",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "benchclaw",
+      "args": ["--verbose"],
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    }
+  ]
+}
