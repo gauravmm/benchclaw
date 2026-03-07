@@ -2,7 +2,7 @@
 
 from abc import abstractmethod
 from asyncio import Task
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -28,6 +28,15 @@ def register_tool_config(name: str, cls: type[BaseModel]) -> None:
 
 
 @dataclass
+class FileSnapshot:
+    """Observed metadata for a file that was read in the current tool context."""
+
+    path: Path
+    size: int
+    mtime_ns: int
+
+
+@dataclass
 class ToolContext:
     """Runtime context passed to Tool.build() and Tool.execute() during agent operation."""
 
@@ -36,6 +45,7 @@ class ToolContext:
     bus: MessageBus | None = None  # MessageBus; None for subagents
     subagent_manager: Any = None  # SubagentManager; None for subagents
     address: MessageAddress | None = None  # Current session address; None for background/subagents
+    file_snapshots: dict[Path, FileSnapshot] = field(default_factory=dict)
 
 
 class Tool:

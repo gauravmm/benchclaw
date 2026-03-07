@@ -1,10 +1,11 @@
 """File system tools: read, write, edit, and search."""
 
 import re
+from os import stat_result
 from pathlib import Path
 from typing import Any
 
-from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
+from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext, register_tool
 
 
 def _resolve_path(path: str, ctx: ToolContext) -> Path:
@@ -27,6 +28,45 @@ def _display_path(path: Path, ctx: ToolContext) -> str:
         return str(path.relative_to(ctx.workspace))
     except ValueError:
         return str(path)
+
+
+def _make_snapshot(path: Path, file_stat: stat_result) -> FileSnapshot:
+    """Build a cached snapshot from stat metadata."""
+    return FileSnapshot(path=path, size=file_stat.st_size, mtime_ns=file_stat.st_mtime_ns)
+
+
+def _record_snapshot(ctx: ToolContext, path: Path) -> None:
+    """Record the current metadata for a file in the session cache."""
+    ctx.file_snapshots[path] = _make_snapshot(path, path.stat())
+
+
+def _require_fresh_snapshot(ctx: ToolContext, path: Path) -> str | None:
+    """Require that an existing file was read and has not changed since then."""
+    display_path = _display_path(path, ctx)
+    snapshot = ctx.file_snapshots.get(path)
+    if snapshot is None:
+        return (
+            f"Error: Refusing to modify existing file '{display_path}' because it has not been "
+            "read in this session. Read it first with read_file."
+        )
+
+    try:
+        current_stat = path.stat()
+    except FileNotFoundError:
+        return (
+            f"Error: Refusing to modify '{display_path}' because it existed when read but no "
+            "longer exists. Re-read the file and retry."
+        )
+
+    if current_stat.st_size != snapshot.size or current_stat.st_mtime_ns != snapshot.mtime_ns:
+        return (
+            f"Error: Refusing to modify '{display_path}' because it changed after it was read. "
+            f"Expected size={snapshot.size} mtime_ns={snapshot.mtime_ns}, current "
+            f"size={current_stat.st_size} mtime_ns={current_stat.st_mtime_ns}. Re-read the "
+            "file and retry."
+        )
+
+    return None
 
 
 class ReadFileTool(Tool):
@@ -74,6 +114,7 @@ class ReadFileTool(Tool):
                 return f"Error: Not a file: {path}"
 
             content = file_path.read_text(encoding="utf-8")
+            _record_snapshot(ctx, file_path)
             return content
         except PermissionError as e:
             return f"Error: {e}"
@@ -121,8 +162,16 @@ class WriteFileTool(Tool):
     async def execute(self, ctx: ToolContext, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, ctx)
+            if file_path.exists():
+                if not file_path.is_file():
+                    return f"Error: Not a file: {path}"
+                snapshot_error = _require_fresh_snapshot(ctx, file_path)
+                if snapshot_error is not None:
+                    return snapshot_error
+
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
+            _record_snapshot(ctx, file_path)
             return f"Successfully wrote {len(content)} bytes to {path}"
         except PermissionError as e:
             return f"Error: {e}"
@@ -175,6 +224,12 @@ class EditFileTool(Tool):
             file_path = _resolve_path(path, ctx)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
+            if not file_path.is_file():
+                return f"Error: Not a file: {path}"
+
+            snapshot_error = _require_fresh_snapshot(ctx, file_path)
+            if snapshot_error is not None:
+                return snapshot_error
 
             content = file_path.read_text(encoding="utf-8")
 
@@ -188,6 +243,7 @@ class EditFileTool(Tool):
 
             new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
+            _record_snapshot(ctx, file_path)
 
             return f"Successfully edited {path}"
         except PermissionError as e:

@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 
 from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.filesystem import GlobTool, GrepTool
+from benchclaw.agent.tools.filesystem import (
+    EditFileTool,
+    GlobTool,
+    GrepTool,
+    ReadFileTool,
+    WriteFileTool,
+)
 
 
 @pytest.mark.asyncio
@@ -48,3 +54,70 @@ async def test_grep_supports_regex_on_single_file(tmp_path: Path) -> None:
     result = await tool.execute(ctx, pattern="^ERROR", path="app.log", is_regex=True)
 
     assert result == "app.log:2: ERROR failed"
+
+
+@pytest.mark.asyncio
+async def test_write_existing_file_requires_prior_read(tmp_path: Path) -> None:
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("old\n", encoding="utf-8")
+
+    tool = WriteFileTool()
+    ctx = ToolContext(workspace=tmp_path)
+
+    result = await tool.execute(ctx, path="notes.txt", content="new\n")
+
+    assert result == (
+        "Error: Refusing to modify existing file 'notes.txt' because it has not been read in "
+        "this session. Read it first with read_file."
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_existing_file_fails_if_changed_after_read(tmp_path: Path) -> None:
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("old\n", encoding="utf-8")
+
+    read_tool = ReadFileTool()
+    write_tool = WriteFileTool()
+    ctx = ToolContext(workspace=tmp_path)
+
+    assert await read_tool.execute(ctx, path="notes.txt") == "old\n"
+    file_path.write_text("externally changed\n", encoding="utf-8")
+
+    result = await write_tool.execute(ctx, path="notes.txt", content="new\n")
+
+    assert result.startswith(
+        "Error: Refusing to modify 'notes.txt' because it changed after it was read."
+    )
+
+
+@pytest.mark.asyncio
+async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("hello world\n", encoding="utf-8")
+
+    read_tool = ReadFileTool()
+    edit_tool = EditFileTool()
+    ctx = ToolContext(workspace=tmp_path)
+
+    assert await read_tool.execute(ctx, path="notes.txt") == "hello world\n"
+    result = await edit_tool.execute(
+        ctx,
+        path="notes.txt",
+        old_text="hello",
+        new_text="goodbye",
+    )
+
+    assert result == "Successfully edited notes.txt"
+    assert file_path.read_text(encoding="utf-8") == "goodbye world\n"
+
+    second_result = await edit_tool.execute(
+        ctx,
+        path="notes.txt",
+        old_text="goodbye",
+        new_text="hello",
+    )
+
+    assert second_result == "Successfully edited notes.txt"
