@@ -14,7 +14,7 @@ benchclaw/
     tools/
       base.py        Tool, ToolContext, register_tool()
       registry.py    ToolRegistry: lifecycle + execution
-      filesystem.py  read_file, write_file, glob, …
+      filesystem.py  read_file, write_file, edit_file, list_dir, glob, grep
       shell.py       exec
       web.py         web_fetch
       memory.py      memory read/write
