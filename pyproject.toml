@@ -1,8 +1,8 @@
 [project]
-name = "nanobot-ai"
-version = "0.1.3.post7"
+name = "benchclaw-ai"
+version = "0.1.0"
 description = "A lightweight personal AI assistant framework"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = {text = "MIT"}
 authors = [
     {name = "nanobot contributors"}
@@ -53,9 +53,6 @@ dev = [
     "ruff>=0.1.0",
 ]
 
-[project.scripts]
-nanobot = "nanobot.__main__:main"
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -73,9 +70,10 @@ reportIncompatibleMethodOverride = "none"
 
 [tool.vulture]
 min_confidence = 80
-paths = ["nanobot"]
+paths = ["benchclaw"]
 
 [dependency-groups]
 dev = [
+    "ruff>=0.15.1",
     "vulture>=2.14",
 ]
