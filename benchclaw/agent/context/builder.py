@@ -104,45 +104,15 @@ class ContextBuilder:
             return text
         return images + [{"type": "text", "text": text}]
 
-    def add_tool_result(
-        self, messages: list[dict[str, Any]], tool_call_id: str, tool_name: str, result: str
-    ) -> list[dict[str, Any]]:
-        """
-        Add a tool result to the message list.
+    def tool_result(self, tool_call_id: str, tool_name: str, result: str) -> dict[str, Any]:
+        return {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result}
 
-        Args:
-            messages: Current message list.
-            tool_call_id: ID of the tool call.
-            tool_name: Name of the tool.
-            result: Tool execution result.
-
-        Returns:
-            Updated message list.
-        """
-        messages.append(
-            {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result}
-        )
-        return messages
-
-    def add_assistant_message(
+    def assistant_message(
         self,
-        messages: list[dict[str, Any]],
         content: str | None,
         tool_calls: list[dict[str, Any]] | None = None,
         reasoning_content: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """
-        Add an assistant message to the message list.
-
-        Args:
-            messages: Current message list.
-            content: Message content.
-            tool_calls: Optional tool calls.
-            reasoning_content: Thinking output (Kimi, DeepSeek-R1, etc.).
-
-        Returns:
-            Updated message list.
-        """
+    ) -> dict[str, Any]:
         msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
 
         if tool_calls:
@@ -152,8 +122,7 @@ class ContextBuilder:
         if reasoning_content:
             msg["reasoning_content"] = reasoning_content
 
-        messages.append(msg)
-        return messages
+        return msg
 
 
 if __name__ == "__main__":

@@ -25,12 +25,14 @@ class Session:
     """
 
     addr: MessageAddress
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     # TODO: When this hits a threshold, log a summary and continue from that point.
     last_consolidated: int = 0
+    # In-memory LLM context for the current run; not persisted.
+    live_messages: list[dict[str, Any]] = field(default_factory=list)
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -40,16 +42,17 @@ class Session:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             **kwargs,
         }
-        self.messages.append(msg)
+        self.history.append(msg)
         self.updated_at = datetime.now()
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """Get recent messages in LLM format (role + content only)."""
-        return [{"role": m["role"], "content": m["content"]} for m in self.messages[-max_messages:]]
+        return [{"role": m["role"], "content": m["content"]} for m in self.history[-max_messages:]]
 
     def clear(self) -> None:
         """Clear all messages and reset session to initial state."""
-        self.messages = []
+        self.history = []
+        self.live_messages = []
         self.last_consolidated = 0
         self.updated_at = datetime.now()
 
@@ -93,7 +96,7 @@ class Session:
 
             return cls(
                 addr=addr,
-                messages=messages,
+                history=messages,
                 created_at=created_at or datetime.now(),
                 metadata=metadata,
                 last_consolidated=last_consolidated,
@@ -114,7 +117,7 @@ class Session:
                 "last_consolidated": self.last_consolidated,
             }
             f.write(json.dumps(metadata_line) + "\n")
-            for msg in self.messages:
+            for msg in self.history:
                 f.write(json.dumps(msg) + "\n")
 
 

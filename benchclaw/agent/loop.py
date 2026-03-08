@@ -92,7 +92,6 @@ class AgentLoop:
             bus=self.bus,
             address=addr,
         )
-        messages: list[dict] = []
         in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
         iteration_count = 0
 
@@ -104,11 +103,13 @@ class AgentLoop:
                     # Satisfy the API format (tool results required before next user message),
                     # then tell the LLM which tools are still running in the background.
                     for tool_id, tool_name in in_flight.items():
-                        messages = self.context.add_tool_result(
-                            messages, tool_id, tool_name, "[executing in background]"
+                        session.live_messages.append(
+                            self.context.tool_result(
+                                tool_id, tool_name, "[executing in background]"
+                            )
                         )
                     tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in in_flight.items())
-                    messages.append(
+                    session.live_messages.append(
                         {
                             "role": "system",
                             "content": f"The following tools are still executing in the background: {tool_list}. Their results will arrive as new messages.",
@@ -119,8 +120,8 @@ class AgentLoop:
                 preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
                 logger.info(f"Processing message from {addr}: {preview}")
 
-                if not messages:
-                    messages = self.context.build_messages(
+                if not session.live_messages:
+                    session.live_messages = self.context.build_messages(
                         history=session.get_history(max_messages=self.config.memory_window),
                         current_message=event.content,
                         tools=self.tools,
@@ -129,7 +130,7 @@ class AgentLoop:
                         chat_id=event.chat_id,
                     )
                 else:
-                    messages.append({"role": "user", "content": event.content})
+                    session.live_messages.append({"role": "user", "content": event.content})
 
                 session.add_message("user", event.content)
                 iteration_count = 0
@@ -137,8 +138,8 @@ class AgentLoop:
             elif isinstance(event, ToolResultEvent):
                 if event.tool_call_id in in_flight:
                     del in_flight[event.tool_call_id]
-                    messages = self.context.add_tool_result(
-                        messages, event.tool_call_id, event.tool_name, event.result
+                    session.live_messages.append(
+                        self.context.tool_result(event.tool_call_id, event.tool_name, event.result)
                     )
                     if in_flight:
                         continue  # still waiting for other tools in this batch
@@ -147,7 +148,7 @@ class AgentLoop:
                     notification = (
                         f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
                     )
-                    messages.append({"role": "user", "content": notification})
+                    session.live_messages.append({"role": "user", "content": notification})
                     session.add_message("user", notification)
 
             # Check if the iterations have maxed out.
@@ -159,7 +160,7 @@ class AgentLoop:
             # Call LLM (shared path for both event types)
             try:
                 response = await self.provider.chat(
-                    messages=messages,
+                    messages=session.live_messages,
                     tools=self.tools.get_definitions(master=True),
                     model=self.config.model,
                     temperature=self.config.temperature,
@@ -185,11 +186,12 @@ class AgentLoop:
                     }
                     for tc in response.tool_calls
                 ]
-                messages = self.context.add_assistant_message(
-                    messages,
-                    response.content,
-                    tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
+                session.live_messages.append(
+                    self.context.assistant_message(
+                        response.content,
+                        tool_call_dicts,
+                        reasoning_content=response.reasoning_content,
+                    )
                 )
 
                 for tc in response.tool_calls:
@@ -209,7 +211,7 @@ class AgentLoop:
                 final = (
                     response.content or "I've completed processing but have no response to give."
                 )
-                messages = self.context.add_assistant_message(messages, final)
+                session.live_messages.append(self.context.assistant_message(final))
                 session.add_message("assistant", final)
                 preview = final[:120] + "..." if len(final) > 120 else final
                 logger.info(f"Response to {addr}: {preview}")
