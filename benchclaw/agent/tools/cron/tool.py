@@ -183,7 +183,10 @@ class CronTool(Tool):
         elif cron_expr:
             schedule = CronScheduleCron(expr=cron_expr)
         elif at:
-            schedule = CronScheduleAt(at=_ensure_aware(datetime.fromisoformat(at)))
+            at_dt = _ensure_aware(datetime.fromisoformat(at))
+            if at_dt <= datetime.now().astimezone():
+                return f"Error: '{at}' is in the past"
+            schedule = CronScheduleAt(at=at_dt)
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 

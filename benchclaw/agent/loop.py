@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 from loguru import logger
 
@@ -130,6 +131,12 @@ class AgentLoop:
                         chat_id=event.chat_id,
                     )
                 else:
+                    session.live_messages.append(
+                        {
+                            "role": "system",
+                            "content": datetime.now().strftime("Current time: %Y-%m-%d %H:%M (%A)"),
+                        }
+                    )
                     session.live_messages.append({"role": "user", "content": event.content})
 
                 session.add_message("user", event.content)
