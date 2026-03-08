@@ -11,8 +11,8 @@ from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
 from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.mcp_manager import MCPManager
+from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import (
     InboundMessage,
@@ -124,9 +124,7 @@ class AgentLoop:
         new_live: list[dict] = [
             {
                 "role": "system",
-                "content": self.context.build_system_prompt(
-                    self.tools.values(), channel, chat_id
-                ),
+                "content": self.context.build_system_prompt(self.tools.values(), channel, chat_id),
             },
             {"role": "system", "content": summary_content},
             *session.get_history(max_messages=self.config.memory_window),
