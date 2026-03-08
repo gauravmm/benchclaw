@@ -187,6 +187,25 @@ class LogStore:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return amendment_id
 
+    def read_recent(self, n: int = 20) -> str:
+        """Return the last n log entries as a formatted string."""
+        if not self.log_file.exists():
+            return "(log is empty)"
+        lines = []
+        for line in self.log_file.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+                ts = entry.get("ts", "")
+                eid = entry.get("id", "")
+                amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
+                lines.append(f"[{ts}] {eid}{amends}: {entry.get('content', '')}")
+            except json.JSONDecodeError:
+                continue
+        if not lines:
+            return "(log is empty)"
+        recent = lines[-n:]
+        return "\n".join(recent)
+
     def search(self, query: str) -> str:
         """Regex search across log entries. Returns matching lines."""
         if not self.log_file.exists():

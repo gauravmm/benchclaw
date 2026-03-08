@@ -31,7 +31,12 @@ def run(args) -> None:
             print("Warning: no channels enabled")
 
         async def run():
-            agent = AgentLoop(config=config, bus=bus, provider=provider)
+            agent = AgentLoop(
+                config=config,
+                bus=bus,
+                provider=provider,
+                debug_dump_path=args.debug_dump,
+            )
 
             try:
                 async with channels:
@@ -57,6 +62,13 @@ def main() -> None:
         "-v",
         action="store_true",
         help="enable info logging",
+    )
+    parser.add_argument(
+        "--debug-dump",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="dump LLM input messages to this file before each call (for debugging)",
     )
     args = parser.parse_args()
     run(args)

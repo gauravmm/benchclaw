@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
 
 from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
 from benchclaw.agent.tools.base import ToolContext
+from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import (
@@ -23,6 +25,9 @@ from benchclaw.bus import (
 from benchclaw.config import Config
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
 from benchclaw.session import SessionManager
+
+# Compact the context when token usage exceeds this fraction of the context window.
+_COMPACT_THRESHOLD = 0.8
 
 
 class AgentLoop:
@@ -39,11 +44,18 @@ class AgentLoop:
     5. Sends final responses back via the bus
     """
 
-    def __init__(self, config: Config, bus: MessageBus, provider: LLMProvider):
+    def __init__(
+        self,
+        config: Config,
+        bus: MessageBus,
+        provider: LLMProvider,
+        debug_dump_path: Path | None = None,
+    ):
         self.workspace_path = config.workspace_path
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
+        self.debug_dump_path = debug_dump_path
 
         self.context = ContextBuilder(config.workspace_path)
         self.sessions = SessionManager(config.workspace_path / "sessions")
@@ -76,6 +88,53 @@ class AgentLoop:
             ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
         )
 
+    def _dump_messages(self, messages: list[dict]) -> None:
+        """Write the LLM input messages to the debug dump file."""
+        if self.debug_dump_path is None:
+            return
+        try:
+            with open(self.debug_dump_path, "a", encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.now().isoformat(timespec='seconds')} ---\n")
+                f.write(json.dumps(messages, ensure_ascii=False, indent=2))
+                f.write("\n")
+        except Exception as e:
+            logger.warning(f"Failed to write debug dump: {e}")
+
+    def _compact_context(
+        self,
+        session,
+        addr: MessageAddress,
+        channel: str | None,
+        chat_id: str | None,
+    ) -> None:
+        """
+        Compact live_messages when the context window is filling up.
+
+        Reads recent log entries and rebuilds the context as:
+          - System prompt
+          - A summary injected as a system message with recent log entries
+          - The last memory_window messages from the persistent session history
+        """
+        log_store = LogStore(self.workspace_path)
+        recent_logs = log_store.read_recent(n=20)
+        summary_content = (
+            "[Context compacted to stay within context window limits.]\n"
+            "Recent activity log:\n" + recent_logs
+        )
+        new_live: list[dict] = [
+            {
+                "role": "system",
+                "content": self.context.build_system_prompt(
+                    self.tools.values(), channel, chat_id
+                ),
+            },
+            {"role": "system", "content": summary_content},
+            *session.get_history(max_messages=self.config.memory_window),
+        ]
+        session.live_messages = new_live
+        session.last_consolidated = len(session.messages)
+        logger.info(f"Context compacted for {addr} ({len(new_live)} messages after compaction)")
+
     async def _address_loop(self, addr: MessageAddress) -> None:
         """
         Event-driven processing loop for a single address.
@@ -96,11 +155,13 @@ class AgentLoop:
         )
         in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
         iteration_count = 0
+        channel = addr.channel
+        chat_id = addr.chat_id
         session.live_messages = self.context.build_context(
             history=session.get_history(max_messages=self.config.memory_window),
             tools=self.tools,
-            channel=addr.channel,
-            chat_id=addr.chat_id,
+            channel=channel,
+            chat_id=chat_id,
         )
 
         while True:
@@ -164,6 +225,9 @@ class AgentLoop:
                 continue
             iteration_count += 1
 
+            # Dump input messages to the debug file if requested.
+            self._dump_messages(session.live_messages)
+
             # Call LLM (shared path for both event types)
             try:
                 response = await self.provider.chat(
@@ -182,6 +246,14 @@ class AgentLoop:
                     )
                 )
                 continue
+
+            # Check token usage and compact if approaching context window limit.
+            total_tokens = response.usage.get("total_tokens", 0)
+            if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
+                logger.warning(
+                    f"Token usage {total_tokens}/{self.config.context_window} for {addr}; compacting context"
+                )
+                self._compact_context(session, addr, channel, chat_id)
 
             # Process LLM response
             if response.has_tool_calls:
