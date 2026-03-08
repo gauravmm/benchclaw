@@ -3,6 +3,29 @@
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import jsonlines
+
+
+def read_jsonl(path: Path) -> list[Any]:
+    """Read all valid entries from a JSONL file; returns [] if file doesn't exist."""
+    if not path.exists():
+        return []
+    with jsonlines.open(path) as reader:
+        return list(reader.iter(skip_invalid=True))
+
+
+def write_jsonl(path: Path, entries: list[dict]) -> None:
+    """Overwrite a JSONL file with entries."""
+    with jsonlines.open(path, mode="w") as writer:
+        writer.write_all(entries)
+
+
+def append_jsonl(path: Path, entries: list[dict]) -> None:
+    """Append entries to a JSONL file."""
+    with jsonlines.open(path, mode="a") as writer:
+        writer.write_all(entries)
 
 
 def _ensure_dir(path: Path) -> Path:

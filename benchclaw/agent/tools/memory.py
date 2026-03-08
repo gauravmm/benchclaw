@@ -1,13 +1,13 @@
 """Memory tool (semantic tagged files) and Log tool (append-only interaction log)."""
 
-import json
+import bisect
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
-from benchclaw.utils import _ensure_dir
+from benchclaw.utils import _ensure_dir, append_jsonl, read_jsonl, write_jsonl
 
 
 class MemoryStore:
@@ -133,32 +133,46 @@ class LogStore:
 
     def __init__(self, workspace: Path):
         self.log_file = _ensure_dir(workspace / "logs") / "log.jsonl"
-        self._buffer: list[dict] = []
-        self._active = False
+        self._buffer: list[dict] = []  # invariant: sorted ascending by entry["ts"]
+        self._date: date | None = None
 
     async def __aenter__(self) -> "LogStore":
-        self._active = True
-        if self.log_file.exists():
-            for line in self.log_file.read_text(encoding="utf-8").splitlines():
-                try:
-                    self._buffer.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+        self._date = datetime.now().astimezone().date()
+        self._buffer = read_jsonl(self.log_file)
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        self._active = False
         self._buffer = []
+        self._date = None
+
+    def _rollover(self, new_date: date) -> None:
+        """Move entries 2+ days old to log-<date>.jsonl; keep recent in log.jsonl."""
+        cutoff = new_date - timedelta(days=1)
+        idx = bisect.bisect_left(
+            self._buffer, cutoff, key=lambda e: datetime.fromisoformat(e["ts"]).date()
+        )
+        old, recent = self._buffer[:idx], self._buffer[idx:]
+        if old:
+            append_jsonl(self.log_file.parent / f"log-{self._date}.jsonl", old)
+        write_jsonl(self.log_file, recent)
+        self._buffer = recent
+        self._date = new_date
 
     def append(self, content: str) -> None:
-        """Append a new entry."""
-        assert self._active, "LogStore must be used as a context manager"
+        """Append a new entry, triggering a rollover if the date has changed."""
+        assert self._date is not None, "LogStore must be used as a context manager"
+        now = datetime.now().astimezone()
+        if self._buffer:
+            assert now >= datetime.fromisoformat(self._buffer[-1]["ts"]), (
+                "entries must be written in order"
+            )
+        if now.date() != self._date:
+            self._rollover(now.date())
         entry = {
-            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "ts": now.isoformat(timespec="seconds"),
             "content": content,
         }
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        append_jsonl(self.log_file, [entry])
         self._buffer.append(entry)
 
     @staticmethod
@@ -167,13 +181,13 @@ class LogStore:
 
     def read_recent(self, n: int = 20) -> str:
         """Return the last n log entries from the in-memory buffer."""
-        assert self._active, "LogStore must be used as a context manager"
-        lines = [self._fmt(e) for e in self._buffer]
-        return "\n".join(lines[-n:]) if lines else "(log is empty)"
+        assert self._date is not None, "LogStore must be used as a context manager"
+        recent = self._buffer[-n:]
+        return "\n".join(self._fmt(e) for e in recent) if recent else "(log is empty)"
 
     def search(self, query: str) -> str:
         """Regex search across the in-memory log buffer."""
-        assert self._active, "LogStore must be used as a context manager"
+        assert self._date is not None, "LogStore must be used as a context manager"
         try:
             pattern = re.compile(query, re.IGNORECASE)
         except re.error as e:
