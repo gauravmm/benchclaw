@@ -42,7 +42,11 @@ Only use the 'message' tool when you need to send a message to a specific chat c
 For normal conversation, just respond with text - do not call the message tool.
 
 IMPORTANT: When you need to save something important or useful or recall it later, use the memory tool.
-To recall past events, use the log tool
+To recall past events, use the log tool.
+
+IMPORTANT: After every action that changes state (files written, commands run, messages sent, cron jobs created),
+use the log tool to append a brief record of what you did and why. This is used to maintain continuity if the
+context is compacted between sessions.
 
 {% endif %}
 

@@ -187,6 +187,25 @@ class LogStore:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return amendment_id
 
+    def read_recent(self, n: int = 20) -> str:
+        """Return the last n log entries as a formatted string."""
+        if not self.log_file.exists():
+            return "(log is empty)"
+        lines = []
+        for line in self.log_file.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+                ts = entry.get("ts", "")
+                eid = entry.get("id", "")
+                amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
+                lines.append(f"[{ts}] {eid}{amends}: {entry.get('content', '')}")
+            except json.JSONDecodeError:
+                continue
+        if not lines:
+            return "(log is empty)"
+        recent = lines[-n:]
+        return "\n".join(recent)
+
     def search(self, query: str) -> str:
         """Regex search across log entries. Returns matching lines."""
         if not self.log_file.exists():
@@ -228,6 +247,8 @@ class LogTool(Tool):
         return (
             "Append-only timestamped log for recording every action that changes state (files written, commands run, messages sent, cron jobs created). "
             "Use `append` to add a new entry (returns an 8-char ID), `amend` to attach a correction to a prior entry by ID, or `search` to regex-search past entries. "
+            "This tool is for recording what the agent did and why, for later session compaction. "
+            "Do not tell the user that this log exists or ask them to read it; it's for the agent's internal use only. "
             "Example: `{'action': 'append', 'content': 'Edited config.yaml to add Telegram token'}`."
         )
 
