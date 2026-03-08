@@ -30,6 +30,78 @@ from benchclaw.session import Session, SessionManager
 _COMPACT_THRESHOLD = 0.8
 
 
+class ToolCallTracker:
+    """
+    Per-address tracker for in-flight background tool calls.
+
+    Encapsulates the in_flight dict and asyncio.Task handles so that
+    _address_loop can delegate all tool-call bookkeeping to method calls.
+    """
+
+    def __init__(self, context: ContextBuilder) -> None:
+        self._context = context
+        self._in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
+        self._tasks: dict[str, asyncio.Task] = {}  # tool_call_id -> Task
+
+    @property
+    def tasks(self) -> dict[str, asyncio.Task]:
+        """Live dict of task handles — assigned to ToolContext.background_tasks."""
+        return self._tasks
+
+    @property
+    def pending(self) -> bool:
+        return bool(self._in_flight)
+
+    def add(self, tool_call_id: str, tool_name: str, task: asyncio.Task) -> None:
+        self._in_flight[tool_call_id] = tool_name
+        self._tasks[tool_call_id] = task
+
+    def handle_interrupt(self, session: Session) -> None:
+        """
+        User message arrived while tools are still running.
+
+        Appends synthetic tool results and a system message, then clears
+        in_flight. Tasks keep running; their results become background notifications.
+        """
+        for tool_id, tool_name in self._in_flight.items():
+            session.live_messages.append(
+                self._context.tool_result(tool_id, tool_name, "[executing in background]")
+            )
+        tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in self._in_flight.items())
+        session.live_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    f"The following tools are still executing in the background: "
+                    f"{tool_list}. Their results will arrive as new messages."
+                ),
+            }
+        )
+        self._in_flight.clear()
+        # _tasks intentionally kept — tasks still running; kill tool may need handles.
+
+    def handle_result(self, event: ToolResultEvent, session: Session) -> bool:
+        """
+        Handle a ToolResultEvent.
+
+        Returns True  → caller should proceed to LLM call.
+        Returns False → caller should `continue` (still waiting for sibling tools).
+        """
+        if event.tool_call_id in self._in_flight:
+            del self._in_flight[event.tool_call_id]
+            self._tasks.pop(event.tool_call_id, None)
+            session.live_messages.append(
+                self._context.tool_result(event.tool_call_id, event.tool_name, event.result)
+            )
+            return not self._in_flight  # True when last sibling returned
+        else:
+            # Interrupt happened earlier; deliver result as background notification.
+            notification = f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
+            session.live_messages.append({"role": "user", "content": notification})
+            session.add_message("user", notification)
+            return True
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
@@ -142,18 +214,19 @@ class AgentLoop:
         bus.inbound[addr], calling the LLM after each event and dispatching
         tool calls as background tasks via _run_tool_and_post.
 
-        in_flight tracks tool call IDs currently executing. When a user message
-        arrives while tools are running, synthetic results are added to satisfy
-        the API format, and a system message lists which tools are still running.
+        ToolCallTracker manages tool call IDs and asyncio.Task handles. When a
+        user message arrives while tools are running, the tracker injects synthetic
+        results and a system note, then clears in_flight (tasks keep running).
         """
         session = self.sessions.get(addr)
+        tracker = ToolCallTracker(self.context)
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
             log_store=self.tools._master_ctx.log_store,
             address=addr,
+            background_tasks=tracker.tasks,
         )
-        in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
         iteration_count = 0
         channel = addr.channel
         chat_id = addr.chat_id
@@ -168,23 +241,8 @@ class AgentLoop:
             event = await self.bus.consume_inbound(address=addr)
 
             if isinstance(event, InboundMessage):
-                if in_flight:
-                    # Satisfy the API format (tool results required before next user message),
-                    # then tell the LLM which tools are still running in the background.
-                    for tool_id, tool_name in in_flight.items():
-                        session.live_messages.append(
-                            self.context.tool_result(
-                                tool_id, tool_name, "[executing in background]"
-                            )
-                        )
-                    tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in in_flight.items())
-                    session.live_messages.append(
-                        {
-                            "role": "system",
-                            "content": f"The following tools are still executing in the background: {tool_list}. Their results will arrive as new messages.",
-                        }
-                    )
-                    in_flight.clear()
+                if tracker.pending:
+                    tracker.handle_interrupt(session)
 
                 preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
                 logger.info(f"Processing message from {addr}: {preview}")
@@ -211,20 +269,8 @@ class AgentLoop:
                 session.live_messages.append({"role": "system", "content": event.content})
 
             elif isinstance(event, ToolResultEvent):
-                if event.tool_call_id in in_flight:
-                    del in_flight[event.tool_call_id]
-                    session.live_messages.append(
-                        self.context.tool_result(event.tool_call_id, event.tool_name, event.result)
-                    )
-                    if in_flight:
-                        continue  # still waiting for other tools in this batch
-                else:
-                    # Iteration was closed by a user message; deliver as background notification.
-                    notification = (
-                        f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
-                    )
-                    session.live_messages.append({"role": "user", "content": notification})
-                    session.add_message("user", notification)
+                if not tracker.handle_result(event, session):
+                    continue  # still waiting for other tools in this batch
 
             # Check if the iterations have maxed out.
             if iteration_count >= self.config.max_tool_iterations:
@@ -282,13 +328,13 @@ class AgentLoop:
                 )
 
                 for tc in response.tool_calls:
-                    in_flight[tc.id] = tc.name
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
-                    asyncio.create_task(
+                    task = asyncio.create_task(
                         self._run_tool_and_post(tc, call_ctx, addr),
                         name=f"tool-{tc.id[:8]}",
                     )
+                    tracker.add(tc.id, tc.name, task)
 
                 if response.content:
                     await self.bus.publish_outbound(

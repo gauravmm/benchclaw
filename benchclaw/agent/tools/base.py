@@ -46,6 +46,7 @@ class ToolContext:
     is_subagent: bool = False
     subagent_manager: Any = None  # SubagentManager; None for subagents
     address: MessageAddress | None = None  # Current session address; None for background/subagents
+    background_tasks: dict[str, Task] | None = None  # Live task handles; master loop only
     file_snapshots: dict[Path, FileSnapshot] = field(default_factory=dict)
 
 
