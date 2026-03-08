@@ -97,11 +97,7 @@ class ToolCallTracker:
         else:
             # Interrupt happened earlier; deliver result as background notification.
             notification = f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
-            session.add_message(
-                "user",
-                notification,
-                live_message={"role": "user", "content": notification},
-            )
+            session.add_message("user", notification)
             return True
 
 
@@ -258,7 +254,6 @@ class AgentLoop:
                 session.add_message(
                     "user",
                     event.content,
-                    live_message=self.context.user_message(event.content, event.media or None),
                     sender_id=event.sender_id,
                     media=event.media,
                     media_metadata=event.media_metadata,
@@ -345,11 +340,7 @@ class AgentLoop:
                 final = (
                     response.content or "I've completed processing but have no response to give."
                 )
-                session.add_message(
-                    "assistant",
-                    final,
-                    live_message=self.context.assistant_message(final),
-                )
+                session.add_message("assistant", final)
                 preview = final[:120] + "..." if len(final) > 120 else final
                 logger.info(f"Response to {addr}: {preview}")
                 await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))

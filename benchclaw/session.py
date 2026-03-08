@@ -1,6 +1,8 @@
 """Session management for conversation history."""
 
+import base64
 import json
+import mimetypes
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +14,25 @@ from pathvalidate import sanitize_filename
 from benchclaw.bus import MessageAddress
 
 MAX_SESSIONS = 50
+
+
+def _build_message(role: str, content: str, media: list[str] | None = None) -> dict[str, Any]:
+    """Build an LLM API message dict, embedding any media as base64 image_url parts."""
+    if not media:
+        return {"role": role, "content": content}
+
+    images = []
+    for path in media:
+        p = Path(path)
+        mime, _ = mimetypes.guess_type(path)
+        if not p.is_file() or not mime or not mime.startswith("image/"):
+            continue
+        b64 = base64.b64encode(p.read_bytes()).decode()
+        images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+    if not images:
+        return {"role": role, "content": content}
+    return {"role": role, "content": images + [{"type": "text", "text": content}]}
 
 
 @dataclass
@@ -34,15 +55,8 @@ class Session:
     # In-memory LLM context for the current run; not persisted.
     live_messages: list[dict[str, Any]] = field(default_factory=list)
 
-    def add_message(
-        self,
-        role: str,
-        content: str,
-        *,
-        live_message: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """Add a message to the persistent session and optionally to live_messages."""
+    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
+        """Add a message to the persistent session and to live_messages."""
         msg = {
             "role": role,
             "content": content,
@@ -51,8 +65,7 @@ class Session:
         }
         self.messages.append(msg)
         self.updated_at = datetime.now()
-        if live_message is not None:
-            self.live_messages.append(live_message)
+        self.live_messages.append(_build_message(role, content, kwargs.get("media")))
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """Get recent messages in LLM format (role + content only)."""
