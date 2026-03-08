@@ -3,7 +3,19 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, NotRequired, TypedDict
+
+
+class MediaMetadata(TypedDict):
+    """Structured metadata for one inbound media attachment."""
+
+    path: str | None
+    media_type: str
+    mime_type: str | None
+    size_bytes: int | None
+    saved_at: str | None
+    source_channel: str
+    original_name: NotRequired[str | None]
 
 
 @dataclass(frozen=True)
@@ -31,6 +43,7 @@ class InboundMessage:
     content: str  # Message text
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=list)  # Media URLs
+    media_metadata: list[MediaMetadata] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
 
     # TODO: Remove these and use .address directly.

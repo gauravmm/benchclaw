@@ -10,9 +10,9 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
-from benchclaw.utils import get_workspace_path
+from benchclaw.utils import get_timestamped_media_dir
 
 
 class TelegramConfig(ChannelConfig):
@@ -233,6 +233,8 @@ class TelegramChannel(BaseChannel):
         # Build content from text and/or media
         content_parts = []
         media_paths = []
+        media_metadata: list[MediaMetadata] = []
+        str_chat_id = str(chat_id)
 
         # Text content
         if message.text:
@@ -242,7 +244,7 @@ class TelegramChannel(BaseChannel):
 
         # Handle media files
         media_file = None
-        media_type = None
+        media_type: str | None = None
 
         if message.photo:
             media_file = message.photo[-1]  # Largest photo
@@ -258,30 +260,54 @@ class TelegramChannel(BaseChannel):
             media_type = "file"
 
         # Download media if present
-        if media_file and self._app:
+        if media_file and media_type and self._app:
             try:
                 file = await self._app.bot.get_file(media_file.file_id)
-                ext = self._get_extension(media_type, getattr(media_file, "mime_type", None))
+                mime_type = getattr(media_file, "mime_type", None)
+                size_bytes = getattr(media_file, "file_size", None)
+                ext = self._get_extension(media_type, mime_type)
 
-                # TODO: Move this into utils.py
-                media_dir = get_workspace_path() / "media"
-                media_dir.mkdir(parents=True, exist_ok=True)
+                media_dir = get_timestamped_media_dir(
+                    channel=self.name,
+                    chat_id=str_chat_id,
+                    timestamp=message.date,
+                )
 
                 file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
                 await file.download_to_drive(str(file_path))
                 media_paths.append(str(file_path))
                 content_parts.append(f"[{media_type}: {file_path}]")
+                media_metadata.append(
+                    {
+                        "path": str(file_path),
+                        "media_type": media_type,
+                        "mime_type": mime_type,
+                        "size_bytes": size_bytes,
+                        "saved_at": message.date.isoformat(timespec="seconds"),
+                        "source_channel": self.name,
+                        "original_name": getattr(media_file, "file_name", None),
+                    }
+                )
 
                 logger.debug(f"Downloaded {media_type} to {file_path}")
             except Exception as e:
                 logger.error(f"Failed to download media: {e}")
                 content_parts.append(f"[{media_type}: download failed]")
+                media_metadata.append(
+                    {
+                        "path": None,
+                        "media_type": media_type,
+                        "mime_type": getattr(media_file, "mime_type", None),
+                        "size_bytes": getattr(media_file, "file_size", None),
+                        "saved_at": None,
+                        "source_channel": self.name,
+                        "original_name": getattr(media_file, "file_name", None),
+                    }
+                )
 
         content = "\n".join(content_parts) if content_parts else "[empty message]"
 
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
-
-        str_chat_id = str(chat_id)
 
         # Start typing indicator before processing
         self._start_typing(str_chat_id)
@@ -292,6 +318,7 @@ class TelegramChannel(BaseChannel):
             chat_id=str_chat_id,
             content=content,
             media=media_paths,
+            media_metadata=media_metadata,
             metadata={
                 "message_id": message.message_id,
                 "user_id": user.id,
@@ -328,8 +355,11 @@ class TelegramChannel(BaseChannel):
         """Log polling / handler errors instead of silently swallowing them."""
         logger.error(f"Telegram error: {context.error}")
 
-    def _get_extension(self, media_type: str, mime_type: str | None) -> str:
+    def _get_extension(self, media_type: str | None, mime_type: str | None) -> str:
         """Get file extension based on media type."""
+        if media_type is None:
+            return ""
+
         if mime_type:
             ext_map = {
                 "image/jpeg": ".jpg",

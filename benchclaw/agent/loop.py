@@ -195,7 +195,14 @@ class AgentLoop:
                 session.live_messages.append(
                     self.context.user_message(event.content, event.media or None)
                 )
-                session.add_message("user", event.content)
+                session.add_message(
+                    "user",
+                    event.content,
+                    sender_id=event.sender_id,
+                    media=event.media,
+                    media_metadata=event.media_metadata,
+                    metadata=event.metadata,
+                )
                 iteration_count = 0
 
             elif isinstance(event, SystemEvent):

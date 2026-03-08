@@ -44,7 +44,22 @@ def test_message_address_from_string_colon_in_chat_id():
 def test_session_save_load_roundtrip(tmp_path: Path):
     addr = MessageAddress(channel="telegram", chat_id="99")
     session = Session(addr=addr)
-    session.add_message("user", "hello")
+    session.add_message(
+        "user",
+        "hello",
+        media=["workspace/media/telegram/99/20260308_101530/abc.jpg"],
+        media_metadata=[
+            {
+                "path": "workspace/media/telegram/99/20260308_101530/abc.jpg",
+                "media_type": "image",
+                "mime_type": "image/jpeg",
+                "size_bytes": 12345,
+                "saved_at": "2026-03-08T10:15:30",
+                "source_channel": "telegram",
+                "original_name": None,
+            }
+        ],
+    )
     session.add_message("assistant", "hi there", tools_used=["search"])
 
     path = tmp_path / "session.jsonl"
@@ -55,6 +70,8 @@ def test_session_save_load_roundtrip(tmp_path: Path):
     assert loaded.addr == addr
     assert len(loaded.messages) == 2
     assert loaded.messages[0]["content"] == "hello"
+    assert loaded.messages[0]["media"] == ["workspace/media/telegram/99/20260308_101530/abc.jpg"]
+    assert loaded.messages[0]["media_metadata"][0]["media_type"] == "image"
     assert loaded.messages[1]["tools_used"] == ["search"]
 
 

@@ -6,7 +6,7 @@ import json
 import websockets
 from loguru import logger
 
-from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 
 
@@ -96,6 +96,40 @@ class WhatsAppChannel(BaseChannel):
         if msg_type == "message":
             sender = str(data.get("sender", ""))
             content = str(data.get("content", ""))
+            raw_media_metadata = data.get("media_metadata", [])
+            media_metadata: list[MediaMetadata] = []
+            if isinstance(raw_media_metadata, list):
+                for item in raw_media_metadata:
+                    if not isinstance(item, dict):
+                        continue
+                    media_type = str(item.get("media_type", "file"))
+                    maybe_size = item.get("size_bytes")
+                    size_bytes = maybe_size if isinstance(maybe_size, int) else None
+                    media_metadata.append(
+                        {
+                            "path": str(item["path"])
+                            if isinstance(item.get("path"), str)
+                            else None,
+                            "media_type": media_type,
+                            "mime_type": (
+                                str(item["mime_type"])
+                                if isinstance(item.get("mime_type"), str)
+                                else None
+                            ),
+                            "size_bytes": size_bytes,
+                            "saved_at": (
+                                str(item["saved_at"])
+                                if isinstance(item.get("saved_at"), str)
+                                else None
+                            ),
+                            "source_channel": self.name,
+                            "original_name": (
+                                str(item["original_name"])
+                                if isinstance(item.get("original_name"), str)
+                                else None
+                            ),
+                        }
+                    )
 
             # Extract just the phone number or lid as chat_id
             sender_id = sender.split("@")[0] if "@" in sender else sender
@@ -111,6 +145,7 @@ class WhatsAppChannel(BaseChannel):
                 sender_id=sender_id,
                 chat_id=sender,  # Use full LID for replies
                 content=content,
+                media_metadata=media_metadata,
                 metadata={
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),

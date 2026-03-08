@@ -12,9 +12,9 @@ from benchclaw.utils import _ensure_dir
 
 
 class MemoryStore:
-    """Per-tag YAML memory files in workspace/memory/.
+    """Per-tag plain-text memory files in workspace/memory/.
 
-    Each tag is stored as <tag>.yaml with a YAML front matter and freetext body.
+    Each tag is stored as <tag>.txt.
     Used by MemoryTool and ContextBuilder.
     """
 
@@ -23,34 +23,27 @@ class MemoryStore:
 
     def get_available_tags(self) -> list[str]:
         """Return sorted list of existing tag names."""
-        return sorted(p.stem for p in self.memory_dir.glob("*.yaml"))
+        return sorted(p.stem for p in self.memory_dir.glob("*.txt"))
 
     def read(self, tag: str | None = None) -> str:
         """Read one tag's content or all tags concatenated."""
         if tag:
-            path = self.memory_dir / f"{tag}.yaml"
+            path = self.memory_dir / f"{tag}.txt"
             if not path.exists():
                 return f"(no memory for tag '{tag}')"
-            return _parse_body(path.read_text(encoding="utf-8"))
+            return path.read_text(encoding="utf-8")
         # Read all tags
         parts = []
-        for p in sorted(self.memory_dir.glob("*.yaml")):
-            body = _parse_body(p.read_text(encoding="utf-8"))
+        for p in sorted(self.memory_dir.glob("*.txt")):
+            body = p.read_text(encoding="utf-8")
             if body:
                 parts.append(f"### {p.stem}\n{body}")
         return "\n\n".join(parts) if parts else "(no memories)"
 
     def write(self, tag: str, content: str) -> None:
         """Create or update a tagged memory file."""
-        path = self.memory_dir / f"{tag}.yaml"
-        now = datetime.now().astimezone().isoformat(timespec="seconds")
-        if path.exists():
-            existing = path.read_text(encoding="utf-8")
-            created = _parse_front_matter(existing).get("created", now)
-        else:
-            created = now
-        front_matter = f"---\ntag: {tag}\ncreated: {created}\nupdated: {now}\n---\n"
-        path.write_text(front_matter + content, encoding="utf-8")
+        path = self.memory_dir / f"{tag}.txt"
+        path.write_text(content, encoding="utf-8")
 
     def get_memory_context(self) -> str:
         """Return available tag names for inclusion in the system prompt."""
@@ -58,31 +51,6 @@ class MemoryStore:
         if not tags:
             return ""
         return "Available memory tags: " + ", ".join(tags)
-
-
-def _parse_front_matter(text: str) -> dict[str, str]:
-    """Extract key: value pairs from YAML front matter (between --- delimiters)."""
-    result: dict[str, str] = {}
-    if not text.startswith("---"):
-        return result
-    end = text.find("---", 3)
-    if end == -1:
-        return result
-    for line in text[3:end].splitlines():
-        if ":" in line:
-            k, _, v = line.partition(":")
-            result[k.strip()] = v.strip()
-    return result
-
-
-def _parse_body(text: str) -> str:
-    """Extract body text after YAML front matter."""
-    if not text.startswith("---"):
-        return text
-    end = text.find("---", 3)
-    if end == -1:
-        return text
-    return text[end + 3 :].lstrip("\n")
 
 
 class MemoryTool(Tool):
@@ -102,7 +70,7 @@ class MemoryTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Store and retrieve persistent notes organized by named tags; each tag is a separate YAML file that survives across sessions. "
+            "Store and retrieve persistent notes organized by named tags; each tag is a separate text file that survives across sessions. "
             "Use `read` with no tag to list all available tags, or with a tag name to load its content; use `write` to create or overwrite a tag. "
             "Example: `{'action': 'write', 'tag': 'preferences', 'content': 'User prefers metric units.'}`."
         )
