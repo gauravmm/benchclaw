@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
+from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MessageAddress, MessageBus
 
 if TYPE_CHECKING:
@@ -41,8 +42,9 @@ class ToolContext:
     """Runtime context passed to Tool.build() and Tool.execute() during agent operation."""
 
     workspace: Path
+    bus: MessageBus  # MessageBus; None for subagents
+    log_store: LogStore  # LogStore; set by AgentLoop before building ToolRegistry
     is_subagent: bool = False
-    bus: MessageBus | None = None  # MessageBus; None for subagents
     subagent_manager: Any = None  # SubagentManager; None for subagents
     address: MessageAddress | None = None  # Current session address; None for background/subagents
     file_snapshots: dict[Path, FileSnapshot] = field(default_factory=dict)

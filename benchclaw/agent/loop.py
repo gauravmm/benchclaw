@@ -24,7 +24,7 @@ from benchclaw.bus import (
 )
 from benchclaw.config import Config
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
-from benchclaw.session import SessionManager
+from benchclaw.session import Session, SessionManager
 
 # Compact the context when token usage exceeds this fraction of the context window.
 _COMPACT_THRESHOLD = 0.8
@@ -65,8 +65,10 @@ class AgentLoop:
         master_ctx = ToolContext(
             workspace=config.workspace_path,
             bus=bus,
+            log_store=LogStore(config.workspace_path),
             # subagent_manager=self.subagents,
         )
+        self.master_ctx = master_ctx
         mcp_manager = MCPManager(config.mcp_servers) if config.mcp_servers else None
         self.tools = ToolRegistry(config.tools, master_ctx, mcp_manager=mcp_manager)
 
@@ -102,7 +104,7 @@ class AgentLoop:
 
     def _compact_context(
         self,
-        session,
+        session: Session,
         addr: MessageAddress,
         channel: str | None,
         chat_id: str | None,
@@ -115,8 +117,7 @@ class AgentLoop:
           - A summary injected as a system message with recent log entries
           - The last memory_window messages from the persistent session history
         """
-        log_store = LogStore(self.workspace_path)
-        recent_logs = log_store.read_recent(n=20)
+        recent_logs = self.master_ctx.log_store.read_recent(n=20)
         summary_content = (
             "[Context compacted to stay within context window limits.]\n"
             "Recent activity log:\n" + recent_logs
@@ -149,6 +150,7 @@ class AgentLoop:
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
+            log_store=self.tools._master_ctx.log_store,
             address=addr,
         )
         in_flight: dict[str, str] = {}  # tool_call_id -> tool_name

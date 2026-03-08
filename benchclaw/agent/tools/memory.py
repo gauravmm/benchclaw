@@ -201,10 +201,11 @@ class LogTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "LogTool":
-        return cls(workspace=ctx.workspace)
+        assert ctx.log_store, "LogTool requires ctx.log_store to be set to a LogStore instance"
+        return cls(ctx.log_store)
 
-    def __init__(self, workspace: Path):
-        self._store = LogStore(workspace)
+    def __init__(self, store: LogStore):
+        self._store = store
 
     async def __aenter__(self) -> "LogTool":
         await self._store.__aenter__()
