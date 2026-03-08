@@ -149,18 +149,6 @@ def _decode_address(d: dict | None) -> "MessageAddress | None":
 
 
 @dataclass
-class CronPayload(DataClassJsonMixin):
-    """What to do when the job runs."""
-
-    message: str
-    # Deliver response back to address where job was created
-    deliver_to: MessageAddress = field(
-        default=None,  # type: ignore[assignment]
-        metadata=config(encoder=_encode_address, decoder=_decode_address),
-    )
-
-
-@dataclass
 class CronJobState(DataClassJsonMixin):
     """Runtime state of a job."""
 
@@ -174,9 +162,12 @@ class CronJob(DataClassJsonMixin):
     """A scheduled job."""
 
     id: str
-    name: str
-    payload: CronPayload
-    state: CronJobState
+    message: str
+    deliver_to: MessageAddress = field(
+        default=None,  # type: ignore[assignment]
+        metadata=config(encoder=_encode_address, decoder=_decode_address),
+    )
+    state: CronJobState = field(default_factory=CronJobState)
     enabled: bool = True
     schedule: CronScheduleAt | CronScheduleEvery | CronScheduleCron = field(
         default_factory=CronScheduleEvery,
