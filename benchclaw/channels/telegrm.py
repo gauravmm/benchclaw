@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import MediaMetadata, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 from benchclaw.utils import get_timestamped_media_dir
 
@@ -374,26 +374,3 @@ class TelegramChannel(BaseChannel):
 
         type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
         return type_map.get(media_type, "")
-
-
-if __name__ == "__main__":
-
-    async def _echo() -> None:
-        from benchclaw.config import ConfigManager
-
-        with ConfigManager() as config:
-            telegram_config = config.channels.telegram  # type: ignore[attr-defined]
-            bus = MessageBus()
-            print(telegram_config)
-
-            async with TelegramChannel(telegram_config, bus) as channel:
-                while True:
-                    msg = await bus.consume_inbound()
-                    await channel.send(
-                        OutboundMessage(
-                            address=MessageAddress(channel="telegram", chat_id=msg.chat_id),
-                            content=msg.content,
-                        )
-                    )
-
-    asyncio.run(_echo())

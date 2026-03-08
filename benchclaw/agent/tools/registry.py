@@ -42,6 +42,8 @@ class ToolRegistry:
         self._running = True
         for tool in self._tools.values():
             tool._task = asyncio.create_task(tool.background(self._master_ctx), name=tool.name)
+        # TODO: Make the background method of each tool be optional, and only create tasks for those that implement it. For now we assume all tools have a background method, even if it's just an infinite sleep.
+        # TODO: Check if any tools have background __aenter__/__aexit__ and await them here. For now we assume only MCPManager does.
         if self._mcp_manager:
             await self._mcp_manager.__aenter__()
         return self

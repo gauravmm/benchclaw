@@ -124,75 +124,101 @@ class MemoryTool(Tool):
         return f"Unknown action: {action}"
 
 
+_LOG_RETENTION_DAYS = 14
+
+
 class LogStore:
-    """Append-only JSONL interaction log in workspace/memory/log.jsonl."""
+    """Append-only JSONL interaction log in workspace/logs/<date>.jsonl.
+
+    One file per calendar day (local time). On startup and whenever a new
+    daily file is first created, files older than LOG_RETENTION_DAYS are
+    deleted.
+    """
 
     def __init__(self, workspace: Path):
-        self.log_file = _ensure_dir(workspace / "memory") / "log.jsonl"
+        self.logs_dir = _ensure_dir(workspace / "logs")
+        self._rotate(datetime.now().astimezone())
+
+    def _log_file(self, ts: datetime) -> Path:
+        return self.logs_dir / f"{ts.date()}.jsonl"
+
+    def _rotate(self, ts: datetime) -> None:
+        """Delete log files older than _LOG_RETENTION_DAYS relative to ts."""
+        cutoff = ts.date().toordinal() - _LOG_RETENTION_DAYS
+        for p in self.logs_dir.glob("*.jsonl"):
+            try:
+                if datetime.strptime(p.stem, "%Y-%m-%d").toordinal() < cutoff:
+                    p.unlink()
+            except ValueError:
+                pass
+
+    def _write_entry(self, entry: dict) -> None:
+        ts = datetime.fromisoformat(entry["ts"])
+        log_file = self._log_file(ts)
+        is_new = not log_file.exists()
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        if is_new:
+            self._rotate(ts)
 
     def append(self, content: str) -> str:
         """Append a new entry and return its 8-char ID."""
         entry_id = str(uuid.uuid4())[:8]
-        entry = {
-            "id": entry_id,
-            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "content": content,
-        }
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self._write_entry(
+            {
+                "id": entry_id,
+                "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "content": content,
+            }
+        )
         return entry_id
 
     def amend(self, entry_id: str, content: str) -> str:
         """Append an amendment entry referencing entry_id. Returns amendment ID."""
         amendment_id = str(uuid.uuid4())[:8]
-        entry = {
-            "id": amendment_id,
-            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "amends": entry_id,
-            "content": content,
-        }
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self._write_entry(
+            {
+                "id": amendment_id,
+                "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "amends": entry_id,
+                "content": content,
+            }
+        )
         return amendment_id
 
+    def _iter_entries(self, files: list[Path]):
+        for p in files:
+            for line in p.read_text(encoding="utf-8").splitlines():
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+    @staticmethod
+    def _fmt(entry: dict) -> str:
+        amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
+        return f"[{entry.get('ts', '')}] {entry.get('id', '')}{amends}: {entry.get('content', '')}"
+
     def read_recent(self, n: int = 20) -> str:
-        """Return the last n log entries as a formatted string."""
-        if not self.log_file.exists():
+        """Return the last n log entries from today's file."""
+        log_file = self._log_file(datetime.now().astimezone())
+        if not log_file.exists():
             return "(log is empty)"
-        lines = []
-        for line in self.log_file.read_text(encoding="utf-8").splitlines():
-            try:
-                entry = json.loads(line)
-                ts = entry.get("ts", "")
-                eid = entry.get("id", "")
-                amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
-                lines.append(f"[{ts}] {eid}{amends}: {entry.get('content', '')}")
-            except json.JSONDecodeError:
-                continue
-        if not lines:
-            return "(log is empty)"
-        recent = lines[-n:]
-        return "\n".join(recent)
+        lines = [self._fmt(e) for e in self._iter_entries([log_file])]
+        return "\n".join(lines[-n:]) if lines else "(log is empty)"
 
     def search(self, query: str) -> str:
-        """Regex search across log entries. Returns matching lines."""
-        if not self.log_file.exists():
+        """Regex search across all retained log files. Returns matching lines."""
+        files = sorted(self.logs_dir.glob("*.jsonl"))
+        if not files:
             return "(log is empty)"
         try:
             pattern = re.compile(query, re.IGNORECASE)
         except re.error as e:
             return f"Error: invalid regex: {e}"
-        matches = []
-        for line in self.log_file.read_text(encoding="utf-8").splitlines():
-            try:
-                entry = json.loads(line)
-                if pattern.search(entry.get("content", "")):
-                    ts = entry.get("ts", "")
-                    eid = entry.get("id", "")
-                    amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
-                    matches.append(f"[{ts}] {eid}{amends}: {entry.get('content', '')}")
-            except json.JSONDecodeError:
-                continue
+        matches = [
+            self._fmt(e) for e in self._iter_entries(files) if pattern.search(e.get("content", ""))
+        ]
         return "\n".join(matches) if matches else f"No matches for: {query}"
 
 

@@ -116,8 +116,6 @@ class MessageBus:
         await bus.consume_outbound(channel="x")     # next message for channel x
     """
 
-    # FUTURE: Support a channel bias (that is, if messages are received on multiple channels, prioritize the channel currently being worked on.)
-
     def __init__(self):
         self.inbound: dict[MessageAddress, asyncio.Queue[AddressEvent]] = {}
         self._address_subscribers: list[asyncio.Queue[MessageAddress]] = []
