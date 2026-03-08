@@ -255,8 +255,9 @@ class AgentLoop:
             # Check token usage and compact if approaching context window limit.
             total_tokens = response.usage.get("total_tokens", 0)
             if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
-                logger.warning(
-                    f"Token usage {total_tokens}/{self.config.context_window} for {addr}; compacting context"
+                logger.info(
+                    "Session compaction triggered for "
+                    f"{addr}: token usage {total_tokens}/{self.config.context_window}"
                 )
                 self._compact_context(session, addr, channel, chat_id)
 
