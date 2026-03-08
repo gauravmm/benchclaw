@@ -17,6 +17,7 @@ from benchclaw.bus import (
     MessageAddress,
     MessageBus,
     OutboundMessage,
+    SystemEvent,
     ToolResultEvent,
 )
 from benchclaw.config import Config
@@ -95,6 +96,12 @@ class AgentLoop:
         )
         in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
         iteration_count = 0
+        session.live_messages = self.context.build_context(
+            history=session.get_history(max_messages=self.config.memory_window),
+            tools=self.tools,
+            channel=addr.channel,
+            chat_id=addr.chat_id,
+        )
 
         while True:
             event = await self.bus.consume_inbound(address=addr)
@@ -120,27 +127,20 @@ class AgentLoop:
 
                 preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
                 logger.info(f"Processing message from {addr}: {preview}")
-
-                if not session.live_messages:
-                    session.live_messages = self.context.build_messages(
-                        history=session.get_history(max_messages=self.config.memory_window),
-                        current_message=event.content,
-                        tools=self.tools,
-                        media=event.media or None,
-                        channel=event.channel,
-                        chat_id=event.chat_id,
-                    )
-                else:
-                    session.live_messages.append(
-                        {
-                            "role": "system",
-                            "content": datetime.now().strftime("Current time: %Y-%m-%d %H:%M (%A)"),
-                        }
-                    )
-                    session.live_messages.append({"role": "user", "content": event.content})
-
+                session.live_messages.append(
+                    {
+                        "role": "system",
+                        "content": datetime.now().strftime("Current time: %Y-%m-%d %H:%M (%A)"),
+                    }
+                )
+                session.live_messages.append(
+                    self.context.user_message(event.content, event.media or None)
+                )
                 session.add_message("user", event.content)
                 iteration_count = 0
+
+            elif isinstance(event, SystemEvent):
+                session.live_messages.append({"role": "system", "content": event.content})
 
             elif isinstance(event, ToolResultEvent):
                 if event.tool_call_id in in_flight:

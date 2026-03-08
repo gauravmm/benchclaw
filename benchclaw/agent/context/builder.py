@@ -57,34 +57,26 @@ class ContextBuilder:
             chat_id=chat_id,
         )
 
-    def build_messages(
+    def build_context(
         self,
         history: list[dict[str, Any]],
-        current_message: str,
         tools: ToolRegistry | None,
-        media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        messages = []
-
-        messages.append(
+        """Build the base context: system prompt followed by history. No user message appended."""
+        return [
             {
                 "role": "system",
                 "content": self.build_system_prompt(
                     tools.values() if tools else None, channel, chat_id
                 ),
-            }
-        )
+            },
+            *history,
+        ]
 
-        # History
-        messages.extend(history)
-
-        # Current message (with optional image attachments)
-        user_content = self._build_user_content(current_message, media)
-        messages.append({"role": "user", "content": user_content})
-
-        return messages
+    def user_message(self, content: str, media: list[str] | None = None) -> dict[str, Any]:
+        return {"role": "user", "content": self._build_user_content(content, media)}
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""

@@ -71,8 +71,15 @@ class ToolResultEvent:
     result: str
 
 
+@dataclass
+class SystemEvent:
+    """An internal system prompt injected into the agent's conversation without user involvement."""
+
+    content: str
+
+
 # All events that flow through bus.inbound[addr]
-AddressEvent = InboundMessage | ToolResultEvent
+AddressEvent = InboundMessage | ToolResultEvent | SystemEvent
 
 
 class MessageBus:
@@ -128,6 +135,10 @@ class MessageBus:
 
     async def publish_tool_result(self, addr: MessageAddress, event: ToolResultEvent) -> None:
         """Post a completed tool result to an existing per-address queue."""
+        await self.inbound[addr].put(event)
+
+    async def publish_system_event(self, addr: MessageAddress, event: SystemEvent) -> None:
+        """Post a system event to an existing per-address queue."""
         await self.inbound[addr].put(event)
 
     async def consume_inbound(self, *, address: MessageAddress) -> AddressEvent:
