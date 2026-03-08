@@ -20,8 +20,13 @@ def _encode_ts(dt: datetime | None) -> str | None:
     return None if dt is None else dt.astimezone().isoformat(timespec="seconds")
 
 
+def _ensure_aware(dt: datetime) -> datetime:
+    """Return dt with timezone; assumes system timezone if naive."""
+    return dt if dt.tzinfo is not None else dt.astimezone()
+
+
 def _decode_ts(s: str | None) -> datetime | None:
-    return None if s is None else datetime.fromisoformat(s)
+    return None if s is None else _ensure_aware(datetime.fromisoformat(s))
 
 
 def _encode_td(td: timedelta) -> float:
@@ -297,60 +302,3 @@ class CronStore:
             if job is not None and job.enabled:
                 due.append(job)
         return due
-
-
-if __name__ == "__main__":
-    import asyncio
-    import tempfile
-
-    from benchclaw.bus import MessageAddress
-
-    async def main() -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "jobs.json"
-            address = MessageAddress(channel="telegram", chat_id="123456")
-
-            jobs_in = [
-                CronJob(
-                    id="aaa00001",
-                    name="daily standup",
-                    schedule=CronScheduleCron(expr="0 9 * * 1-5"),
-                    payload=CronPayload(message="Time for standup!", deliver_to=address),
-                    state=CronJobState(),
-                ),
-                CronJob(
-                    id="aaa00002",
-                    name="heartbeat",
-                    schedule=CronScheduleEvery(every=timedelta(minutes=30)),
-                    payload=CronPayload(message="Heartbeat check", deliver_to=address),
-                    state=CronJobState(),
-                ),
-                CronJob(
-                    id="aaa00003",
-                    name="one-time reminder",
-                    schedule=CronScheduleAt(at=datetime(2026, 6, 1, 10, 0).astimezone()),
-                    payload=CronPayload(message="Project deadline!", deliver_to=address),
-                    state=CronJobState(),
-                ),
-            ]
-
-            async with CronStore(path) as store:
-                for job in jobs_in:
-                    store.add(job)
-
-            print(f"Written to {path}:\n{path.read_text()}")
-
-            # Read back and verify round-trip
-            async with CronStore(path) as store:
-                jobs_out = {j.id: j for j in store.jobs()}
-
-            assert len(jobs_out) == 3
-            assert isinstance(jobs_out["aaa00001"].schedule, CronScheduleCron)
-            assert jobs_out["aaa00001"].schedule.expr == "0 9 * * 1-5"
-            assert isinstance(jobs_out["aaa00002"].schedule, CronScheduleEvery)
-            assert jobs_out["aaa00002"].schedule.every == timedelta(minutes=30)
-            assert isinstance(jobs_out["aaa00003"].schedule, CronScheduleAt)
-            assert jobs_out["aaa00003"].schedule.at == datetime(2026, 6, 1, 10, 0).astimezone()
-            print("All assertions passed — serialization round-trip OK.")
-
-    asyncio.run(main())

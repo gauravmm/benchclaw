@@ -2,7 +2,7 @@
 
 import contextlib
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +17,9 @@ from benchclaw.agent.tools.cron.typesupport import (
     CronScheduleCron,
     CronScheduleEvery,
     CronStore,
+    _ensure_aware,
 )
 from benchclaw.bus import InboundMessage, MessageAddress, MessageBus
-
-_MAX_DT = datetime.max.replace(tzinfo=timezone.utc)
 
 
 class CronTool(Tool):
@@ -179,12 +178,12 @@ class CronTool(Tool):
             return "Error: cron service not running"
 
         if every_seconds:
-            until = datetime.fromisoformat(until_iso) if until_iso else None
+            until = _ensure_aware(datetime.fromisoformat(until_iso)) if until_iso else None
             schedule = CronScheduleEvery(every=timedelta(seconds=every_seconds), until=until)
         elif cron_expr:
             schedule = CronScheduleCron(expr=cron_expr)
         elif at:
-            schedule = CronScheduleAt(at=datetime.fromisoformat(at))
+            schedule = CronScheduleAt(at=_ensure_aware(datetime.fromisoformat(at)))
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 
