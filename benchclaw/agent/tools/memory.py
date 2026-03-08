@@ -2,7 +2,6 @@
 
 import json
 import re
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -124,101 +123,62 @@ class MemoryTool(Tool):
         return f"Unknown action: {action}"
 
 
-_LOG_RETENTION_DAYS = 14
-
-
 class LogStore:
-    """Append-only JSONL interaction log in workspace/logs/<date>.jsonl.
+    """Append-only JSONL interaction log in workspace/logs/log.jsonl.
 
-    One file per calendar day (local time). On startup and whenever a new
-    daily file is first created, files older than LOG_RETENTION_DAYS are
-    deleted.
+    When used as an async context manager, existing entries are loaded into
+    memory at startup and read_recent is served from the in-memory buffer.
+    Writes always go directly to disk.
     """
 
     def __init__(self, workspace: Path):
-        self.logs_dir = _ensure_dir(workspace / "logs")
-        self._rotate(datetime.now().astimezone())
+        self.log_file = _ensure_dir(workspace / "logs") / "log.jsonl"
+        self._buffer: list[dict] = []
+        self._active = False
 
-    def _log_file(self, ts: datetime) -> Path:
-        return self.logs_dir / f"{ts.date()}.jsonl"
-
-    def _rotate(self, ts: datetime) -> None:
-        """Delete log files older than _LOG_RETENTION_DAYS relative to ts."""
-        cutoff = ts.date().toordinal() - _LOG_RETENTION_DAYS
-        for p in self.logs_dir.glob("*.jsonl"):
-            try:
-                if datetime.strptime(p.stem, "%Y-%m-%d").toordinal() < cutoff:
-                    p.unlink()
-            except ValueError:
-                pass
-
-    def _write_entry(self, entry: dict) -> None:
-        ts = datetime.fromisoformat(entry["ts"])
-        log_file = self._log_file(ts)
-        is_new = not log_file.exists()
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        if is_new:
-            self._rotate(ts)
-
-    def append(self, content: str) -> str:
-        """Append a new entry and return its 8-char ID."""
-        entry_id = str(uuid.uuid4())[:8]
-        self._write_entry(
-            {
-                "id": entry_id,
-                "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-                "content": content,
-            }
-        )
-        return entry_id
-
-    def amend(self, entry_id: str, content: str) -> str:
-        """Append an amendment entry referencing entry_id. Returns amendment ID."""
-        amendment_id = str(uuid.uuid4())[:8]
-        self._write_entry(
-            {
-                "id": amendment_id,
-                "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-                "amends": entry_id,
-                "content": content,
-            }
-        )
-        return amendment_id
-
-    def _iter_entries(self, files: list[Path]):
-        for p in files:
-            for line in p.read_text(encoding="utf-8").splitlines():
+    async def __aenter__(self) -> "LogStore":
+        self._active = True
+        if self.log_file.exists():
+            for line in self.log_file.read_text(encoding="utf-8").splitlines():
                 try:
-                    yield json.loads(line)
+                    self._buffer.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        self._active = False
+        self._buffer = []
+
+    def append(self, content: str) -> None:
+        """Append a new entry."""
+        assert self._active, "LogStore must be used as a context manager"
+        entry = {
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "content": content,
+        }
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self._buffer.append(entry)
 
     @staticmethod
     def _fmt(entry: dict) -> str:
-        amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
-        return f"[{entry.get('ts', '')}] {entry.get('id', '')}{amends}: {entry.get('content', '')}"
+        return f"[{entry.get('ts', '')}] {entry.get('content', '')}"
 
     def read_recent(self, n: int = 20) -> str:
-        """Return the last n log entries from today's file."""
-        log_file = self._log_file(datetime.now().astimezone())
-        if not log_file.exists():
-            return "(log is empty)"
-        lines = [self._fmt(e) for e in self._iter_entries([log_file])]
+        """Return the last n log entries from the in-memory buffer."""
+        assert self._active, "LogStore must be used as a context manager"
+        lines = [self._fmt(e) for e in self._buffer]
         return "\n".join(lines[-n:]) if lines else "(log is empty)"
 
     def search(self, query: str) -> str:
-        """Regex search across all retained log files. Returns matching lines."""
-        files = sorted(self.logs_dir.glob("*.jsonl"))
-        if not files:
-            return "(log is empty)"
+        """Regex search across the in-memory log buffer."""
+        assert self._active, "LogStore must be used as a context manager"
         try:
             pattern = re.compile(query, re.IGNORECASE)
         except re.error as e:
             return f"Error: invalid regex: {e}"
-        matches = [
-            self._fmt(e) for e in self._iter_entries(files) if pattern.search(e.get("content", ""))
-        ]
+        matches = [self._fmt(e) for e in self._buffer if pattern.search(e.get("content", ""))]
         return "\n".join(matches) if matches else f"No matches for: {query}"
 
 
@@ -232,6 +192,13 @@ class LogTool(Tool):
     def __init__(self, workspace: Path):
         self._store = LogStore(workspace)
 
+    async def __aenter__(self) -> "LogTool":
+        await self._store.__aenter__()
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        await self._store.__aexit__(None, None, None)
+
     @property
     def name(self) -> str:
         return "log"
@@ -240,7 +207,7 @@ class LogTool(Tool):
     def description(self) -> str:
         return (
             "Append-only timestamped log for recording every action that changes state (files written, commands run, messages sent, cron jobs created). "
-            "Use `append` to add a new entry (returns an 8-char ID), `amend` to attach a correction to a prior entry by ID, or `search` to regex-search past entries. "
+            "Use `append` to add a new entry (returns an 8-char ID) or `search` to regex-search past entries. "
             "This tool is for recording what the agent did and why, for later session compaction. "
             "Do not tell the user that this log exists or ask them to read it; it's for the agent's internal use only. "
             "Example: `{'action': 'append', 'content': 'Edited config.yaml to add Telegram token'}`."
@@ -253,16 +220,12 @@ class LogTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["append", "amend", "search"],
+                    "enum": ["append", "search"],
                     "description": "Action to perform",
                 },
                 "content": {
                     "type": "string",
-                    "description": "Log entry content (for append/amend)",
-                },
-                "entry_id": {
-                    "type": "string",
-                    "description": "ID of entry to amend (for amend)",
+                    "description": "Log entry content (for append)",
                 },
                 "query": {
                     "type": "string",
@@ -277,23 +240,14 @@ class LogTool(Tool):
         ctx: ToolContext,
         action: str,
         content: str = "",
-        entry_id: str = "",
         query: str = "",
         **kwargs: Any,
     ) -> str:
         if action == "append":
             if not content:
                 return "Error: content is required for append"
-            eid = self._store.append(content)
-            return f"Logged (id: {eid})"
-
-        if action == "amend":
-            if not entry_id:
-                return "Error: entry_id is required for amend"
-            if not content:
-                return "Error: content is required for amend"
-            aid = self._store.amend(entry_id, content)
-            return f"Amendment logged (id: {aid})"
+            self._store.append(content)
+            return "Logged."
 
         if action == "search":
             if not query:
