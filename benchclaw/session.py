@@ -34,8 +34,15 @@ class Session:
     # In-memory LLM context for the current run; not persisted.
     live_messages: list[dict[str, Any]] = field(default_factory=list)
 
-    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
-        """Add a message to the session."""
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        *,
+        live_message: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Add a message to the persistent session and optionally to live_messages."""
         msg = {
             "role": role,
             "content": content,
@@ -44,6 +51,8 @@ class Session:
         }
         self.messages.append(msg)
         self.updated_at = datetime.now()
+        if live_message is not None:
+            self.live_messages.append(live_message)
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """Get recent messages in LLM format (role + content only)."""
