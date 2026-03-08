@@ -8,11 +8,10 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MessageAddress, MessageBus
 
 if TYPE_CHECKING:
-    pass
+    from benchclaw.agent.tools.memory import LogStore
 
 _TOOL_REGISTRY: dict[str, type["Tool"]] = {}
 _TOOL_CONFIG_REGISTRY: dict[str, type[BaseModel]] = {}
