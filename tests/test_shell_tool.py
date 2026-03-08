@@ -62,6 +62,8 @@ async def test_exec_default_config_restricts_to_workspace(tmp_path: Path) -> Non
     # Default ExecToolConfig has restrict_to_workspace=True
     tool = ExecTool.build(None, ctx)
 
+    assert tool.restrict_to_workspace is True
+
     result = await tool.execute(ctx, command="echo hi", working_dir=str(tmp_path.parent))
 
     assert result.startswith("Error:")

@@ -18,7 +18,7 @@ def _resolve_path(path: str, ctx: ToolContext, allowed_dir: Path | None = None) 
 
     if allowed_dir is not None:
         root = allowed_dir.resolve()
-        if resolved != root and not str(resolved).startswith(str(root) + "/"):
+        if resolved != root and root not in resolved.parents:
             raise PermissionError(
                 f"Path '{path}' is outside the allowed directory '{root}'"
             )
