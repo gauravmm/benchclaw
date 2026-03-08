@@ -1,5 +1,6 @@
 """Utility functions for nanobot."""
 
+from datetime import datetime
 from pathlib import Path
 
 
@@ -16,6 +17,17 @@ def get_workspace_path() -> Path:
 
 def get_media_path() -> Path:
     return _ensure_dir(get_workspace_path() / "media")
+
+
+def get_timestamped_media_path(workspace: Path | None = None) -> Path:
+    """Create and return a timestamped subdirectory under the media folder.
+
+    Each call creates a unique folder named YYYYMMDD_HHMMSS, suitable for
+    grouping all files received in a single message together.
+    """
+    base = (workspace / "media") if workspace else get_media_path()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return _ensure_dir(base / ts)
 
 
 # TODO: Figure out where to move this.

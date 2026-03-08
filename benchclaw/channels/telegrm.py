@@ -6,13 +6,13 @@ import asyncio
 import re
 
 from loguru import logger
-from telegram import BotCommand, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update
+from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
-from benchclaw.utils import get_workspace_path
+from benchclaw.utils import get_timestamped_media_path
 
 
 class TelegramConfig(ChannelConfig):
@@ -105,13 +105,6 @@ class TelegramChannel(BaseChannel):
 
     name = "telegram"
 
-    # Commands registered with Telegram's command menu
-    BOT_COMMANDS = [
-        BotCommand("start", "Start the bot"),
-        BotCommand("new", "Start a new conversation"),
-        BotCommand("help", "Show available commands"),
-    ]
-
     def __init__(
         self,
         config: TelegramConfig,
@@ -147,11 +140,6 @@ class TelegramChannel(BaseChannel):
         self._app = builder.build()
         self._app.add_error_handler(self._on_error)
 
-        # Add command handlers
-        self._app.add_handler(CommandHandler("start", self._on_start))
-        self._app.add_handler(CommandHandler("new", self._forward_command))
-        self._app.add_handler(CommandHandler("help", self._forward_command))
-
         # Add message handler for text, photos, voice, documents
         self._app.add_handler(
             MessageHandler(
@@ -173,15 +161,9 @@ class TelegramChannel(BaseChannel):
         await self._app.initialize()
         await self._app.start()
 
-        # Get bot info and register command menu
+        # Get bot info
         bot_info = await self._app.bot.get_me()
         logger.info(f"Telegram bot @{bot_info.username} connected")
-
-        try:
-            await self._app.bot.set_my_commands(self.BOT_COMMANDS)
-            logger.debug("Telegram bot commands registered")
-        except Exception as e:
-            logger.warning(f"Failed to register bot commands: {e}")
 
         # Start polling (this runs until cancelled)
         assert self._app.updater
@@ -230,28 +212,6 @@ class TelegramChannel(BaseChannel):
                 await self._app.bot.send_message(chat_id=int(msg.chat_id), text=msg.content)
             except Exception as e2:
                 logger.error(f"Error sending Telegram message: {e2}")
-
-    async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /start command."""
-        if not update.message or not update.effective_user:
-            return
-
-        user = update.effective_user
-        await update.message.reply_text(
-            f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
-            "Send me a message and I'll respond!\n"
-            "Type /help to see available commands."
-        )
-
-    async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Forward slash commands to the bus for unified handling in AgentLoop."""
-        if not update.message or not update.effective_user:
-            return
-        await self._handle_message(
-            sender_id=str(update.effective_user.id),
-            chat_id=str(update.message.chat_id),
-            content=update.message.text or "(no text)",
-        )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
@@ -303,10 +263,7 @@ class TelegramChannel(BaseChannel):
                 file = await self._app.bot.get_file(media_file.file_id)
                 ext = self._get_extension(media_type, getattr(media_file, "mime_type", None))
 
-                # TODO: Move this into utils.py
-                media_dir = get_workspace_path() / "media"
-                media_dir.mkdir(parents=True, exist_ok=True)
-
+                media_dir = get_timestamped_media_path()
                 file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
                 await file.download_to_drive(str(file_path))
                 media_paths.append(str(file_path))

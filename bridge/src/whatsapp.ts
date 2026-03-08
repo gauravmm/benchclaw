@@ -9,6 +9,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys';
 
 import { Boom } from '@hapi/boom';
@@ -24,6 +25,12 @@ export interface InboundMessage {
   content: string;
   timestamp: number;
   isGroup: boolean;
+  mediaBase64?: string;
+  mediaType?: string;
+}
+
+interface ImageInfo {
+  mimeType?: string;
 }
 
 export interface WhatsAppClientOptions {
@@ -116,24 +123,45 @@ export class WhatsAppClient {
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
-        const content = this.extractMessageContent(msg);
+        const content = this.extractTextContent(msg);
         if (!content) continue;
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
-        this.options.onMessage({
+        const outMsg: InboundMessage = {
           id: msg.key.id || '',
           sender: msg.key.remoteJid || '',
           pn: msg.key.remoteJidAlt || '',
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
-        });
+        };
+
+        // Download image if present and attach as base64
+        const imageInfo = this.detectImageMessage(msg);
+        if (imageInfo && this.sock) {
+          try {
+            const buffer = await downloadMediaMessage(
+              msg,
+              'buffer',
+              {},
+              { logger, reuploadRequest: this.sock.updateMediaMessage },
+            );
+            if (buffer) {
+              outMsg.mediaBase64 = (buffer as Buffer).toString('base64');
+              outMsg.mediaType = imageInfo.mimeType || 'image/jpeg';
+            }
+          } catch (e) {
+            console.error('Failed to download WhatsApp image:', e);
+          }
+        }
+
+        this.options.onMessage(outMsg);
       }
     });
   }
 
-  private extractMessageContent(msg: any): string | null {
+  private extractTextContent(msg: any): string | null {
     const message = msg.message;
     if (!message) return null;
 
@@ -152,6 +180,11 @@ export class WhatsAppClient {
       return `[Image] ${message.imageMessage.caption}`;
     }
 
+    // Image without caption
+    if (message.imageMessage) {
+      return '[Image]';
+    }
+
     // Video with caption
     if (message.videoMessage?.caption) {
       return `[Video] ${message.videoMessage.caption}`;
@@ -168,6 +201,12 @@ export class WhatsAppClient {
     }
 
     return null;
+  }
+
+  private detectImageMessage(msg: any): ImageInfo | null {
+    const message = msg.message;
+    if (!message?.imageMessage) return null;
+    return { mimeType: message.imageMessage.mimetype };
   }
 
   async sendMessage(to: string, text: string): Promise<void> {

@@ -1,6 +1,7 @@
 """WhatsApp channel implementation using Node.js bridge."""
 
 import asyncio
+import base64
 import json
 
 import websockets
@@ -8,6 +9,7 @@ from loguru import logger
 
 from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
+from benchclaw.utils import get_timestamped_media_path
 
 
 class WhatsAppConfig(ChannelConfig):
@@ -107,10 +109,33 @@ class WhatsAppChannel(BaseChannel):
                     f"Voice message received from {sender_id}, but direct download from bridge is not yet supported."
                 )
 
+            # Save any attached image to a timestamped media folder
+            media_paths: list[str] = []
+            if data.get("mediaBase64"):
+                try:
+                    media_dir = get_timestamped_media_path()
+                    mime_type = data.get("mediaType", "image/jpeg")
+                    ext_map = {
+                        "image/jpeg": ".jpg",
+                        "image/png": ".png",
+                        "image/gif": ".gif",
+                        "image/webp": ".webp",
+                    }
+                    ext = ext_map.get(mime_type, ".bin")
+                    msg_id = str(data.get("id") or "")
+                    filename_base = msg_id[:16] if msg_id else "media"
+                    file_path = media_dir / f"{filename_base}{ext}"
+                    file_path.write_bytes(base64.b64decode(data["mediaBase64"]))
+                    media_paths.append(str(file_path))
+                    logger.debug(f"Saved WhatsApp image to {file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save WhatsApp image: {e}")
+
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=sender,  # Use full LID for replies
                 content=content,
+                media=media_paths,
                 metadata={
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),
