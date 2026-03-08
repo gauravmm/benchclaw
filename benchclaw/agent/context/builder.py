@@ -17,7 +17,7 @@ from benchclaw.agent.tools.registry import ToolRegistry
 if TYPE_CHECKING:
     from benchclaw.agent.tools.base import Tool
 
-BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"]
+BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md"]
 
 
 class ContextBuilder:
