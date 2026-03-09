@@ -2,6 +2,7 @@ TODOS
 config/
 workspace/
 bridge/node_modules
+debug_dump.txt
 
 .assets
 .env

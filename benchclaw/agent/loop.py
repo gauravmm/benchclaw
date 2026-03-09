@@ -163,15 +163,13 @@ class AgentLoop:
 
     def _dump_messages(self, messages: list[dict]) -> None:
         """Write the LLM input messages to the debug dump file."""
-        if self.debug_dump_path is None:
-            return
-        try:
-            with open(self.debug_dump_path, "a", encoding="utf-8") as f:
-                f.write(f"\n--- {datetime.now().isoformat(timespec='seconds')} ---\n")
-                f.write(json.dumps(messages, ensure_ascii=False, indent=2))
-                f.write("\n")
-        except Exception as e:
-            logger.warning(f"Failed to write debug dump: {e}")
+        if self.debug_dump_path:
+            try:
+                self.debug_dump_path.write_text(
+                    json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to write debug dump: {e}")
 
     def _compact_context(
         self,

@@ -86,7 +86,7 @@ class ReadFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Read the complete contents of a file from the file system, using a path relative to the workspace by default. "
+            "Read the complete contents of a file from inside the workspace directory. "
             "Use this tool when you need to examine the contents of a single file. "
             "Returns a detailed error if the file cannot be read or is not a regular file. "
             "Example: `{'path': 'README.md'}`."
@@ -99,7 +99,7 @@ class ReadFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to read, relative to the workspace by default",
+                    "description": "The file path to read, where . is the workspace dir.",
                 }
             },
             "required": ["path"],
@@ -139,7 +139,7 @@ class WriteFileTool(Tool):
     @property
     def description(self) -> str | None:
         return (
-            "Create a new file or completely overwrite an existing file with new content, using a path relative to the workspace by default. "
+            "Create a new file or completely overwrite an existing file from inside the workspace directory with new content. "
             "Use with caution because it replaces the full file contents. "
             "Creates parent directories as needed and returns a detailed error if the write fails. "
             "Example: `{'path': 'notes/output.txt', 'content': 'Hello, world!'}`."
@@ -152,7 +152,7 @@ class WriteFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to write, relative to the workspace by default",
+                    "description": "The file path to write, where . is the workspace dir.",
                 },
                 "content": {"type": "string", "description": "The content to write"},
             },
@@ -196,7 +196,7 @@ class EditFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Make a targeted edit to an existing text file by replacing an exact string match, using a path relative to the workspace by default. "
+            "Make a targeted edit to an existing text file by replacing an exact string match, from inside the workspace directory by default. "
             "This is safer than overwriting the whole file when you only need to change part of it. "
             "The edit is rejected if the original text is missing or appears more than once. "
             "Example: `{'path': 'USER.md', 'old_text': 'port: 8080', 'new_text': 'port: 9090'}`."
@@ -209,7 +209,7 @@ class EditFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to edit, relative to the workspace by default",
+                    "description": "The file path to edit, where . is the workspace dir.",
                 },
                 "old_text": {"type": "string", "description": "The exact text to find and replace"},
                 "new_text": {"type": "string", "description": "The text to replace with"},
@@ -269,7 +269,7 @@ class ListDirTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Get a detailed listing of the files and directories in a specified path, using a path relative to the workspace by default. "
+            "Get a detailed listing of the files and directories in a specified path, from inside the workspace directory. "
             "Results clearly distinguish between files and directories and are sorted alphabetically. "
             "This tool is useful for understanding directory structure and locating files before reading or editing them. "
             "Example: `{'path': 'memory/'}`."
@@ -282,7 +282,7 @@ class ListDirTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The directory path to list, relative to the workspace by default",
+                    "description": "The directory path to list, where . is the workspace dir.",
                 }
             },
             "required": ["path"],
@@ -328,7 +328,7 @@ class GlobTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Find files and directories that match a glob pattern, using the workspace as the search root by default. "
+            "Find files and directories that match a glob pattern, from inside the workspace directory by default. "
             "Use this tool when you know the shape of the path but not the exact filename. "
             "Returns matching paths relative to the workspace when possible. "
             "Example: `{'pattern': 'benchclaw/**/*.py', 'path': '.'}`."
@@ -342,7 +342,7 @@ class GlobTool(Tool):
                 "pattern": {"type": "string", "description": "The glob pattern to match"},
                 "path": {
                     "type": "string",
-                    "description": "The directory to search from, relative to the workspace by default",
+                    "description": "The directory to search from, where . is the workspace dir.",
                 },
                 "max_results": {
                     "type": "integer",
@@ -400,7 +400,7 @@ class GrepTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search for matching text in a file or directory tree, using a workspace-relative path by default. "
+            "Search for matching text in a file or directory tree, from inside the workspace directory by default. "
             "Supports plain-text matching or regular expressions and returns matching lines with file and line numbers. "
             "Use `file_pattern` to limit which files are searched when scanning directories. "
             "Example: `{'pattern': 'register_tool', 'path': 'benchclaw', 'file_pattern': '*.py'}`."
@@ -417,7 +417,7 @@ class GrepTool(Tool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "The file or directory to search, relative to the workspace by default",
+                    "description": "The file or directory to search, where . is the workspace dir.",
                 },
                 "file_pattern": {
                     "type": "string",
