@@ -41,8 +41,8 @@ class ToolContext:
     """Runtime context passed to Tool.build() and Tool.execute() during agent operation."""
 
     workspace: Path
-    bus: MessageBus  # MessageBus; None for subagents
-    log_store: LogStore  # LogStore; set by AgentLoop before building ToolRegistry
+    bus: MessageBus | None = None  # MessageBus; None for subagents/tests
+    log_store: "LogStore | None" = None  # LogStore; set by AgentLoop before building ToolRegistry
     is_subagent: bool = False
     subagent_manager: Any = None  # SubagentManager; None for subagents
     address: MessageAddress | None = None  # Current session address; None for background/subagents
