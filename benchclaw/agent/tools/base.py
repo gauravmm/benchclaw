@@ -49,6 +49,11 @@ class ToolContext:
     background_tasks: dict[str, Task] | None = None  # Live task handles; master loop only
     file_snapshots: dict[Path, FileSnapshot] = field(default_factory=dict)
 
+    @property
+    def allowed_dir(self) -> Path | None:
+        """Restrict filesystem access to workspace when running as a subagent."""
+        return self.workspace if self.is_subagent else None
+
 
 class Tool:
     """

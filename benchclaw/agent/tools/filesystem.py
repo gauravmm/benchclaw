@@ -10,15 +10,12 @@ from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext, register
 
 def _resolve_path(path: str, ctx: ToolContext) -> Path:
     """Resolve path and optionally enforce directory restriction."""
-    if path.startswith("/"):
-        resolved = Path(path)
-    else:
-        resolved = ctx.workspace / path
+    resolved = Path(path) if path.startswith("/") else ctx.workspace / path
     resolved = resolved.expanduser().resolve()
 
-    # TODO: Support allowed_dir
-    # if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
-    #     raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
+    # Must be within allowed_dir if specified, to prevent accidental or malicious access to sensitive files outside the workspace.
+    if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
+        raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
     return resolved
 
 
@@ -73,11 +70,8 @@ class ReadFileTool(Tool):
     """Tool to read file contents."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "ReadFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "ReadFileTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -127,10 +121,7 @@ class WriteFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "WriteFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+        return cls()
 
     @property
     def name(self) -> str:
@@ -183,11 +174,8 @@ class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "EditFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "EditFileTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -256,11 +244,8 @@ class ListDirTool(Tool):
     """Tool to list directory contents."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "ListDirTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "ListDirTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -315,11 +300,8 @@ class GlobTool(Tool):
     """Tool to match filesystem paths with a glob pattern."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "GlobTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "GlobTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -387,11 +369,8 @@ class GrepTool(Tool):
     """Tool to search file contents for matching lines."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "GrepTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "GrepTool":
+        return cls()
 
     @property
     def name(self) -> str:
