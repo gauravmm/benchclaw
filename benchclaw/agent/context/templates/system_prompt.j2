@@ -24,18 +24,14 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 {%- if tools %}
 ## Tools
 
-"To call a tool, wrap the JSON in XML tags like this: <tool_call>{"name": "...", "arguments": {...}}</tool_call>"
+To call a tool, wrap the JSON in XML tags like this: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+If you decide to use a tool, you must output the <tool_call> tag immediately as the very first thing in your response. Do not include any newlines, spaces, or introductory text before the <tool_call> tag.
 
-Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
-
+Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool. 
 
 {% for tool in tools %}
 ### {{ tool.name }}
 {{ tool.description }}
-{% if tool.skill %}
-
-{{ tool.skill }}
-{% endif %}
 {% endfor %}
 
 

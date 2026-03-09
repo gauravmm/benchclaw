@@ -16,8 +16,21 @@ from benchclaw.bus import MessageAddress
 MAX_SESSIONS = 50
 
 
-def _build_message(role: str, content: str, media: list[str] | None = None) -> dict[str, Any]:
+def _sender_label(sender_id: str, metadata: dict[str, Any]) -> str | None:
+    """Return a display label for a sender, or None if no identity available."""
+    name = metadata.get("first_name")
+    if not name and sender_id:
+        # Telegram encodes "numericid|username" — extract the readable part
+        name = sender_id.split("|", 1)[-1]
+    return name or None
+
+
+def _build_message(
+    role: str, content: str, media: list[str] | None = None, sender: str | None = None
+) -> dict[str, Any]:
     """Build an LLM API message dict, embedding any media as base64 image_url parts."""
+    if sender:
+        content = f"[{sender}]: {content}"
     if not media:
         return {"role": role, "content": content}
 
@@ -65,11 +78,24 @@ class Session:
         }
         self.messages.append(msg)
         self.updated_at = datetime.now()
-        self.live_messages.append(_build_message(role, content, kwargs.get("media")))
+        sender = (
+            _sender_label(kwargs.get("sender_id", ""), kwargs.get("metadata") or {})
+            if role == "user"
+            else None
+        )
+        self.live_messages.append(_build_message(role, content, kwargs.get("media"), sender=sender))
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """Get recent messages in LLM format (role + content only)."""
-        return [{"role": m["role"], "content": m["content"]} for m in self.messages[-max_messages:]]
+        result = []
+        for m in self.messages[-max_messages:]:
+            content = m["content"]
+            if m["role"] == "user":
+                label = _sender_label(m.get("sender_id", ""), m.get("metadata") or {})
+                if label:
+                    content = f"[{label}]: {content}"
+            result.append({"role": m["role"], "content": content})
+        return result
 
     def clear(self) -> None:
         """Clear all messages and reset session to initial state."""

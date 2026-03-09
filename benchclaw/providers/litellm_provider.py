@@ -84,7 +84,6 @@ class LiteLLMProvider(LLMProvider):
             "api_base": self._effective_base or None,
             "extra_headers": self._config.extra_headers,
             "tools": tools,
-            "tool_choice": "auto",
             "custom_llm_provider": self._spec.litellm_provider,
         }
 
