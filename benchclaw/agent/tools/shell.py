@@ -15,6 +15,7 @@ class ExecToolConfig(BaseModel):
     """Shell exec tool configuration."""
 
     timeout: int = 300
+    restrict_to_workspace: bool = True
 
 
 register_tool_config("exec", ExecToolConfig)
@@ -25,10 +26,11 @@ class ExecTool(Tool):
 
     @classmethod
     def build(cls, config: "ExecToolConfig | None", ctx: ToolContext) -> "ExecTool":
+        resolved_config = config or ExecToolConfig()
         return cls(
-            config=config or ExecToolConfig(),
+            config=resolved_config,
             working_dir=str(ctx.workspace),
-            restrict_to_workspace=ctx.is_subagent,
+            restrict_to_workspace=ctx.is_subagent or resolved_config.restrict_to_workspace,
         )
 
     def __init__(
@@ -41,6 +43,7 @@ class ExecTool(Tool):
     ):
         self.timeout = config.timeout
         self.working_dir = working_dir
+        self._workspace_root = Path(working_dir).resolve() if working_dir else None
         self.deny_patterns = deny_patterns or [
             r"\brm\s+-[rf]{1,2}\b",  # rm -r, rm -rf, rm -fr
             r"\bdel\s+/[fq]\b",  # del /f, del /q
@@ -84,6 +87,17 @@ class ExecTool(Tool):
         self, ctx: ToolContext, command: str, working_dir: str | None = None, **kwargs: Any
     ) -> str:
         cwd = working_dir or self.working_dir or os.getcwd()
+
+        # When workspace-restricted, reject a caller-supplied working_dir that is
+        # outside the workspace before running any command.
+        if self.restrict_to_workspace and working_dir and self._workspace_root:
+            try:
+                requested = Path(working_dir).resolve()
+                if requested != self._workspace_root and self._workspace_root not in requested.parents:
+                    return "Error: Command blocked by safety guard (working_dir outside workspace)"
+            except Exception:
+                pass
+
         guard_error = self._guard_command(command, cwd)
         if guard_error:
             return guard_error
