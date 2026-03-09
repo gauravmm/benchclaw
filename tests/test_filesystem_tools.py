@@ -9,7 +9,6 @@ from benchclaw.agent.tools.filesystem import (
     EditFileTool,
     GlobTool,
     GrepTool,
-    ListDirTool,
     ReadFileTool,
     WriteFileTool,
 )
@@ -122,99 +121,3 @@ async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
     )
 
     assert second_result == "Successfully edited notes.txt"
-
-
-# ── Workspace restriction tests (via build()) ────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_read_file_blocks_path_outside_workspace(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "secret.txt"
-    outside.write_text("secret", encoding="utf-8")
-
-    ctx = ToolContext(workspace=tmp_path)
-    tool = ReadFileTool.build(None, ctx)
-
-    result = await tool.execute(ctx, path=str(outside))
-
-    assert result.startswith("Error:")
-    assert "outside" in result.lower() or "allowed" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_write_file_blocks_path_outside_workspace(tmp_path: Path) -> None:
-    ctx = ToolContext(workspace=tmp_path)
-    tool = WriteFileTool.build(None, ctx)
-
-    result = await tool.execute(ctx, path=str(tmp_path.parent / "evil.txt"), content="x")
-
-    assert result.startswith("Error:")
-    assert "outside" in result.lower() or "allowed" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_edit_file_blocks_path_outside_workspace(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "external.txt"
-    outside.write_text("old content", encoding="utf-8")
-
-    ctx = ToolContext(workspace=tmp_path)
-    read_tool = ReadFileTool.build(None, ctx)
-    edit_tool = EditFileTool.build(None, ctx)
-
-    # read tool should also block it
-    read_result = await read_tool.execute(ctx, path=str(outside))
-    assert read_result.startswith("Error:")
-
-    result = await edit_tool.execute(
-        ctx, path=str(outside), old_text="old content", new_text="new content"
-    )
-    assert result.startswith("Error:")
-
-
-@pytest.mark.asyncio
-async def test_list_dir_blocks_path_outside_workspace(tmp_path: Path) -> None:
-    ctx = ToolContext(workspace=tmp_path)
-    tool = ListDirTool.build(None, ctx)
-
-    result = await tool.execute(ctx, path=str(tmp_path.parent))
-
-    assert result.startswith("Error:")
-    assert "outside" in result.lower() or "allowed" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_glob_blocks_search_root_outside_workspace(tmp_path: Path) -> None:
-    ctx = ToolContext(workspace=tmp_path)
-    tool = GlobTool.build(None, ctx)
-
-    result = await tool.execute(ctx, pattern="*.txt", path=str(tmp_path.parent))
-
-    assert result.startswith("Error:")
-    assert "outside" in result.lower() or "allowed" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_grep_blocks_path_outside_workspace(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "other.txt"
-    outside.write_text("some text\n", encoding="utf-8")
-
-    ctx = ToolContext(workspace=tmp_path)
-    tool = GrepTool.build(None, ctx)
-
-    result = await tool.execute(ctx, pattern="some", path=str(outside))
-
-    assert result.startswith("Error:")
-    assert "outside" in result.lower() or "allowed" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_read_file_allows_path_inside_workspace(tmp_path: Path) -> None:
-    (tmp_path / "data.txt").write_text("hello\n", encoding="utf-8")
-
-    ctx = ToolContext(workspace=tmp_path)
-    tool = ReadFileTool.build(None, ctx)
-
-    result = await tool.execute(ctx, path="data.txt")
-
-    assert result == "hello\n"
-

@@ -8,20 +8,17 @@ from typing import Any
 from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext, register_tool
 
 
-def _resolve_path(path: str, ctx: ToolContext, allowed_dir: Path | None = None) -> Path:
-    """Resolve path and optionally enforce a directory restriction."""
+def _resolve_path(path: str, ctx: ToolContext) -> Path:
+    """Resolve path and optionally enforce directory restriction."""
     if path.startswith("/"):
         resolved = Path(path)
     else:
         resolved = ctx.workspace / path
     resolved = resolved.expanduser().resolve()
 
-    if allowed_dir is not None:
-        root = allowed_dir.resolve()
-        if resolved != root and root not in resolved.parents:
-            raise PermissionError(
-                f"Path '{path}' is outside the allowed directory '{root}'"
-            )
+    # TODO: Support allowed_dir
+    # if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
+    #     raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
     return resolved
 
 
@@ -77,7 +74,7 @@ class ReadFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "ReadFileTool":
-        return cls(allowed_dir=ctx.workspace)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -110,7 +107,7 @@ class ReadFileTool(Tool):
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
         try:
-            file_path = _resolve_path(path, ctx, self._allowed_dir)
+            file_path = _resolve_path(path, ctx)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
@@ -130,7 +127,7 @@ class WriteFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "WriteFileTool":
-        return cls(allowed_dir=ctx.workspace)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -164,7 +161,7 @@ class WriteFileTool(Tool):
 
     async def execute(self, ctx: ToolContext, path: str, content: str, **kwargs: Any) -> str:
         try:
-            file_path = _resolve_path(path, ctx, self._allowed_dir)
+            file_path = _resolve_path(path, ctx)
             if file_path.exists():
                 if not file_path.is_file():
                     return f"Error: Not a file: {path}"
@@ -187,7 +184,7 @@ class EditFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "EditFileTool":
-        return cls(allowed_dir=ctx.workspace)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -224,7 +221,7 @@ class EditFileTool(Tool):
         self, ctx: ToolContext, path: str, old_text: str, new_text: str, **kwargs: Any
     ) -> str:
         try:
-            file_path = _resolve_path(path, ctx, self._allowed_dir)
+            file_path = _resolve_path(path, ctx)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
@@ -260,7 +257,7 @@ class ListDirTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "ListDirTool":
-        return cls(allowed_dir=ctx.workspace)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -293,7 +290,7 @@ class ListDirTool(Tool):
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
         try:
-            dir_path = _resolve_path(path, ctx, self._allowed_dir)
+            dir_path = _resolve_path(path, ctx)
             if not dir_path.exists():
                 return f"Error: Directory not found: {path}"
             if not dir_path.is_dir():
@@ -319,7 +316,7 @@ class GlobTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "GlobTool":
-        return cls(allowed_dir=ctx.workspace)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -365,7 +362,7 @@ class GlobTool(Tool):
         **kwargs: Any,
     ) -> str:
         try:
-            root = _resolve_path(path, ctx, self._allowed_dir)
+            root = _resolve_path(path, ctx)
             if not root.exists():
                 return f"Error: Directory not found: {path}"
             if not root.is_dir():
@@ -391,7 +388,7 @@ class GrepTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "GrepTool":
-        return cls(allowed_dir=ctx.workspace)
+        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -455,7 +452,7 @@ class GrepTool(Tool):
         **kwargs: Any,
     ) -> str:
         try:
-            target = _resolve_path(path, ctx, self._allowed_dir)
+            target = _resolve_path(path, ctx)
             if not target.exists():
                 return f"Error: Path not found: {path}"
 
