@@ -1,7 +1,31 @@
 """Utility functions for nanobot."""
 
+import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import jsonlines
+
+
+def read_jsonl(path: Path) -> list[Any]:
+    """Read all valid entries from a JSONL file; returns [] if file doesn't exist."""
+    if not path.exists():
+        return []
+    with jsonlines.open(path) as reader:
+        return list(reader.iter(skip_invalid=True))
+
+
+def write_jsonl(path: Path, entries: list[dict]) -> None:
+    """Overwrite a JSONL file with entries."""
+    with jsonlines.open(path, mode="w") as writer:
+        writer.write_all(entries)
+
+
+def append_jsonl(path: Path, entries: list[dict]) -> None:
+    """Append entries to a JSONL file."""
+    with jsonlines.open(path, mode="a") as writer:
+        writer.write_all(entries)
 
 
 def _ensure_dir(path: Path) -> Path:
@@ -19,15 +43,24 @@ def get_media_path() -> Path:
     return _ensure_dir(get_workspace_path() / "media")
 
 
-def get_timestamped_media_path(workspace: Path | None = None) -> Path:
-    """Create and return a timestamped subdirectory under the media folder.
+def _sanitize_path_segment(segment: str) -> str:
+    """Sanitize a path segment so it is safe across platforms."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", segment).strip("._")
+    return cleaned or "unknown"
 
-    Each call creates a unique folder named YYYYMMDD_HHMMSS, suitable for
-    grouping all files received in a single message together.
-    """
-    base = (workspace / "media") if workspace else get_media_path()
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    return _ensure_dir(base / ts)
+
+def get_timestamped_media_dir(
+    channel: str,
+    chat_id: str,
+    timestamp: datetime | None = None,
+    workspace: Path | None = None,
+) -> Path:
+    """Return media/{channel}/{chat_id}/{YYYYMMDD_HHMMSS}/ within the workspace."""
+    ws = workspace or get_workspace_path()
+    ts = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return _ensure_dir(
+        ws / "media" / _sanitize_path_segment(channel) / _sanitize_path_segment(chat_id) / ts
+    )
 
 
 # TODO: Figure out where to move this.

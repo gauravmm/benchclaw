@@ -70,7 +70,6 @@ class WebSearchTool(Tool):
             "Example: `{'query': 'python asyncio best practices 2025', 'count': 5}`."
         )
 
-    # TODO: review — no dedicated skill; consider "weather" or "github" if context is known
     @property
     def parameters(self) -> dict[str, Any]:
         return {

@@ -1,7 +1,5 @@
 """Context builder for assembling agent prompts."""
 
-import base64
-import mimetypes
 import platform
 from collections.abc import Iterable
 from datetime import datetime
@@ -75,27 +73,6 @@ class ContextBuilder:
             *history,
         ]
 
-    def user_message(self, content: str, media: list[str] | None = None) -> dict[str, Any]:
-        return {"role": "user", "content": self._build_user_content(content, media)}
-
-    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
-        if not media:
-            return text
-
-        images = []
-        for path in media:
-            p = Path(path)
-            mime, _ = mimetypes.guess_type(path)
-            if not p.is_file() or not mime or not mime.startswith("image/"):
-                continue
-            b64 = base64.b64encode(p.read_bytes()).decode()
-            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-
-        if not images:
-            return text
-        return images + [{"type": "text", "text": text}]
-
     def tool_result(self, tool_call_id: str, tool_name: str, result: str) -> dict[str, Any]:
         return {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result}
 
@@ -115,19 +92,3 @@ class ContextBuilder:
             msg["reasoning_content"] = reasoning_content
 
         return msg
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from benchclaw.agent.tools.base import ToolContext
-    from benchclaw.agent.tools.registry import ToolRegistry
-    from benchclaw.config import ConfigManager
-
-    async def main() -> None:
-        with ConfigManager() as config:
-            ctx = ToolContext(workspace=config.workspace_path)
-            async with ToolRegistry(config.tools, ctx) as tools:
-                print(ContextBuilder(config.workspace_path).build_system_prompt(tools.values()))
-
-    asyncio.run(main())

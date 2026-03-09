@@ -10,15 +10,12 @@ from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext, register
 
 def _resolve_path(path: str, ctx: ToolContext) -> Path:
     """Resolve path and optionally enforce directory restriction."""
-    if path.startswith("/"):
-        resolved = Path(path)
-    else:
-        resolved = ctx.workspace / path
+    resolved = Path(path) if path.startswith("/") else ctx.workspace / path
     resolved = resolved.expanduser().resolve()
 
-    # TODO: Support allowed_dir
-    # if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
-    #     raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
+    # Must be within allowed_dir if specified, to prevent accidental or malicious access to sensitive files outside the workspace.
+    if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
+        raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
     return resolved
 
 
@@ -73,11 +70,8 @@ class ReadFileTool(Tool):
     """Tool to read file contents."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "ReadFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "ReadFileTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -86,7 +80,7 @@ class ReadFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Read the complete contents of a file from the file system, using a path relative to the workspace by default. "
+            "Read the complete contents of a file from inside the workspace directory. "
             "Use this tool when you need to examine the contents of a single file. "
             "Returns a detailed error if the file cannot be read or is not a regular file. "
             "Example: `{'path': 'README.md'}`."
@@ -99,7 +93,7 @@ class ReadFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to read, relative to the workspace by default",
+                    "description": "The file path to read, where . is the workspace dir.",
                 }
             },
             "required": ["path"],
@@ -127,10 +121,7 @@ class WriteFileTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "WriteFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+        return cls()
 
     @property
     def name(self) -> str:
@@ -139,7 +130,7 @@ class WriteFileTool(Tool):
     @property
     def description(self) -> str | None:
         return (
-            "Create a new file or completely overwrite an existing file with new content, using a path relative to the workspace by default. "
+            "Create a new file or completely overwrite an existing file from inside the workspace directory with new content. "
             "Use with caution because it replaces the full file contents. "
             "Creates parent directories as needed and returns a detailed error if the write fails. "
             "Example: `{'path': 'notes/output.txt', 'content': 'Hello, world!'}`."
@@ -152,7 +143,7 @@ class WriteFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to write, relative to the workspace by default",
+                    "description": "The file path to write, where . is the workspace dir.",
                 },
                 "content": {"type": "string", "description": "The content to write"},
             },
@@ -183,11 +174,8 @@ class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "EditFileTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "EditFileTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -196,7 +184,7 @@ class EditFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Make a targeted edit to an existing text file by replacing an exact string match, using a path relative to the workspace by default. "
+            "Make a targeted edit to an existing text file by replacing an exact string match, from inside the workspace directory by default. "
             "This is safer than overwriting the whole file when you only need to change part of it. "
             "The edit is rejected if the original text is missing or appears more than once. "
             "Example: `{'path': 'USER.md', 'old_text': 'port: 8080', 'new_text': 'port: 9090'}`."
@@ -209,7 +197,7 @@ class EditFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to edit, relative to the workspace by default",
+                    "description": "The file path to edit, where . is the workspace dir.",
                 },
                 "old_text": {"type": "string", "description": "The exact text to find and replace"},
                 "new_text": {"type": "string", "description": "The text to replace with"},
@@ -256,11 +244,8 @@ class ListDirTool(Tool):
     """Tool to list directory contents."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "ListDirTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "ListDirTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -269,7 +254,7 @@ class ListDirTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Get a detailed listing of the files and directories in a specified path, using a path relative to the workspace by default. "
+            "Get a detailed listing of the files and directories in a specified path, from inside the workspace directory. "
             "Results clearly distinguish between files and directories and are sorted alphabetically. "
             "This tool is useful for understanding directory structure and locating files before reading or editing them. "
             "Example: `{'path': 'memory/'}`."
@@ -282,7 +267,7 @@ class ListDirTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The directory path to list, relative to the workspace by default",
+                    "description": "The directory path to list, where . is the workspace dir.",
                 }
             },
             "required": ["path"],
@@ -315,11 +300,8 @@ class GlobTool(Tool):
     """Tool to match filesystem paths with a glob pattern."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "GlobTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "GlobTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -328,7 +310,7 @@ class GlobTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Find files and directories that match a glob pattern, using the workspace as the search root by default. "
+            "Find files and directories that match a glob pattern, from inside the workspace directory by default. "
             "Use this tool when you know the shape of the path but not the exact filename. "
             "Returns matching paths relative to the workspace when possible. "
             "Example: `{'pattern': 'benchclaw/**/*.py', 'path': '.'}`."
@@ -342,7 +324,7 @@ class GlobTool(Tool):
                 "pattern": {"type": "string", "description": "The glob pattern to match"},
                 "path": {
                     "type": "string",
-                    "description": "The directory to search from, relative to the workspace by default",
+                    "description": "The directory to search from, where . is the workspace dir.",
                 },
                 "max_results": {
                     "type": "integer",
@@ -387,11 +369,8 @@ class GrepTool(Tool):
     """Tool to search file contents for matching lines."""
 
     @classmethod
-    def build(cls, _config: None, ctx: ToolContext) -> "GrepTool":
-        return cls(allowed_dir=ctx.workspace if ctx.is_subagent else None)
-
-    def __init__(self, allowed_dir: Path | None = None):
-        self._allowed_dir = allowed_dir
+    def build(cls, _config: None, _ctx: ToolContext) -> "GrepTool":
+        return cls()
 
     @property
     def name(self) -> str:
@@ -400,7 +379,7 @@ class GrepTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search for matching text in a file or directory tree, using a workspace-relative path by default. "
+            "Search for matching text in a file or directory tree, from inside the workspace directory by default. "
             "Supports plain-text matching or regular expressions and returns matching lines with file and line numbers. "
             "Use `file_pattern` to limit which files are searched when scanning directories. "
             "Example: `{'pattern': 'register_tool', 'path': 'benchclaw', 'file_pattern': '*.py'}`."
@@ -417,7 +396,7 @@ class GrepTool(Tool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "The file or directory to search, relative to the workspace by default",
+                    "description": "The file or directory to search, where . is the workspace dir.",
                 },
                 "file_pattern": {
                     "type": "string",

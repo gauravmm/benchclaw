@@ -11,8 +11,6 @@ from loguru import logger
 from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.agent.tools.cron.typesupport import (
     CronJob,
-    CronJobState,
-    CronPayload,
     CronScheduleAt,
     CronScheduleCron,
     CronScheduleEvery,
@@ -92,24 +90,23 @@ class CronTool(Tool):
         """Execute a job: inject a synthetic inbound message to re-invoke the agent."""
         assert self._store is not None
         if self._bus is None:
-            logger.warning(f"Cron: no bus configured, skipping job '{job.name}' ({job.id})")
+            logger.warning(f"Cron: no bus configured, skipping job '{job.id}' ({job.id})")
             return
         start = datetime.now().astimezone()
-        logger.info(f"Cron: executing job '{job.name}' ({job.id})")
+        logger.info(f"Cron: executing job '{job.id}' ({job.id})")
         try:
-            deliver_to = job.payload.deliver_to
             addr = MessageAddress(
-                channel=deliver_to.channel if deliver_to else "cli",
-                chat_id=deliver_to.chat_id if deliver_to else "cron",
+                channel=job.deliver_to.channel if job.deliver_to else "cli",
+                chat_id=job.deliver_to.chat_id if job.deliver_to else "cron",
             )
-            await self._bus.publish_system_event(addr, SystemEvent(content=job.payload.message))
+            await self._bus.publish_system_event(addr, SystemEvent(content=job.message))
             job.state.last_status = "ok"
             job.state.last_error = None
-            logger.info(f"Cron: job '{job.name}' completed")
+            logger.info(f"Cron: job '{job.id}' completed")
         except Exception as e:
             job.state.last_status = "error"
             job.state.last_error = str(e)
-            logger.error(f"Cron: job '{job.name}' failed: {e}")
+            logger.error(f"Cron: job '{job.id}' failed: {e}")
         job.state.last_run_at = start
         job.updated_at = start
         self._store.executed(job.id, start)
@@ -187,15 +184,14 @@ class CronTool(Tool):
 
         job = CronJob(
             id=str(uuid.uuid4())[:8],
-            name=message[:30],
+            message=message,
+            deliver_to=address,
             schedule=schedule,
-            payload=CronPayload(message=message, deliver_to=address),
-            state=CronJobState(),
         )
         self._store.add(job)
         assert self._wakeup is not None
         self._wakeup.set()
-        return f"Created job '{job.name}' (id: {job.id})"
+        return f"Created job '{job.id}' (id: {job.id})"
 
     def _list_jobs(self) -> str:
         if self._store is None:
@@ -203,7 +199,7 @@ class CronTool(Tool):
         jobs = self._store.jobs()
         if not jobs:
             return "No scheduled jobs."
-        lines = [f"- {j.name} (id: {j.id}, {j.schedule})" for j in jobs]
+        lines = [f"- {j.id}: {j.schedule}" for j in jobs]
         return "Scheduled jobs:\n" + "\n".join(lines)
 
     def _remove_job(self, job_id: str | None) -> str:

@@ -11,8 +11,8 @@ from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
 from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.mcp_manager import MCPManager
+from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import (
     InboundMessage,
@@ -24,10 +24,81 @@ from benchclaw.bus import (
 )
 from benchclaw.config import Config
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
-from benchclaw.session import SessionManager
+from benchclaw.session import Session, SessionManager
 
 # Compact the context when token usage exceeds this fraction of the context window.
 _COMPACT_THRESHOLD = 0.8
+
+
+class ToolCallTracker:
+    """
+    Per-address tracker for in-flight background tool calls.
+
+    Encapsulates the in_flight dict and asyncio.Task handles so that
+    _address_loop can delegate all tool-call bookkeeping to method calls.
+    """
+
+    def __init__(self, context: ContextBuilder) -> None:
+        self._context = context
+        self._in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
+        self._tasks: dict[str, asyncio.Task] = {}  # tool_call_id -> Task
+
+    @property
+    def tasks(self) -> dict[str, asyncio.Task]:
+        """Live dict of task handles — assigned to ToolContext.background_tasks."""
+        return self._tasks
+
+    @property
+    def pending(self) -> bool:
+        return bool(self._in_flight)
+
+    def add(self, tool_call_id: str, tool_name: str, task: asyncio.Task) -> None:
+        self._in_flight[tool_call_id] = tool_name
+        self._tasks[tool_call_id] = task
+
+    def handle_interrupt(self, session: Session) -> None:
+        """
+        User message arrived while tools are still running.
+
+        Appends synthetic tool results and a system message, then clears
+        in_flight. Tasks keep running; their results become background notifications.
+        """
+        for tool_id, tool_name in self._in_flight.items():
+            session.live_messages.append(
+                self._context.tool_result(tool_id, tool_name, "[executing in background]")
+            )
+        tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in self._in_flight.items())
+        session.live_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    f"The following tools are still executing in the background: "
+                    f"{tool_list}. Their results will arrive as new messages."
+                ),
+            }
+        )
+        self._in_flight.clear()
+        # _tasks intentionally kept — tasks still running; kill tool may need handles.
+
+    def handle_result(self, event: ToolResultEvent, session: Session) -> bool:
+        """
+        Handle a ToolResultEvent.
+
+        Returns True  → caller should proceed to LLM call.
+        Returns False → caller should `continue` (still waiting for sibling tools).
+        """
+        if event.tool_call_id in self._in_flight:
+            del self._in_flight[event.tool_call_id]
+            self._tasks.pop(event.tool_call_id, None)
+            session.live_messages.append(
+                self._context.tool_result(event.tool_call_id, event.tool_name, event.result)
+            )
+            return not self._in_flight  # True when last sibling returned
+        else:
+            # Interrupt happened earlier; deliver result as background notification.
+            notification = f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
+            session.add_message("user", notification)
+            return True
 
 
 class AgentLoop:
@@ -65,8 +136,10 @@ class AgentLoop:
         master_ctx = ToolContext(
             workspace=config.workspace_path,
             bus=bus,
+            log_store=LogStore(config.workspace_path),
             # subagent_manager=self.subagents,
         )
+        self.master_ctx = master_ctx
         mcp_manager = MCPManager(config.mcp_servers) if config.mcp_servers else None
         self.tools = ToolRegistry(config.tools, master_ctx, mcp_manager=mcp_manager)
 
@@ -90,19 +163,17 @@ class AgentLoop:
 
     def _dump_messages(self, messages: list[dict]) -> None:
         """Write the LLM input messages to the debug dump file."""
-        if self.debug_dump_path is None:
-            return
-        try:
-            with open(self.debug_dump_path, "a", encoding="utf-8") as f:
-                f.write(f"\n--- {datetime.now().isoformat(timespec='seconds')} ---\n")
-                f.write(json.dumps(messages, ensure_ascii=False, indent=2))
-                f.write("\n")
-        except Exception as e:
-            logger.warning(f"Failed to write debug dump: {e}")
+        if self.debug_dump_path:
+            try:
+                self.debug_dump_path.write_text(
+                    json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to write debug dump: {e}")
 
     def _compact_context(
         self,
-        session,
+        session: Session,
         addr: MessageAddress,
         channel: str | None,
         chat_id: str | None,
@@ -115,8 +186,7 @@ class AgentLoop:
           - A summary injected as a system message with recent log entries
           - The last memory_window messages from the persistent session history
         """
-        log_store = LogStore(self.workspace_path)
-        recent_logs = log_store.read_recent(n=20)
+        recent_logs = self.master_ctx.log_store.read_recent(n=20)
         summary_content = (
             "[Context compacted to stay within context window limits.]\n"
             "Recent activity log:\n" + recent_logs
@@ -124,9 +194,7 @@ class AgentLoop:
         new_live: list[dict] = [
             {
                 "role": "system",
-                "content": self.context.build_system_prompt(
-                    self.tools.values(), channel, chat_id
-                ),
+                "content": self.context.build_system_prompt(self.tools.values(), channel, chat_id),
             },
             {"role": "system", "content": summary_content},
             *session.get_history(max_messages=self.config.memory_window),
@@ -143,17 +211,19 @@ class AgentLoop:
         bus.inbound[addr], calling the LLM after each event and dispatching
         tool calls as background tasks via _run_tool_and_post.
 
-        in_flight tracks tool call IDs currently executing. When a user message
-        arrives while tools are running, synthetic results are added to satisfy
-        the API format, and a system message lists which tools are still running.
+        ToolCallTracker manages tool call IDs and asyncio.Task handles. When a
+        user message arrives while tools are running, the tracker injects synthetic
+        results and a system note, then clears in_flight (tasks keep running).
         """
         session = self.sessions.get(addr)
+        tracker = ToolCallTracker(self.context)
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
+            log_store=self.tools._master_ctx.log_store,
             address=addr,
+            background_tasks=tracker.tasks,
         )
-        in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
         iteration_count = 0
         channel = addr.channel
         chat_id = addr.chat_id
@@ -168,23 +238,8 @@ class AgentLoop:
             event = await self.bus.consume_inbound(address=addr)
 
             if isinstance(event, InboundMessage):
-                if in_flight:
-                    # Satisfy the API format (tool results required before next user message),
-                    # then tell the LLM which tools are still running in the background.
-                    for tool_id, tool_name in in_flight.items():
-                        session.live_messages.append(
-                            self.context.tool_result(
-                                tool_id, tool_name, "[executing in background]"
-                            )
-                        )
-                    tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in in_flight.items())
-                    session.live_messages.append(
-                        {
-                            "role": "system",
-                            "content": f"The following tools are still executing in the background: {tool_list}. Their results will arrive as new messages.",
-                        }
-                    )
-                    in_flight.clear()
+                if tracker.pending:
+                    tracker.handle_interrupt(session)
 
                 preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
                 logger.info(f"Processing message from {addr}: {preview}")
@@ -194,30 +249,22 @@ class AgentLoop:
                         "content": datetime.now().strftime("Current time: %Y-%m-%d %H:%M (%A)"),
                     }
                 )
-                session.live_messages.append(
-                    self.context.user_message(event.content, event.media or None)
+                session.add_message(
+                    "user",
+                    event.content,
+                    sender_id=event.sender_id,
+                    media=event.media,
+                    media_metadata=event.media_metadata,
+                    metadata=event.metadata,
                 )
-                session.add_message("user", event.content)
                 iteration_count = 0
 
             elif isinstance(event, SystemEvent):
                 session.live_messages.append({"role": "system", "content": event.content})
 
             elif isinstance(event, ToolResultEvent):
-                if event.tool_call_id in in_flight:
-                    del in_flight[event.tool_call_id]
-                    session.live_messages.append(
-                        self.context.tool_result(event.tool_call_id, event.tool_name, event.result)
-                    )
-                    if in_flight:
-                        continue  # still waiting for other tools in this batch
-                else:
-                    # Iteration was closed by a user message; deliver as background notification.
-                    notification = (
-                        f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
-                    )
-                    session.live_messages.append({"role": "user", "content": notification})
-                    session.add_message("user", notification)
+                if not tracker.handle_result(event, session):
+                    continue  # still waiting for other tools in this batch
 
             # Check if the iterations have maxed out.
             if iteration_count >= self.config.max_tool_iterations:
@@ -250,8 +297,9 @@ class AgentLoop:
             # Check token usage and compact if approaching context window limit.
             total_tokens = response.usage.get("total_tokens", 0)
             if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
-                logger.warning(
-                    f"Token usage {total_tokens}/{self.config.context_window} for {addr}; compacting context"
+                logger.info(
+                    "Session compaction triggered for "
+                    f"{addr}: token usage {total_tokens}/{self.config.context_window}"
                 )
                 self._compact_context(session, addr, channel, chat_id)
 
@@ -274,13 +322,13 @@ class AgentLoop:
                 )
 
                 for tc in response.tool_calls:
-                    in_flight[tc.id] = tc.name
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
-                    asyncio.create_task(
+                    task = asyncio.create_task(
                         self._run_tool_and_post(tc, call_ctx, addr),
                         name=f"tool-{tc.id[:8]}",
                     )
+                    tracker.add(tc.id, tc.name, task)
 
                 if response.content:
                     await self.bus.publish_outbound(
@@ -290,7 +338,6 @@ class AgentLoop:
                 final = (
                     response.content or "I've completed processing but have no response to give."
                 )
-                session.live_messages.append(self.context.assistant_message(final))
                 session.add_message("assistant", final)
                 preview = final[:120] + "..." if len(final) > 120 else final
                 logger.info(f"Response to {addr}: {preview}")

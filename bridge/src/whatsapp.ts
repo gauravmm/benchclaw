@@ -18,6 +18,21 @@ import pino from 'pino';
 
 const VERSION = '0.1.0';
 
+export interface MediaMetadata {
+  path: string | null;
+  media_type: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  saved_at: string | null;
+  source_channel: 'whatsapp';
+  original_name?: string | null;
+}
+
+interface ExtractedMessage {
+  content: string;
+  media_metadata: MediaMetadata[];
+}
+
 export interface InboundMessage {
   id: string;
   sender: string;
@@ -25,12 +40,9 @@ export interface InboundMessage {
   content: string;
   timestamp: number;
   isGroup: boolean;
+  media_metadata: MediaMetadata[];
   mediaBase64?: string;
   mediaType?: string;
-}
-
-interface ImageInfo {
-  mimeType?: string;
 }
 
 export interface WhatsAppClientOptions {
@@ -123,8 +135,9 @@ export class WhatsAppClient {
         // Skip status updates
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
-        const content = this.extractTextContent(msg);
-        if (!content) continue;
+        const extracted = this.extractMessageContent(msg);
+        if (!extracted) continue;
+        const { content, media_metadata } = extracted;
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
@@ -135,11 +148,11 @@ export class WhatsAppClient {
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
+          media_metadata,
         };
 
-        // Download image if present and attach as base64
-        const imageInfo = this.detectImageMessage(msg);
-        if (imageInfo && this.sock) {
+        // Download image if present and attach as base64 for Python-side persistence
+        if (msg.message?.imageMessage && this.sock) {
           try {
             const buffer = await downloadMediaMessage(
               msg,
@@ -149,7 +162,7 @@ export class WhatsAppClient {
             );
             if (buffer) {
               outMsg.mediaBase64 = (buffer as Buffer).toString('base64');
-              outMsg.mediaType = imageInfo.mimeType || 'image/jpeg';
+              outMsg.mediaType = msg.message.imageMessage.mimetype || 'image/jpeg';
             }
           } catch (e) {
             console.error('Failed to download WhatsApp image:', e);
@@ -161,52 +174,74 @@ export class WhatsAppClient {
     });
   }
 
-  private extractTextContent(msg: any): string | null {
+  private mediaPlaceholder(mediaType: string, payload: any): MediaMetadata {
+    const maybeLength = payload?.fileLength;
+    const asNumber =
+      typeof maybeLength === 'number'
+        ? maybeLength
+        : typeof maybeLength === 'string'
+          ? Number.parseInt(maybeLength, 10)
+          : null;
+    return {
+      path: null,
+      media_type: mediaType,
+      mime_type: typeof payload?.mimetype === 'string' ? payload.mimetype : null,
+      size_bytes: Number.isFinite(asNumber) ? asNumber : null,
+      saved_at: null,
+      source_channel: 'whatsapp',
+      original_name: typeof payload?.fileName === 'string' ? payload.fileName : null,
+    };
+  }
+
+  private extractMessageContent(msg: any): ExtractedMessage | null {
     const message = msg.message;
     if (!message) return null;
 
     // Text message
     if (message.conversation) {
-      return message.conversation;
+      return { content: message.conversation, media_metadata: [] };
     }
 
     // Extended text (reply, link preview)
     if (message.extendedTextMessage?.text) {
-      return message.extendedTextMessage.text;
+      return { content: message.extendedTextMessage.text, media_metadata: [] };
     }
 
-    // Image with caption
-    if (message.imageMessage?.caption) {
-      return `[Image] ${message.imageMessage.caption}`;
-    }
-
-    // Image without caption
     if (message.imageMessage) {
-      return '[Image]';
+      const caption = message.imageMessage.caption ? ` ${message.imageMessage.caption}` : '';
+      return {
+        content: `[Image]${caption}`,
+        media_metadata: [this.mediaPlaceholder('image', message.imageMessage)],
+      };
     }
 
-    // Video with caption
-    if (message.videoMessage?.caption) {
-      return `[Video] ${message.videoMessage.caption}`;
+    if (message.videoMessage) {
+      const caption = message.videoMessage.caption ? ` ${message.videoMessage.caption}` : '';
+      return {
+        content: `[Video]${caption}`,
+        media_metadata: [this.mediaPlaceholder('video', message.videoMessage)],
+      };
     }
 
-    // Document with caption
-    if (message.documentMessage?.caption) {
-      return `[Document] ${message.documentMessage.caption}`;
+    if (message.documentMessage) {
+      const caption = message.documentMessage.caption ? ` ${message.documentMessage.caption}` : '';
+      return {
+        content: `[Document]${caption}`,
+        media_metadata: [this.mediaPlaceholder('file', message.documentMessage)],
+      };
     }
 
     // Voice/Audio message
     if (message.audioMessage) {
-      return `[Voice Message]`;
+      const mediaType = message.audioMessage.ptt ? 'voice' : 'audio';
+      const label = mediaType === 'voice' ? '[Voice Message]' : '[Audio]';
+      return {
+        content: label,
+        media_metadata: [this.mediaPlaceholder(mediaType, message.audioMessage)],
+      };
     }
 
     return null;
-  }
-
-  private detectImageMessage(msg: any): ImageInfo | null {
-    const message = msg.message;
-    if (!message?.imageMessage) return null;
-    return { mimeType: message.imageMessage.mimetype };
   }
 
   async sendMessage(to: string, text: string): Promise<void> {

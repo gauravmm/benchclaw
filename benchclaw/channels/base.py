@@ -9,7 +9,7 @@ from anyio import AsyncContextManagerMixin
 from loguru import logger
 from pydantic import BaseModel
 
-from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import InboundMessage, MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 
 _CONFIG_REGISTRY: dict[str, type["ChannelConfig"]] = {}
 
@@ -116,6 +116,7 @@ class BaseChannel(AsyncContextManagerMixin):
         chat_id: str,
         content: str,
         media: list[str] | None = None,
+        media_metadata: list[MediaMetadata] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """
@@ -128,6 +129,7 @@ class BaseChannel(AsyncContextManagerMixin):
             chat_id: The chat/channel identifier.
             content: Message text content.
             media: Optional list of media URLs.
+            media_metadata: Optional structured metadata for media attachments.
             metadata: Optional channel-specific metadata.
         """
         if not self.is_allowed(sender_id):
@@ -142,6 +144,7 @@ class BaseChannel(AsyncContextManagerMixin):
             sender_id=str(sender_id),
             content=content,
             media=media or [],
+            media_metadata=media_metadata or [],
             metadata=metadata or {},
         )
 

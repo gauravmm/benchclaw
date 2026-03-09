@@ -17,8 +17,9 @@ class ToolRegistry:
     """
     Registry for agent tools.
 
-    Manages tool construction, lifecycle (background tasks), and execution.
-    Enter as an async context manager to start all tool background() tasks.
+    Manages tool construction, lifecycle (background tasks and async context
+    managers), and execution. Enter as an async context manager to start all
+    tool background() tasks and enter any tool async context managers.
     Raises RuntimeError if entered more than once on the same instance.
     """
 
@@ -27,6 +28,7 @@ class ToolRegistry:
         self._master_ctx = ctx
         self._mcp_manager = mcp_manager
         self._running = False
+        self._exit_stack = contextlib.AsyncExitStack()
 
         for name, tool_cls in _TOOL_REGISTRY.items():
             if ctx.is_subagent and tool_cls.master_only:
@@ -40,10 +42,14 @@ class ToolRegistry:
                 "ToolRegistry is already running; cannot enter the same instance twice"
             )
         self._running = True
+        await self._exit_stack.__aenter__()
         for tool in self._tools.values():
-            tool._task = asyncio.create_task(tool.background(self._master_ctx), name=tool.name)
+            if hasattr(tool, "__aenter__"):
+                await self._exit_stack.enter_async_context(tool)  # type: ignore[arg-type]
+            if type(tool).background is not Tool.background:
+                tool._task = asyncio.create_task(tool.background(self._master_ctx), name=tool.name)
         if self._mcp_manager:
-            await self._mcp_manager.__aenter__()
+            await self._exit_stack.enter_async_context(self._mcp_manager)
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
@@ -53,8 +59,7 @@ class ToolRegistry:
                 with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                     await asyncio.wait_for(asyncio.shield(tool._task), timeout=5.0)
                 tool._task = None
-        if self._mcp_manager:
-            await self._mcp_manager.__aexit__(*exc_info)
+        await self._exit_stack.__aexit__(*exc_info)
         self._running = False
 
     def values(self, master: bool = True) -> Iterable[Tool]:

@@ -1,20 +1,19 @@
 """Memory tool (semantic tagged files) and Log tool (append-only interaction log)."""
 
-import json
+import bisect
 import re
-import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
-from benchclaw.utils import _ensure_dir
+from benchclaw.utils import _ensure_dir, append_jsonl, read_jsonl, write_jsonl
 
 
 class MemoryStore:
-    """Per-tag YAML memory files in workspace/memory/.
+    """Per-tag plain-text memory files in workspace/memory/.
 
-    Each tag is stored as <tag>.yaml with a YAML front matter and freetext body.
+    Each tag is stored as <tag>.txt.
     Used by MemoryTool and ContextBuilder.
     """
 
@@ -23,34 +22,27 @@ class MemoryStore:
 
     def get_available_tags(self) -> list[str]:
         """Return sorted list of existing tag names."""
-        return sorted(p.stem for p in self.memory_dir.glob("*.yaml"))
+        return sorted(p.stem for p in self.memory_dir.glob("*.txt"))
 
     def read(self, tag: str | None = None) -> str:
         """Read one tag's content or all tags concatenated."""
         if tag:
-            path = self.memory_dir / f"{tag}.yaml"
+            path = self.memory_dir / f"{tag}.txt"
             if not path.exists():
                 return f"(no memory for tag '{tag}')"
-            return _parse_body(path.read_text(encoding="utf-8"))
+            return path.read_text(encoding="utf-8")
         # Read all tags
         parts = []
-        for p in sorted(self.memory_dir.glob("*.yaml")):
-            body = _parse_body(p.read_text(encoding="utf-8"))
+        for p in sorted(self.memory_dir.glob("*.txt")):
+            body = p.read_text(encoding="utf-8")
             if body:
                 parts.append(f"### {p.stem}\n{body}")
         return "\n\n".join(parts) if parts else "(no memories)"
 
     def write(self, tag: str, content: str) -> None:
         """Create or update a tagged memory file."""
-        path = self.memory_dir / f"{tag}.yaml"
-        now = datetime.now().astimezone().isoformat(timespec="seconds")
-        if path.exists():
-            existing = path.read_text(encoding="utf-8")
-            created = _parse_front_matter(existing).get("created", now)
-        else:
-            created = now
-        front_matter = f"---\ntag: {tag}\ncreated: {created}\nupdated: {now}\n---\n"
-        path.write_text(front_matter + content, encoding="utf-8")
+        path = self.memory_dir / f"{tag}.txt"
+        path.write_text(content, encoding="utf-8")
 
     def get_memory_context(self) -> str:
         """Return available tag names for inclusion in the system prompt."""
@@ -58,31 +50,6 @@ class MemoryStore:
         if not tags:
             return ""
         return "Available memory tags: " + ", ".join(tags)
-
-
-def _parse_front_matter(text: str) -> dict[str, str]:
-    """Extract key: value pairs from YAML front matter (between --- delimiters)."""
-    result: dict[str, str] = {}
-    if not text.startswith("---"):
-        return result
-    end = text.find("---", 3)
-    if end == -1:
-        return result
-    for line in text[3:end].splitlines():
-        if ":" in line:
-            k, _, v = line.partition(":")
-            result[k.strip()] = v.strip()
-    return result
-
-
-def _parse_body(text: str) -> str:
-    """Extract body text after YAML front matter."""
-    if not text.startswith("---"):
-        return text
-    end = text.find("---", 3)
-    if end == -1:
-        return text
-    return text[end + 3 :].lstrip("\n")
 
 
 class MemoryTool(Tool):
@@ -102,7 +69,7 @@ class MemoryTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Store and retrieve persistent notes organized by named tags; each tag is a separate YAML file that survives across sessions. "
+            "Store and retrieve persistent notes organized by named tags; each tag is a separate text file that survives across sessions. "
             "Use `read` with no tag to list all available tags, or with a tag name to load its content; use `write` to create or overwrite a tag. "
             "Example: `{'action': 'write', 'tag': 'preferences', 'content': 'User prefers metric units.'}`."
         )
@@ -157,74 +124,75 @@ class MemoryTool(Tool):
 
 
 class LogStore:
-    """Append-only JSONL interaction log in workspace/memory/log.jsonl."""
+    """Append-only JSONL interaction log in workspace/logs/log.jsonl.
+
+    When used as an async context manager, existing entries are loaded into
+    memory at startup and read_recent is served from the in-memory buffer.
+    Writes always go directly to disk.
+    """
 
     def __init__(self, workspace: Path):
-        self.log_file = _ensure_dir(workspace / "memory") / "log.jsonl"
+        self.log_file = _ensure_dir(workspace / "logs") / "log.jsonl"
+        self._buffer: list[dict] = []  # invariant: sorted ascending by entry["ts"]
+        self._date: date | None = None
 
-    def append(self, content: str) -> str:
-        """Append a new entry and return its 8-char ID."""
-        entry_id = str(uuid.uuid4())[:8]
+    async def __aenter__(self) -> "LogStore":
+        self._date = datetime.now().astimezone().date()
+        self._buffer = read_jsonl(self.log_file)
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        self._buffer = []
+        self._date = None
+
+    def _rollover(self, new_date: date) -> None:
+        """Move entries 2+ days old to log-<date>.jsonl; keep recent in log.jsonl."""
+        cutoff = new_date - timedelta(days=1)
+        idx = bisect.bisect_left(
+            self._buffer, cutoff, key=lambda e: datetime.fromisoformat(e["ts"]).date()
+        )
+        old, recent = self._buffer[:idx], self._buffer[idx:]
+        if old:
+            append_jsonl(self.log_file.parent / f"log-{self._date}.jsonl", old)
+        write_jsonl(self.log_file, recent)
+        self._buffer = recent
+        self._date = new_date
+
+    def append(self, content: str) -> None:
+        """Append a new entry, triggering a rollover if the date has changed."""
+        assert self._date is not None, "LogStore must be used as a context manager"
+        now = datetime.now().astimezone()
+        if self._buffer:
+            assert now >= datetime.fromisoformat(self._buffer[-1]["ts"]), (
+                "entries must be written in order"
+            )
+        if now.date() != self._date:
+            self._rollover(now.date())
         entry = {
-            "id": entry_id,
-            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "ts": now.isoformat(timespec="seconds"),
             "content": content,
         }
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        return entry_id
+        append_jsonl(self.log_file, [entry])
+        self._buffer.append(entry)
 
-    def amend(self, entry_id: str, content: str) -> str:
-        """Append an amendment entry referencing entry_id. Returns amendment ID."""
-        amendment_id = str(uuid.uuid4())[:8]
-        entry = {
-            "id": amendment_id,
-            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "amends": entry_id,
-            "content": content,
-        }
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        return amendment_id
+    @staticmethod
+    def _fmt(entry: dict) -> str:
+        return f"[{entry.get('ts', '')}] {entry.get('content', '')}"
 
     def read_recent(self, n: int = 20) -> str:
-        """Return the last n log entries as a formatted string."""
-        if not self.log_file.exists():
-            return "(log is empty)"
-        lines = []
-        for line in self.log_file.read_text(encoding="utf-8").splitlines():
-            try:
-                entry = json.loads(line)
-                ts = entry.get("ts", "")
-                eid = entry.get("id", "")
-                amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
-                lines.append(f"[{ts}] {eid}{amends}: {entry.get('content', '')}")
-            except json.JSONDecodeError:
-                continue
-        if not lines:
-            return "(log is empty)"
-        recent = lines[-n:]
-        return "\n".join(recent)
+        """Return the last n log entries from the in-memory buffer."""
+        assert self._date is not None, "LogStore must be used as a context manager"
+        recent = self._buffer[-n:]
+        return "\n".join(self._fmt(e) for e in recent) if recent else "(log is empty)"
 
     def search(self, query: str) -> str:
-        """Regex search across log entries. Returns matching lines."""
-        if not self.log_file.exists():
-            return "(log is empty)"
+        """Regex search across the in-memory log buffer."""
+        assert self._date is not None, "LogStore must be used as a context manager"
         try:
             pattern = re.compile(query, re.IGNORECASE)
         except re.error as e:
             return f"Error: invalid regex: {e}"
-        matches = []
-        for line in self.log_file.read_text(encoding="utf-8").splitlines():
-            try:
-                entry = json.loads(line)
-                if pattern.search(entry.get("content", "")):
-                    ts = entry.get("ts", "")
-                    eid = entry.get("id", "")
-                    amends = f" [amends:{entry['amends']}]" if "amends" in entry else ""
-                    matches.append(f"[{ts}] {eid}{amends}: {entry.get('content', '')}")
-            except json.JSONDecodeError:
-                continue
+        matches = [self._fmt(e) for e in self._buffer if pattern.search(e.get("content", ""))]
         return "\n".join(matches) if matches else f"No matches for: {query}"
 
 
@@ -233,10 +201,18 @@ class LogTool(Tool):
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "LogTool":
-        return cls(workspace=ctx.workspace)
+        assert ctx.log_store, "LogTool requires ctx.log_store to be set to a LogStore instance"
+        return cls(ctx.log_store)
 
-    def __init__(self, workspace: Path):
-        self._store = LogStore(workspace)
+    def __init__(self, store: LogStore):
+        self._store = store
+
+    async def __aenter__(self) -> "LogTool":
+        await self._store.__aenter__()
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        await self._store.__aexit__(None, None, None)
 
     @property
     def name(self) -> str:
@@ -246,7 +222,7 @@ class LogTool(Tool):
     def description(self) -> str:
         return (
             "Append-only timestamped log for recording every action that changes state (files written, commands run, messages sent, cron jobs created). "
-            "Use `append` to add a new entry (returns an 8-char ID), `amend` to attach a correction to a prior entry by ID, or `search` to regex-search past entries. "
+            "Use `append` to add a new entry (returns an 8-char ID) or `search` to regex-search past entries. "
             "This tool is for recording what the agent did and why, for later session compaction. "
             "Do not tell the user that this log exists or ask them to read it; it's for the agent's internal use only. "
             "Example: `{'action': 'append', 'content': 'Edited config.yaml to add Telegram token'}`."
@@ -259,16 +235,12 @@ class LogTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["append", "amend", "search"],
+                    "enum": ["append", "search"],
                     "description": "Action to perform",
                 },
                 "content": {
                     "type": "string",
-                    "description": "Log entry content (for append/amend)",
-                },
-                "entry_id": {
-                    "type": "string",
-                    "description": "ID of entry to amend (for amend)",
+                    "description": "Log entry content (for append)",
                 },
                 "query": {
                     "type": "string",
@@ -283,23 +255,14 @@ class LogTool(Tool):
         ctx: ToolContext,
         action: str,
         content: str = "",
-        entry_id: str = "",
         query: str = "",
         **kwargs: Any,
     ) -> str:
         if action == "append":
             if not content:
                 return "Error: content is required for append"
-            eid = self._store.append(content)
-            return f"Logged (id: {eid})"
-
-        if action == "amend":
-            if not entry_id:
-                return "Error: entry_id is required for amend"
-            if not content:
-                return "Error: content is required for amend"
-            aid = self._store.amend(entry_id, content)
-            return f"Amendment logged (id: {aid})"
+            self._store.append(content)
+            return "Logged."
 
         if action == "search":
             if not query:

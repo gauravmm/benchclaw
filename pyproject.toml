@@ -44,6 +44,7 @@ dependencies = [
     "jinja2>=3.0.0",
     "heapdict>=1.0.1",
     "mcp>=1.0.0",
+    "jsonlines>=4.0.0",
 ]
 
 [project.optional-dependencies]

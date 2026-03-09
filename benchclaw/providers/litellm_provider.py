@@ -92,6 +92,7 @@ class LiteLLMProvider(LLMProvider):
 
         try:
             response = await acompletion(**kwargs)
+            assert isinstance(response, litellm.ModelResponse)
             return self._parse_response(response)
         except Exception as e:
             return LLMResponse(
@@ -99,9 +100,10 @@ class LiteLLMProvider(LLMProvider):
                 finish_reason="error",
             )
 
-    def _parse_response(self, response: Any) -> LLMResponse:
+    def _parse_response(self, response: litellm.ModelResponse) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
+        assert isinstance(choice, litellm.Choices)
         message = choice.message
 
         tool_calls = []
@@ -117,21 +119,27 @@ class LiteLLMProvider(LLMProvider):
                 tool_calls.append(
                     ToolCallRequest(
                         id=tc.id,
-                        name=tc.function.name,
+                        name=tc.function.name or "(no name)",
                         arguments=args,
                     )
                 )
 
         usage = {}
-        if hasattr(response, "usage") and response.usage:
+        response_usage = getattr(response, "usage", None)
+        if response_usage:
             usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
+                "prompt_tokens": response_usage.prompt_tokens,
+                "completion_tokens": response_usage.completion_tokens,
+                "total_tokens": response_usage.total_tokens,
             }
 
+        content = message.content if message.content is not None else ""
+
+        if content.startswith("\n\n"):
+            content = content.lstrip("\n")  # Fix for Qwen issue
+
         return LLMResponse(
-            content=message.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
