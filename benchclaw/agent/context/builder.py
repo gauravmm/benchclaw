@@ -50,7 +50,10 @@ class ContextBuilder:
             bootstrap_files=bootstrap_files,
             memory=self.memory.get_memory_context() or "",
             skills=all_skills,
-            tools=[{"name": t.name, "description": t.description} for t in (tools or [])],
+            tools=[
+                {"name": t.name, "description": t.description, "parameters": t.parameters}
+                for t in (tools or [])
+            ],
             channel=channel,
             chat_id=chat_id,
         )
