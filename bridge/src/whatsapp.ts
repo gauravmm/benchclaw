@@ -9,6 +9,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys';
 
 import { Boom } from '@hapi/boom';
@@ -40,6 +41,8 @@ export interface InboundMessage {
   timestamp: number;
   isGroup: boolean;
   media_metadata: MediaMetadata[];
+  mediaBase64?: string;
+  mediaType?: string;
 }
 
 export interface WhatsAppClientOptions {
@@ -138,7 +141,7 @@ export class WhatsAppClient {
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
-        this.options.onMessage({
+        const outMsg: InboundMessage = {
           id: msg.key.id || '',
           sender: msg.key.remoteJid || '',
           pn: msg.key.remoteJidAlt || '',
@@ -146,7 +149,27 @@ export class WhatsAppClient {
           timestamp: msg.messageTimestamp as number,
           isGroup,
           media_metadata,
-        });
+        };
+
+        // Download image if present and attach as base64 for Python-side persistence
+        if (msg.message?.imageMessage && this.sock) {
+          try {
+            const buffer = await downloadMediaMessage(
+              msg,
+              'buffer',
+              {},
+              { logger, reuploadRequest: this.sock.updateMediaMessage },
+            );
+            if (buffer) {
+              outMsg.mediaBase64 = (buffer as Buffer).toString('base64');
+              outMsg.mediaType = msg.message.imageMessage.mimetype || 'image/jpeg';
+            }
+          } catch (e) {
+            console.error('Failed to download WhatsApp image:', e);
+          }
+        }
+
+        this.options.onMessage(outMsg);
       }
     });
   }

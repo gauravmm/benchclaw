@@ -1,13 +1,16 @@
 """WhatsApp channel implementation using Node.js bridge."""
 
 import asyncio
+import base64
 import json
+from datetime import datetime
 
 import websockets
 from loguru import logger
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
+from benchclaw.utils import get_timestamped_media_dir
 
 
 class WhatsAppConfig(ChannelConfig):
@@ -131,6 +134,51 @@ class WhatsAppChannel(BaseChannel):
                         }
                     )
 
+            # Download and save image if the bridge sent base64 data
+            media_paths: list[str] = []
+            if data.get("mediaBase64"):
+                try:
+                    mime_type = data.get("mediaType", "image/jpeg")
+                    ext_map = {
+                        "image/jpeg": ".jpg",
+                        "image/png": ".png",
+                        "image/gif": ".gif",
+                        "image/webp": ".webp",
+                    }
+                    ext = ext_map.get(mime_type, ".bin")
+                    msg_id = str(data.get("id") or "")
+                    filename_base = msg_id[:16] if msg_id else "media"
+                    media_dir = get_timestamped_media_dir(
+                        channel=self.name,
+                        chat_id=sender,
+                        timestamp=datetime.fromtimestamp(data["timestamp"])
+                        if data.get("timestamp")
+                        else None,
+                    )
+                    file_path = media_dir / f"{filename_base}{ext}"
+                    file_path.write_bytes(base64.b64decode(data["mediaBase64"]))
+                    media_paths.append(str(file_path))
+                    # Update or add MediaMetadata entry for this image
+                    saved_at = datetime.now().isoformat(timespec="seconds")
+                    if media_metadata:
+                        # Patch the first media entry with the saved path
+                        media_metadata[0]["path"] = str(file_path)
+                        media_metadata[0]["saved_at"] = saved_at
+                    else:
+                        media_metadata.append(
+                            {
+                                "path": str(file_path),
+                                "media_type": "image",
+                                "mime_type": mime_type,
+                                "size_bytes": None,
+                                "saved_at": saved_at,
+                                "source_channel": self.name,
+                            }
+                        )
+                    logger.debug(f"Saved WhatsApp image to {file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save WhatsApp image: {e}")
+
             # Extract just the phone number or lid as chat_id
             sender_id = sender.split("@")[0] if "@" in sender else sender
             logger.info(f"Sender {sender}")
@@ -145,6 +193,7 @@ class WhatsAppChannel(BaseChannel):
                 sender_id=sender_id,
                 chat_id=sender,  # Use full LID for replies
                 content=content,
+                media=media_paths or None,
                 media_metadata=media_metadata,
                 metadata={
                     "message_id": data.get("id"),
