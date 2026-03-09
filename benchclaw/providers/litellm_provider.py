@@ -93,7 +93,6 @@ class LiteLLMProvider(LLMProvider):
         try:
             response = await acompletion(**kwargs)
             assert isinstance(response, litellm.ModelResponse)
-            logger.info(response.choices[0])
             return self._parse_response(response)
         except Exception as e:
             return LLMResponse(
@@ -134,8 +133,13 @@ class LiteLLMProvider(LLMProvider):
                 "total_tokens": response_usage.total_tokens,
             }
 
+        content = message.content if message.content is not None else ""
+
+        if content.startswith("\n\n"):
+            content = content.lstrip("\n")  # Fix for Qwen issue
+
         return LLMResponse(
-            content=message.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,

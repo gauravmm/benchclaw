@@ -24,7 +24,7 @@ class AgentConfig(BaseModel):
     temperature: float = 0.7
     max_tool_iterations: int = 20
     memory_window: int = 50
-    context_window: int = 200000
+    context_window: int = 22000
 
 
 class AgentsConfig(BaseModel):
