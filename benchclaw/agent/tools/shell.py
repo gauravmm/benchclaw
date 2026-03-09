@@ -93,7 +93,10 @@ class ExecTool(Tool):
         if self.restrict_to_workspace and working_dir and self._workspace_root:
             try:
                 requested = Path(working_dir).resolve()
-                if requested != self._workspace_root and self._workspace_root not in requested.parents:
+                if (
+                    requested != self._workspace_root
+                    and self._workspace_root not in requested.parents
+                ):
                     return "Error: Command blocked by safety guard (working_dir outside workspace)"
             except Exception:
                 pass

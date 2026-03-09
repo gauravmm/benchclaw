@@ -186,10 +186,10 @@ class AgentLoop:
           - A summary injected as a system message with recent log entries
           - The last memory_window messages from the persistent session history
         """
-        recent_logs = self.master_ctx.log_store.read_recent(n=20)
+        log_store = self.master_ctx.log_store
         summary_content = (
-            "[Context compacted to stay within context window limits.]\n"
-            "Recent activity log:\n" + recent_logs
+            "[Context compacted to stay within context window limits.]\nRecent activity log:\n"
+            + (log_store.read_recent(n=20) if log_store else "[No logs available]")
         )
         new_live: list[dict] = [
             {
