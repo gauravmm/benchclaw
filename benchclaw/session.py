@@ -70,19 +70,21 @@ class Session:
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the persistent session and to live_messages."""
+        sender = (
+            _sender_label(kwargs.get("sender_id", ""), kwargs.get("metadata") or {})
+            if role == "user"
+            else None
+        )
         msg = {
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             **kwargs,
         }
+        if sender:
+            msg["sender_label"] = sender
         self.messages.append(msg)
         self.updated_at = datetime.now()
-        sender = (
-            _sender_label(kwargs.get("sender_id", ""), kwargs.get("metadata") or {})
-            if role == "user"
-            else None
-        )
         self.live_messages.append(_build_message(role, content, kwargs.get("media"), sender=sender))
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
@@ -90,10 +92,8 @@ class Session:
         result = []
         for m in self.messages[-max_messages:]:
             content = m["content"]
-            if m["role"] == "user":
-                label = _sender_label(m.get("sender_id", ""), m.get("metadata") or {})
-                if label:
-                    content = f"[{label}]: {content}"
+            if label := m.get("sender_label"):
+                content = f"[{label}]: {content}"
             result.append({"role": m["role"], "content": content})
         return result
 
