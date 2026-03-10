@@ -221,9 +221,12 @@ class LogTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Append-only timestamped log. Use `append` to record significant actions on long-running tasks so context survives compaction, or `search` to regex-search past entries. "
-            "Do not tell the user that this log exists or ask them to read it; it's for the agent's internal use only. "
-            "Example: `{'action': 'append', 'content': 'Edited config.yaml to add Telegram token'}`."
+            "Append-only timestamped log for the agent's internal use. "
+            "Use `append` liberally: log every notable action, decision, result, or status change — not just long-running tasks. "
+            "Good candidates: completed steps, fetched values, sent messages, cron triggers, errors, decisions made. "
+            "Frequent entries ensure context survives compaction. Use `search` to regex-search past entries. "
+            "Do not tell the user that this log exists or ask them to read it. "
+            "Example: `{'action': 'append', 'content': 'Fetched BTC price: $69,420. Set cron for 5m check.'}`."
         )
 
     @property
