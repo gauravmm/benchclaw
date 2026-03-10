@@ -110,10 +110,8 @@ class ReadFileTool(Tool):
             content = file_path.read_text(encoding="utf-8")
             _record_snapshot(ctx, file_path)
             return content
-        except PermissionError as e:
+        except (PermissionError, Exception) as e:
             return f"Error: {e}"
-        except Exception as e:
-            return f"Error reading file: {str(e)}"
 
 
 class WriteFileTool(Tool):
@@ -163,11 +161,9 @@ class WriteFileTool(Tool):
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
             _record_snapshot(ctx, file_path)
-            return f"Successfully wrote {len(content)} bytes to {path}"
-        except PermissionError as e:
+            return "Success"
+        except (PermissionError, Exception) as e:
             return f"Error: {e}"
-        except Exception as e:
-            return f"Error writing file: {str(e)}"
 
 
 class EditFileTool(Tool):

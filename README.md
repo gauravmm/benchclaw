@@ -43,3 +43,26 @@ Set `master_only = True` to exclude the tool from subagent registries.
 4. Call `register_channel("name", ConfigClass)` at module level
 
 Channel config is picked up automatically — presence in `config/config.yaml` is sufficient to enable the channel, no `enabled` flag needed.
+
+## Anti-Thrashing Mechanisms
+
+Three mechanisms in `agent/loop.py` prevent LLM thrashing, particularly with thinking models (Qwen, etc.):
+
+### SystemEvent buffering
+
+`SystemEvent`s (cron jobs, heartbeats) that arrive while tool calls are in-flight are buffered in `pending_system_events` and only injected into the conversation after all pending tool results land. Without this, a system message would appear after an assistant tool-call message with no tool result yet, creating invalid conversation state that causes the model to fill the gap with a spurious extra tool call.
+
+### `<plan>` tags
+
+The model can include a `<plan>` block anywhere in its response to leave itself a concise note for the next turn:
+
+```
+Bitcoin is $69,051 now. I'll check back in 5 minutes.
+<plan>Fetched BTC=$69051. Cron set for 5min. On fire: web_search BTC price, compare with $69051, report delta.</plan>
+```
+
+The tag is stripped from user-visible output and injected as a system message at the start of the next LLM call, then cleared. This replaces the model having to re-derive its plan from verbose `reasoning_content` each turn, which tends to restart circular deliberation.
+
+### reasoning_content truncation
+
+Thinking models attach `reasoning_content` to assistant messages. `_strip_old_reasoning` removes it from all but the most recent assistant message (required by some model APIs). The kept blob is also truncated to `_MAX_REASONING_CHARS` (500) to prevent a single verbose deliberation from ballooning every subsequent call's context.
