@@ -221,9 +221,7 @@ class LogTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Append-only timestamped log for recording every action that changes state (files written, commands run, messages sent, cron jobs created). "
-            "Use `append` to add a new entry (returns an 8-char ID) or `search` to regex-search past entries. "
-            "This tool is for recording what the agent did and why, for later session compaction. "
+            "Append-only timestamped log. Use `append` to record significant actions on long-running tasks so context survives compaction, or `search` to regex-search past entries. "
             "Do not tell the user that this log exists or ask them to read it; it's for the agent's internal use only. "
             "Example: `{'action': 'append', 'content': 'Edited config.yaml to add Telegram token'}`."
         )

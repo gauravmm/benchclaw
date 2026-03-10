@@ -50,8 +50,8 @@ class CronTool(Tool):
     def description(self) -> str:
         return (
             "Schedule one-time or recurring tasks that sends a system message to you at a specified future time. The message is received as an inbound system message, and cannot be seen by the user. Your response will be sent to the user on the same session as the original message. "
-            "Supports three schedule types: a fixed ISO datetime (`at`), a repeat interval in seconds (`every_seconds`), or a cron expression (`cron_expr`). "
-            "Example: `{'action': 'add', 'message': 'Time to review weekly goals', 'cron_expr': '0 9 * * 1'}`."
+            "Supports four schedule types: relative offset (`in_min`/`in_hr`/`in_days`/`in_sec`), a fixed ISO datetime (`at`), a repeat interval in seconds (`every_seconds`), or a cron expression (`cron_expr`). "
+            "Example: `{'action': 'add', 'message': 'Check in', 'in_min': 30}`."
         )
 
     @property
@@ -73,13 +73,17 @@ class CronTool(Tool):
                     "type": "string",
                     "description": "Cron expression like '0 9 * * *' (for scheduled tasks)",
                 },
+                "in_sec": {"type": "integer", "description": "Run once N seconds from now"},
+                "in_min": {"type": "integer", "description": "Run once N minutes from now"},
+                "in_hr": {"type": "integer", "description": "Run once N hours from now"},
+                "in_days": {"type": "integer", "description": "Run once N days from now"},
                 "at": {
                     "type": "string",
-                    "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')",
+                    "description": "ISO datetime for one-time execution in local time with timezone offset (e.g. '2026-02-12T10:30:00+05:30'). Use the same timezone offset as shown in Startup Time.",
                 },
                 "until_iso": {
                     "type": "string",
-                    "description": "ISO datetime after which a recurring job stops firing and is deleted (e.g. '2026-03-15T18:00:00+05:30'). Only applies to every_seconds jobs.",
+                    "description": "ISO datetime after which a recurring job stops firing and is deleted, in local time with timezone offset (e.g. '2026-03-15T18:00:00+05:30'). Only applies to every_seconds jobs.",
                 },
                 "job_id": {"type": "string", "description": "Job ID (for remove)"},
             },
@@ -143,9 +147,21 @@ class CronTool(Tool):
         at: str | None = None,
         until_iso: str | None = None,
         job_id: str | None = None,
+        in_sec: int | None = None,
+        in_min: int | None = None,
+        in_hr: int | None = None,
+        in_days: int | None = None,
         **kwargs: Any,
     ) -> str:
         if action == "add":
+            if any(v is not None for v in (in_sec, in_min, in_hr, in_days)):
+                delta = timedelta(
+                    seconds=in_sec or 0,
+                    minutes=in_min or 0,
+                    hours=in_hr or 0,
+                    days=in_days or 0,
+                )
+                at = (datetime.now().astimezone() + delta).isoformat(timespec="seconds")
             return self._add_job(ctx.address, message, every_seconds, cron_expr, at, until_iso)
         elif action == "list":
             return self._list_jobs()

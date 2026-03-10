@@ -246,7 +246,9 @@ class AgentLoop:
                 session.live_messages.append(
                     {
                         "role": "system",
-                        "content": datetime.now().strftime("Current time: %Y-%m-%d %H:%M (%A)"),
+                        "content": datetime.now()
+                        .astimezone()
+                        .strftime("Current time: %Y-%m-%d %H:%M (%A) %z"),
                     }
                 )
                 session.add_message(

@@ -44,7 +44,7 @@ class ContextBuilder:
         ]
         all_skills = self.skills.get_all_skills()
         return self._jinja.get_template("system_prompt.j2").render(
-            now=datetime.now().strftime("%Y-%m-%d %H:%M (%A)"),
+            now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M (%A) %z"),
             runtime=f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}",
             workspace_path=str(self.workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,

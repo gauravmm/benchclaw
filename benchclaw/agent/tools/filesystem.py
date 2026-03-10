@@ -256,7 +256,7 @@ class ListDirTool(Tool):
         return (
             "Get a detailed listing of the files and directories in a specified path, from inside the workspace directory. "
             "Results clearly distinguish between files and directories and are sorted alphabetically. "
-            "This tool is useful for understanding directory structure and locating files before reading or editing them. "
+            "Use when you need to explore an unfamiliar directory or verify what files exist. "
             "Example: `{'path': 'memory/'}`."
         )
 
