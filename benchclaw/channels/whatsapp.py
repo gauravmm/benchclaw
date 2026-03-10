@@ -10,14 +10,13 @@ from loguru import logger
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
-    summon: str = "mention_or_reply"
 from benchclaw.utils import get_timestamped_media_dir
 
 
 class WhatsAppConfig(ChannelConfig):
     """WhatsApp channel configuration."""
 
-    bridge_url: str = "ws://localhost:3001"
+    summon: str = "mention_or_reply"  # Attention filter mode: always, mention, reply, mention_or_reply
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
 
     def make_channel(self, bus: MessageBus) -> "WhatsAppChannel":
@@ -201,13 +200,13 @@ class WhatsAppChannel(BaseChannel):
                     "timestamp": data.get("timestamp"),
                     "is_group": data.get("isGroup", False),
                     "_summon_source": data.get("summonSource"),
+                    "first_name": data.get("pushName"),
+                },
                 occurred_at=(
                     datetime.fromtimestamp(data["timestamp"])
                     if isinstance(data.get("timestamp"), (int, float))
                     else None
                 ),
-                    "first_name": data.get("pushName"),
-                },
             )
 
         elif msg_type == "status":

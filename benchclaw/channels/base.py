@@ -114,7 +114,6 @@ class ChannelConfig(BaseModel):
             return f"{total // 60}m"
         return f"{total}s"
 
-        self._inbound_filter = InboundAttentionFilter(config)
     def make_channel(self, bus: "MessageBus") -> "BaseChannel":
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
 
@@ -141,6 +140,7 @@ class BaseChannel(AsyncContextManagerMixin):
         self.bus = bus
 
         self._task: Task | None = None  # Background task
+        self._inbound_filter = InboundAttentionFilter(config)
 
     async def background(self) -> None:
         """

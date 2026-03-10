@@ -11,7 +11,6 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-    summon: str = "mention_or_reply"
 from benchclaw.bus import MediaMetadata, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 from benchclaw.utils import get_timestamped_media_dir
@@ -20,8 +19,7 @@ from benchclaw.utils import get_timestamped_media_dir
 class TelegramConfig(ChannelConfig):
     """Telegram channel configuration."""
 
-    enabled: bool = False
-    token: str = ""  # Bot token from @BotFather
+    summon: str = "mention_or_reply"  # Attention filter mode: always, mention, reply, mention_or_reply
     proxy: str | None = (
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
@@ -291,17 +289,87 @@ class TelegramChannel(BaseChannel):
                         "size_bytes": size_bytes,
                         "saved_at": message.date.isoformat(timespec="seconds"),
                         "source_channel": self.name,
-        summon_source = self._detect_summon_source(message)
+                        "original_name": getattr(media_file, "file_name", None),
+                    }
+                )
 
+                logger.debug(f"Downloaded {media_type} to {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to download media: {e}")
+                content_parts.append(f"[{media_type}: download failed]")
+                media_metadata.append(
+                    {
+                        "path": None,
+                        "media_type": media_type,
+                        "mime_type": getattr(media_file, "mime_type", None),
+                        "size_bytes": getattr(media_file, "file_size", None),
+                        "saved_at": None,
+                        "source_channel": self.name,
+                        "original_name": getattr(media_file, "file_name", None),
+                    }
+                )
+
+        content = "\n".join(content_parts) if content_parts else "[empty message]"
+
+        logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
+
+        # Start typing indicator before processing
+        self._start_typing(str_chat_id)
+
+        # Forward to the message bus
+        summon_source = self._detect_summon_source(message)
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=str_chat_id,
+            content=content,
+            media=media_paths,
+            media_metadata=media_metadata,
+            metadata={
+                "message_id": message.message_id,
+                "user_id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "is_group": message.chat.type != "private",
                 "_summon_source": summon_source,
-                "timestamp": message.date.isoformat(timespec="seconds"),
+            },
             occurred_at=self._message_timestamp(message.date),
+        )
+
+    def _start_typing(self, chat_id: str) -> None:
+        """Start sending 'typing...' indicator for a chat."""
+        # Cancel any existing typing task for this chat
+        self._stop_typing(chat_id)
+        self._typing_tasks[chat_id] = asyncio.create_task(self._typing_loop(chat_id))
+
+    def _stop_typing(self, chat_id: str) -> None:
+        """Stop the typing indicator for a chat."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    async def _typing_loop(self, chat_id: str) -> None:
+        """Repeatedly send 'typing' action until cancelled."""
+        try:
+            while self._app:
+                await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Typing indicator stopped for {chat_id}: {e}")
+
+    async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log polling / handler errors instead of silently swallowing them."""
+        logger.error(f"Telegram error: {context.error}")
+
     def _message_timestamp(self, ts: datetime) -> datetime:
+        """Normalize a Telegram timestamp to a naive local datetime."""
         if ts.tzinfo:
             return ts.astimezone().replace(tzinfo=None)
         return ts
 
     def _detect_summon_source(self, message) -> str | None:
+        """Return 'mention', 'reply', or None based on whether the bot was addressed."""
         if message.chat.type == "private":
             return None
 
@@ -332,76 +400,6 @@ class TelegramChannel(BaseChannel):
                     return "mention"
 
         return None
-
-                        "original_name": getattr(media_file, "file_name", None),
-                    }
-                )
-
-                logger.debug(f"Downloaded {media_type} to {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to download media: {e}")
-                content_parts.append(f"[{media_type}: download failed]")
-                media_metadata.append(
-                    {
-                        "path": None,
-                        "media_type": media_type,
-                        "mime_type": getattr(media_file, "mime_type", None),
-                        "size_bytes": getattr(media_file, "file_size", None),
-                        "saved_at": None,
-                        "source_channel": self.name,
-                        "original_name": getattr(media_file, "file_name", None),
-                    }
-                )
-
-        content = "\n".join(content_parts) if content_parts else "[empty message]"
-
-        logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
-
-        # Start typing indicator before processing
-        self._start_typing(str_chat_id)
-
-        # Forward to the message bus
-        await self._handle_message(
-            sender_id=sender_id,
-            chat_id=str_chat_id,
-            content=content,
-            media=media_paths,
-            media_metadata=media_metadata,
-            metadata={
-                "message_id": message.message_id,
-                "user_id": user.id,
-                "username": user.username,
-                "first_name": user.first_name,
-                "is_group": message.chat.type != "private",
-            },
-        )
-
-    def _start_typing(self, chat_id: str) -> None:
-        """Start sending 'typing...' indicator for a chat."""
-        # Cancel any existing typing task for this chat
-        self._stop_typing(chat_id)
-        self._typing_tasks[chat_id] = asyncio.create_task(self._typing_loop(chat_id))
-
-    def _stop_typing(self, chat_id: str) -> None:
-        """Stop the typing indicator for a chat."""
-        task = self._typing_tasks.pop(chat_id, None)
-        if task and not task.done():
-            task.cancel()
-
-    async def _typing_loop(self, chat_id: str) -> None:
-        """Repeatedly send 'typing' action until cancelled."""
-        try:
-            while self._app:
-                await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
-                await asyncio.sleep(4)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"Typing indicator stopped for {chat_id}: {e}")
-
-    async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Log polling / handler errors instead of silently swallowing them."""
-        logger.error(f"Telegram error: {context.error}")
 
     def _get_extension(self, media_type: str | None, mime_type: str | None) -> str:
         """Get file extension based on media type."""
