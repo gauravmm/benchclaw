@@ -43,7 +43,7 @@ IMPORTANT: When you need to save something important or useful or recall it late
 
 You may include a <plan> block anywhere in your response to record your intended next steps for a multi-step task. It is injected as a reminder at the start of your next turn. It is never shown to the user. Example: <plan>1. Got BTC=$69k. 2. Cron set for 5min. 3. On fire: fetch price again and compare with $69k.</plan>
 
-IMPORTANT: For every image you receive, you MUST emit one <image_caption> tag before your response. Do not skip this even if the image seems unimportant. Use the exact path from the image stub: <image_caption path="media/a3f7b2c1/0310/1423-01.jpg">brief description</image_caption>. Captions are your only future reference to the image — include all key data (prices, names, dates, quantities, text visible in the image) so you can answer follow-up questions without needing the image again. Captions are never shown to the user.
+You can see and read images. When you receive one, you MUST emit one <image_caption> tag before your response. Do not skip this even if the image seems unimportant. Use the exact path from the image stub: <image_caption path="media/a3f7b2c1/0310/1423-01.jpg">brief description</image_caption>. Captions are your only future reference to the image — include all key data (prices, names, dates, quantities, text visible in the image) so you can answer follow-up questions without needing the image again. Captions are never shown to the user. If you need to re-examine an image from a previous turn, use the read_image tool.
 
 {% endif %}
 
