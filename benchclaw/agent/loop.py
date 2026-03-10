@@ -262,11 +262,104 @@ class AgentLoop:
         session.last_consolidated = len(session.messages)
         logger.info(f"Context compacted for {addr} ({len(new_live)} messages after compaction)")
 
+    async def _process_llm_turn(
+        self,
+        session: Session,
+        tracker: ToolCallTracker,
+        call_ctx: ToolContext,
+        addr: MessageAddress,
+        current_plan: str | None,
+    ) -> str | None:
+        """
+        Prepare messages, call the LLM, handle compaction, and dispatch the response.
+
+        Returns the new current_plan for the next turn (or None).
+        On LLM error, publishes an error message and returns None.
+        """
+        self._dump_messages(session.live_messages)
+
+        # Build the message list for this LLM call, injecting the plan if set.
+        llm_messages = self._strip_old_reasoning(session.live_messages)
+        if current_plan:
+            llm_messages = [
+                *llm_messages,
+                {
+                    "role": "system",
+                    "content": f"Your plan from the previous turn:\n{current_plan}",
+                },
+            ]
+
+        try:
+            response = await self.provider.chat(
+                messages=llm_messages,
+                tools=self.tools.get_definitions(master=True),
+                model=self.config.model,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+            )
+        except Exception as e:
+            logger.error(f"LLM error for {addr}: {e}")
+            await self.bus.publish_outbound(
+                OutboundMessage(address=addr, content=f"Sorry, I encountered an error: {e}")
+            )
+            return None
+
+        # Check token usage and compact if approaching context window limit.
+        total_tokens = response.usage.get("total_tokens", 0)
+        if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
+            logger.info(
+                "Session compaction triggered for "
+                f"{addr}: token usage {total_tokens}/{self.config.context_window}"
+            )
+            self._compact_context(session, addr, addr.channel, addr.chat_id)
+
+        # Extract any <plan> the model wrote and strip it from visible content.
+        visible_content, new_plan = self._extract_plan(response.content or "")
+        if new_plan:
+            logger.debug(f"Plan captured: {new_plan[:120]}")
+
+        if response.has_tool_calls:
+            tool_call_dicts = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                }
+                for tc in response.tool_calls
+            ]
+            session.live_messages.append(
+                self.context.assistant_message(
+                    visible_content,
+                    tool_call_dicts,
+                    reasoning_content=response.reasoning_content,
+                )
+            )
+            for tc in response.tool_calls:
+                args_str = json.dumps(tc.arguments, ensure_ascii=False)
+                logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
+                task = asyncio.create_task(
+                    self._run_tool_and_post(tc, call_ctx, addr),
+                    name=f"tool-{tc.id[:8]}",
+                )
+                tracker.add(tc.id, tc.name, task)
+            if visible_content:
+                await self.bus.publish_outbound(
+                    OutboundMessage(address=addr, content=visible_content)
+                )
+        else:
+            final = visible_content or "I've completed processing but have no response to give."
+            session.add_message("assistant", final)
+            preview = final[:120] + "..." if len(final) > 120 else final
+            logger.info(f"Response to {addr}: {preview}")
+            await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
+
+        return new_plan
+
     async def _address_loop(self, addr: MessageAddress) -> None:
         """
         Event-driven processing loop for a single address.
 
-        Reads AddressEvent (InboundMessage | ToolResultEvent) directly from
+        Reads AddressEvent (InboundMessage | ToolResultEvent | SystemEvent) from
         bus.inbound[addr], calling the LLM after each event and dispatching
         tool calls as background tasks via _run_tool_and_post.
 
@@ -284,15 +377,13 @@ class AgentLoop:
             background_tasks=tracker.tasks,
         )
         iteration_count = 0
-        channel = addr.channel
-        chat_id = addr.chat_id
         pending_system_events: list[str] = []
         current_plan: str | None = None
         session.live_messages = self.context.build_context(
             history=session.get_history(max_messages=self.config.memory_window),
             tools=self.tools,
-            channel=channel,
-            chat_id=chat_id,
+            channel=addr.channel,
+            chat_id=addr.chat_id,
         )
 
         while True:
@@ -350,92 +441,9 @@ class AgentLoop:
                 continue
             iteration_count += 1
 
-            # Dump input messages to the debug file if requested.
-            self._dump_messages(session.live_messages)
-
-            # Build the message list for this LLM call, injecting the plan if set.
-            llm_messages = self._strip_old_reasoning(session.live_messages)
-            if current_plan:
-                llm_messages = [
-                    *llm_messages,
-                    {
-                        "role": "system",
-                        "content": f"Your plan from the previous turn:\n{current_plan}",
-                    },
-                ]
-                current_plan = None
-
-            # Call LLM (shared path for both event types)
-            try:
-                response = await self.provider.chat(
-                    messages=llm_messages,
-                    tools=self.tools.get_definitions(master=True),
-                    model=self.config.model,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                )
-            except Exception as e:
-                logger.error(f"LLM error for {addr}: {e}")
-                await self.bus.publish_outbound(
-                    OutboundMessage(
-                        address=addr,
-                        content=f"Sorry, I encountered an error: {e}",
-                    )
-                )
-                continue
-
-            # Check token usage and compact if approaching context window limit.
-            total_tokens = response.usage.get("total_tokens", 0)
-            if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
-                logger.info(
-                    "Session compaction triggered for "
-                    f"{addr}: token usage {total_tokens}/{self.config.context_window}"
-                )
-                self._compact_context(session, addr, channel, chat_id)
-
-            # Extract any <plan> the model wrote and strip it from visible content.
-            visible_content, new_plan = self._extract_plan(response.content or "")
-            if new_plan:
-                current_plan = new_plan
-                logger.debug(f"Plan captured: {new_plan[:120]}")
-
-            # Process LLM response
-            if response.has_tool_calls:
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
-                    }
-                    for tc in response.tool_calls
-                ]
-                session.live_messages.append(
-                    self.context.assistant_message(
-                        visible_content,
-                        tool_call_dicts,
-                        reasoning_content=response.reasoning_content,
-                    )
-                )
-
-                for tc in response.tool_calls:
-                    args_str = json.dumps(tc.arguments, ensure_ascii=False)
-                    logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
-                    task = asyncio.create_task(
-                        self._run_tool_and_post(tc, call_ctx, addr),
-                        name=f"tool-{tc.id[:8]}",
-                    )
-                    tracker.add(tc.id, tc.name, task)
-
-                if visible_content:
-                    await self.bus.publish_outbound(
-                        OutboundMessage(address=addr, content=visible_content)
-                    )
-            else:
-                final = visible_content or "I've completed processing but have no response to give."
-                session.add_message("assistant", final)
-                preview = final[:120] + "..." if len(final) > 120 else final
-                logger.info(f"Response to {addr}: {preview}")
-                await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
+            current_plan = await self._process_llm_turn(
+                session, tracker, call_ctx, addr, current_plan
+            )
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
