@@ -76,7 +76,9 @@ class ContextBuilder:
             *history,
         ]
 
-    def tool_result(self, tool_call_id: str, tool_name: str, result: str) -> dict[str, Any]:
+    def tool_result(
+        self, tool_call_id: str, tool_name: str, result: "str | list[dict[str, Any]]"
+    ) -> dict[str, Any]:
         return {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result}
 
     def assistant_message(

@@ -218,7 +218,7 @@ export class WhatsAppClient {
     if (message.imageMessage) {
       const caption = message.imageMessage.caption ? ` ${message.imageMessage.caption}` : '';
       return {
-        content: `[Image]${caption}`,
+        content: `[Image: ${caption || 'No caption'}]`,
         media_metadata: [this.mediaPlaceholder('image', message.imageMessage)],
       };
     }
@@ -226,7 +226,7 @@ export class WhatsAppClient {
     if (message.videoMessage) {
       const caption = message.videoMessage.caption ? ` ${message.videoMessage.caption}` : '';
       return {
-        content: `[Video]${caption}`,
+        content: `[Video: ${caption || 'No caption'}]`,
         media_metadata: [this.mediaPlaceholder('video', message.videoMessage)],
       };
     }
@@ -234,7 +234,7 @@ export class WhatsAppClient {
     if (message.documentMessage) {
       const caption = message.documentMessage.caption ? ` ${message.documentMessage.caption}` : '';
       return {
-        content: `[Document]${caption}`,
+        content: `[Document: ${caption || 'No caption'}]`,
         media_metadata: [this.mediaPlaceholder('file', message.documentMessage)],
       };
     }
@@ -281,6 +281,14 @@ export class WhatsAppClient {
     }
 
     await this.sock.sendMessage(to, { text });
+  }
+
+  async sendTyping(to: string, isTyping: boolean): Promise<void> {
+    if (!this.sock) {
+      throw new Error('Not connected');
+    }
+
+    await this.sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', to);
   }
 
   async disconnect(): Promise<void> {

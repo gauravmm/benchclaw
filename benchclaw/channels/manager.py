@@ -7,9 +7,10 @@ from contextlib import AsyncExitStack
 
 from loguru import logger
 
-from benchclaw.bus import MessageBus
+from benchclaw.bus import MessageBus, TypingEvent
 from benchclaw.channels.base import BaseChannel
 from benchclaw.config import Config
+from benchclaw.media import MediaRepository
 
 
 class ChannelManager:
@@ -22,7 +23,7 @@ class ChannelManager:
     - Route outbound messages to each channel via per-channel bus queues
     """
 
-    def __init__(self, config: Config, bus: MessageBus):
+    def __init__(self, config: Config, bus: MessageBus, media_repo: MediaRepository | None = None):
         self.config = config
         self.bus = bus
         self.channels: dict[str, BaseChannel] = {}
@@ -30,7 +31,7 @@ class ChannelManager:
 
         for name, chconfig in self.config.channels:
             try:
-                self.channels[name] = chconfig.make_channel(self.bus)
+                self.channels[name] = chconfig.make_channel(self.bus, media_repo=media_repo)
             except Exception as e:
                 logger.warning(f"{name} channel not available: {e}")
 
@@ -55,15 +56,18 @@ class ChannelManager:
         await self._stack.__aexit__(*exc_info)
 
     async def _dispatch_channel(self, name: str, channel: BaseChannel) -> None:
-        """Consume outbound messages for a single channel and deliver them."""
+        """Consume outbound events for a single channel and deliver them."""
         logger.info(f"Outbound dispatcher started for {name}")
         try:
             while True:
                 msg = await self.bus.consume_outbound(channel=name)
                 try:
-                    await channel.send(msg)
+                    if isinstance(msg, TypingEvent):
+                        await channel._handle_typing(msg)
+                    else:
+                        await channel.send(msg)
                 except Exception as e:
-                    logger.error(f"Error sending to {name}: {e}")
+                    logger.error(f"Error dispatching to {name}: {e}")
         except asyncio.CancelledError:
             pass
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 
-from benchclaw.bus import MessageAddress, MessageBus
+from benchclaw.bus import MessageAddress, MessageBus, ToolResult
 
 if TYPE_CHECKING:
     from benchclaw.agent.tools.memory import LogStore
@@ -89,7 +89,7 @@ class Tool:
         pass
 
     @abstractmethod
-    async def execute(self, ctx: "ToolContext", **kwargs: Any) -> str:
+    async def execute(self, ctx: "ToolContext", **kwargs: Any) -> ToolResult:
         """
         Execute the tool with given parameters.
 

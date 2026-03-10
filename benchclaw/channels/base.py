@@ -14,7 +14,14 @@ from loguru import logger
 from pydantic import BaseModel
 from pydantic import field_serializer, field_validator
 
-from benchclaw.bus import InboundMessage, MediaMetadata, MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import (
+    InboundMessage,
+    MediaMetadata,
+    MessageAddress,
+    MessageBus,
+    OutboundMessage,
+    TypingEvent,
+)
 
 _CONFIG_REGISTRY: dict[str, type["ChannelConfig"]] = {}
 
@@ -114,7 +121,7 @@ class ChannelConfig(BaseModel):
             return f"{total // 60}m"
         return f"{total}s"
 
-    def make_channel(self, bus: "MessageBus") -> "BaseChannel":
+    def make_channel(self, bus: "MessageBus", media_repo: Any = None) -> "BaseChannel":
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
 
 
@@ -169,6 +176,18 @@ class BaseChannel(AsyncContextManagerMixin):
         """Return (is_running, description) for this channel."""
         running = bool(self._task and not self._task.done())
         return (running, "running" if running else "stopped")
+
+    _typing_active: bool = False
+
+    async def _handle_typing(self, event: TypingEvent) -> None:
+        """Deduplicate typing state changes and delegate to notify_typing."""
+        if event.is_typing != self._typing_active:
+            self._typing_active = event.is_typing
+            await self.notify_typing(event)
+
+    async def notify_typing(self, event: TypingEvent) -> None:
+        """Called when typing state changes. Override to send platform-specific indicators."""
+        pass
 
     @abstractmethod
     async def send(self, msg: OutboundMessage) -> None:

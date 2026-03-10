@@ -12,6 +12,12 @@ interface SendCommand {
   text: string;
 }
 
+interface TypingCommand {
+  type: 'typing';
+  to: string;
+  is_typing: boolean;
+}
+
 interface BridgeMessage {
   type: 'message' | 'status' | 'qr' | 'error';
   [key: string]: unknown;
@@ -72,7 +78,7 @@ export class BridgeServer {
 
     ws.on('message', async (data) => {
       try {
-        const cmd = JSON.parse(data.toString()) as SendCommand;
+        const cmd = JSON.parse(data.toString()) as SendCommand | TypingCommand;
         await this.handleCommand(cmd);
         ws.send(JSON.stringify({ type: 'sent', to: cmd.to }));
       } catch (error) {
@@ -92,9 +98,11 @@ export class BridgeServer {
     });
   }
 
-  private async handleCommand(cmd: SendCommand): Promise<void> {
+  private async handleCommand(cmd: SendCommand | TypingCommand): Promise<void> {
     if (cmd.type === 'send' && this.wa) {
       await this.wa.sendMessage(cmd.to, cmd.text);
+    } else if (cmd.type === 'typing' && this.wa) {
+      await this.wa.sendTyping(cmd.to, cmd.is_typing);
     }
   }
 

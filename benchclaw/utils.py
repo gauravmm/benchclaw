@@ -1,7 +1,5 @@
 """Utility functions for nanobot."""
 
-import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,30 +35,6 @@ def _ensure_dir(path: Path) -> Path:
 def get_workspace_path() -> Path:
     "Get the workspace path."
     return _ensure_dir(Path("./workspace"))
-
-
-def get_media_path() -> Path:
-    return _ensure_dir(get_workspace_path() / "media")
-
-
-def _sanitize_path_segment(segment: str) -> str:
-    """Sanitize a path segment so it is safe across platforms."""
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", segment).strip("._")
-    return cleaned or "unknown"
-
-
-def get_timestamped_media_dir(
-    channel: str,
-    chat_id: str,
-    timestamp: datetime | None = None,
-    workspace: Path | None = None,
-) -> Path:
-    """Return media/{channel}/{chat_id}/{YYYYMMDD_HHMMSS}/ within the workspace."""
-    ws = workspace or get_workspace_path()
-    ts = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    return _ensure_dir(
-        ws / "media" / _sanitize_path_segment(channel) / _sanitize_path_segment(chat_id) / ts
-    )
 
 
 # TODO: Figure out where to move this.

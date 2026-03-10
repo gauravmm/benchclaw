@@ -288,7 +288,8 @@ class EmailChannel(BaseChannel):
                     continue
 
                 parsed = BytesParser(policy=policy.default).parsebytes(raw_bytes)
-                sender = parseaddr(parsed.get("From", ""))[1].strip().lower()
+                sender_name, sender_addr = parseaddr(parsed.get("From", ""))
+                sender = sender_addr.strip().lower()
                 if not sender:
                     continue
 
@@ -314,6 +315,7 @@ class EmailChannel(BaseChannel):
                     "subject": subject,
                     "date": date_value,
                     "sender_email": sender,
+                    "sender_label": sender_name.strip() or sender,
                     "uid": uid,
                 }
                 messages.append(
