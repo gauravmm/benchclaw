@@ -8,7 +8,7 @@ from datetime import datetime
 import websockets
 from loguru import logger
 
-from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 from benchclaw.media import MediaRepository
 
@@ -91,6 +91,18 @@ class WhatsAppChannel(BaseChannel):
             await self._ws.send(json.dumps(payload))
         except Exception as e:
             logger.error(f"Error sending WhatsApp message: {e}")
+
+    async def notify_typing(self, event: TypingEvent) -> None:
+        if not self._ws or not self._connected:
+            return
+        try:
+            await self._ws.send(
+                json.dumps(
+                    {"type": "typing", "to": event.address.chat_id, "is_typing": event.is_typing}
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Failed to send typing indicator: {e}")
 
     async def _handle_bridge_message(self, raw: str) -> None:
         """Handle a message from the bridge."""
@@ -228,57 +240,3 @@ class WhatsAppChannel(BaseChannel):
 
         else:
             logger.error(f"Unknown type: {msg_type}: " + str(data))
-
-
-if __name__ == "__main__":
-    import sys
-
-    from benchclaw.bus import MessageBus
-
-    bridge_url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:3001"
-    test_chat_id = sys.argv[2] if len(sys.argv) > 2 else None
-
-    async def watch_connected(channel: WhatsAppChannel) -> None:
-        """Send a message when the channel first becomes connected."""
-        while True:
-            await asyncio.sleep(0.5)
-            if channel._connected:
-                print("[test] Successfully connected to WhatsApp bridge!")
-                if test_chat_id:
-                    await channel.send(
-                        OutboundMessage(
-                            address=MessageAddress(
-                                channel="whatsapp", chat_id="120363405977110775@g.us"
-                            ),
-                            content="Connected!",
-                        )
-                    )
-                return
-
-    async def print_inbound(bus: MessageBus, channel: WhatsAppChannel) -> None:
-        while True:
-            msg = await bus.consume_inbound()
-            print(f"[inbound] {msg}")
-            await channel.send(
-                OutboundMessage(
-                    address=MessageAddress(channel="whatsapp", chat_id=msg.chat_id),
-                    content=msg.content[::-1],
-                )
-            )
-
-    async def main() -> None:
-        bus = MessageBus()
-        config = WhatsAppConfig(bridge_url=bridge_url)
-        channel = WhatsAppChannel(config, bus)
-
-        print(f"[test] Connecting to bridge at {bridge_url} ...")
-        await asyncio.gather(
-            channel.background(),
-            watch_connected(channel),
-            print_inbound(bus, channel),
-        )
-
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass

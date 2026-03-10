@@ -97,6 +97,14 @@ class SystemEvent:
     content: str
 
 
+@dataclass(frozen=True)
+class TypingEvent:
+    """Signal from the agent that typing state has changed for an address."""
+
+    address: MessageAddress
+    is_typing: bool  # True = start indicator, False = stop
+
+
 # All events that flow through bus.inbound[addr]
 AddressEvent = InboundMessage | ToolResultEvent | SystemEvent
 
@@ -125,7 +133,7 @@ class MessageBus:
     def __init__(self):
         self.inbound: dict[MessageAddress, asyncio.Queue[AddressEvent]] = {}
         self._address_subscribers: list[asyncio.Queue[MessageAddress]] = []
-        self.outbound: dict[str, asyncio.Queue[OutboundMessage]] = {}
+        self.outbound: dict[str, asyncio.Queue[OutboundMessage | TypingEvent]] = {}
         self._channel_created = asyncio.Condition()
 
     def subscribe_new_addresses(self) -> asyncio.Queue[MessageAddress]:
@@ -162,22 +170,26 @@ class MessageBus:
         """Consume the next inbound event for the given address (blocks until available)."""
         return await self.inbound[address].get()
 
-    async def publish_outbound(self, msg: OutboundMessage) -> None:
-        """Enqueue a response into the channel's outbound queue, creating it if needed."""
-        if msg.channel not in self.outbound:
-            # NOTE: The check (msg.channel not in self.outbound) is NOT redundant.
-            # There's a race condition where two threads fail the check above, then one clobbers the other's
-            # queue assignment. The fix is to protect the check with the lock. To avoid the slowdown of acquiring
-            # locks on every publish (when only the first call will fail the check), we guard the lock itself
-            # with the check above.
-            async with self._channel_created:
-                if msg.channel not in self.outbound:
-                    self.outbound.setdefault(msg.channel, asyncio.Queue())
-                    self._channel_created.notify_all()
-        await self.outbound[msg.channel].put(msg)
+    async def publish_typing(self, event: TypingEvent) -> None:
+        """Enqueue a typing state change into the channel's outbound queue."""
+        await self.publish_outbound(event)
 
-    async def consume_outbound(self, *, channel: str) -> OutboundMessage:
-        """Block until the next outbound message for the given channel is available.
+    async def publish_outbound(self, msg: OutboundMessage | TypingEvent) -> None:
+        """Enqueue a response or typing event into the channel's outbound queue, creating it if needed."""
+        ch = msg.address.channel
+        if ch not in self.outbound:
+            # NOTE: The check (ch not in self.outbound) is NOT redundant.
+            # There's a race condition where two coroutines fail the check above, then one clobbers
+            # the other's queue assignment. The fix is to protect the check with the lock. To avoid
+            # the slowdown of acquiring locks on every publish, we guard the lock itself with the check.
+            async with self._channel_created:
+                if ch not in self.outbound:
+                    self.outbound[ch] = asyncio.Queue()
+                    self._channel_created.notify_all()
+        await self.outbound[ch].put(msg)
+
+    async def consume_outbound(self, *, channel: str) -> OutboundMessage | TypingEvent:
+        """Block until the next outbound event for the given channel is available.
 
         If the channel queue does not exist yet, waits until it is created by
         the first publish_outbound call for that channel.

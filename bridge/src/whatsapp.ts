@@ -254,6 +254,14 @@ export class WhatsAppClient {
     await this.sock.sendMessage(to, { text });
   }
 
+  async sendTyping(to: string, isTyping: boolean): Promise<void> {
+    if (!this.sock) {
+      throw new Error('Not connected');
+    }
+
+    await this.sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', to);
+  }
+
   async disconnect(): Promise<void> {
     if (this.sock) {
       this.sock.end(undefined);

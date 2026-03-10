@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 from benchclaw.media import MediaRepository
 
@@ -198,9 +198,6 @@ class TelegramChannel(BaseChannel):
             logger.warning("Telegram bot not running")
             return
 
-        # Stop typing indicator for this chat
-        self._stop_typing(msg.chat_id)
-
         try:
             # chat_id should be the Telegram chat ID (integer)
             chat_id = int(msg.chat_id)
@@ -310,9 +307,6 @@ class TelegramChannel(BaseChannel):
 
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
 
-        # Start typing indicator before processing
-        self._start_typing(str_chat_id)
-
         # Forward to the message bus
         await self._handle_message(
             sender_id=sender_id,
@@ -340,6 +334,12 @@ class TelegramChannel(BaseChannel):
         task = self._typing_tasks.pop(chat_id, None)
         if task and not task.done():
             task.cancel()
+
+    async def notify_typing(self, event: TypingEvent) -> None:
+        if event.is_typing:
+            self._start_typing(event.address.chat_id)
+        else:
+            self._stop_typing(event.address.chat_id)
 
     async def _typing_loop(self, chat_id: str) -> None:
         """Repeatedly send 'typing' action until cancelled."""

@@ -23,6 +23,7 @@ from benchclaw.bus import (
     OutboundMessage,
     SystemEvent,
     ToolResultEvent,
+    TypingEvent,
 )
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
@@ -439,9 +440,13 @@ class AgentLoop:
         )
 
         while True:
+            if not tracker.pending:
+                await self.bus.publish_typing(TypingEvent(addr, is_typing=False))
+
             event = await self.bus.consume_inbound(address=addr)
 
             if isinstance(event, InboundMessage):
+                await self.bus.publish_typing(TypingEvent(addr, is_typing=True))
                 if tracker.pending:
                     tracker.handle_interrupt(session)
 
