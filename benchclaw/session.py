@@ -52,7 +52,10 @@ def _build_message(
     if prefix := _user_prefix(sender, sent_at):
         content = f"[{prefix}]: {content}"
     if media:
-        stubs = "\n".join(f"[image: {p}]" for p in media)
+        stubs = "\n".join(
+            f'[image: {p}] (you MUST emit <image_caption path="{p}">...</image_caption>)'
+            for p in media
+        )
         content = f"{content}\n{stubs}" if content else stubs
     return {"role": role, "content": content}
 
