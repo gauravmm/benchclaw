@@ -220,23 +220,17 @@ class AgentLoop:
         result = []
         for i, m in enumerate(messages):
             if m.get("role") == "assistant" and "reasoning_content" in m:
-                m = dict(m)
                 if i != last_idx:
-                    del m["reasoning_content"]
+                    m = {k: v for k, v in m.items() if k != "reasoning_content"}
                 elif len(m["reasoning_content"]) > AgentLoop._MAX_REASONING_CHARS:
+                    m = dict(m)
                     m["reasoning_content"] = (
                         m["reasoning_content"][: AgentLoop._MAX_REASONING_CHARS] + " [truncated]"
                     )
             result.append(m)
         return result
 
-    def _compact_context(
-        self,
-        session: Session,
-        addr: MessageAddress,
-        channel: str | None,
-        chat_id: str | None,
-    ) -> None:
+    def _compact_context(self, session: Session, addr: MessageAddress) -> None:
         """
         Compact live_messages when the context window is filling up.
 
@@ -253,7 +247,9 @@ class AgentLoop:
         new_live: list[dict] = [
             {
                 "role": "system",
-                "content": self.context.build_system_prompt(self.tools.values(), channel, chat_id),
+                "content": self.context.build_system_prompt(
+                    self.tools.values(), addr.channel, addr.chat_id
+                ),
             },
             {"role": "system", "content": summary_content},
             *session.get_history(max_messages=self.config.memory_window),
@@ -281,13 +277,12 @@ class AgentLoop:
         # Build the message list for this LLM call, injecting the plan if set.
         llm_messages = self._strip_old_reasoning(session.live_messages)
         if current_plan:
-            llm_messages = [
-                *llm_messages,
+            llm_messages.append(
                 {
                     "role": "system",
                     "content": f"Your plan from the previous turn:\n{current_plan}",
-                },
-            ]
+                }
+            )
 
         try:
             response = await self.provider.chat(
@@ -311,7 +306,7 @@ class AgentLoop:
                 "Session compaction triggered for "
                 f"{addr}: token usage {total_tokens}/{self.config.context_window}"
             )
-            self._compact_context(session, addr, addr.channel, addr.chat_id)
+            self._compact_context(session, addr)
 
         # Extract any <plan> the model wrote and strip it from visible content.
         visible_content, new_plan = self._extract_plan(response.content or "")

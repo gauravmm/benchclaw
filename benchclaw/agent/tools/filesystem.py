@@ -110,7 +110,7 @@ class ReadFileTool(Tool):
             content = file_path.read_text(encoding="utf-8")
             _record_snapshot(ctx, file_path)
             return content
-        except (PermissionError, Exception) as e:
+        except Exception as e:
             return f"Error: {e}"
 
 
@@ -162,7 +162,7 @@ class WriteFileTool(Tool):
             file_path.write_text(content, encoding="utf-8")
             _record_snapshot(ctx, file_path)
             return "Success"
-        except (PermissionError, Exception) as e:
+        except Exception as e:
             return f"Error: {e}"
 
 
