@@ -216,7 +216,7 @@ class CronTool(Tool):
         self._store.add(job)
         assert self._wakeup is not None
         self._wakeup.set()
-        return f"Created job '{job.id}' (id: {job.id})"
+        return f"Created job '{job.id}'"
 
     def _list_jobs(self) -> str:
         if self._store is None:
