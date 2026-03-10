@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
+# Return type for Tool.execute() and ToolResultEvent.result.
+ToolResult = str | list[dict[str, Any]]
+
 
 class MediaMetadata(TypedDict):
     """Structured metadata for one inbound media attachment."""
@@ -87,7 +90,7 @@ class ToolResultEvent:
 
     tool_call_id: str
     tool_name: str
-    result: str
+    result: ToolResult
 
 
 @dataclass

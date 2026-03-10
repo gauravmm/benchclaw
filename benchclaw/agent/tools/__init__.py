@@ -4,6 +4,7 @@
 # Add a new import here when adding a new tool.
 import benchclaw.agent.tools.cron  # noqa: F401
 import benchclaw.agent.tools.filesystem  # noqa: F401
+import benchclaw.agent.tools.media  # noqa: F401
 import benchclaw.agent.tools.memory  # noqa: F401
 import benchclaw.agent.tools.message  # noqa: F401
 import benchclaw.agent.tools.shell  # noqa: F401
