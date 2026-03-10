@@ -44,6 +44,23 @@ async def test_last_run_at_round_trips_as_timestamp(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_schedule_every_serializes_as_duration_string(tmp_path) -> None:
+    job = CronJob(
+        id="aaa00002",
+        message="heartbeat",
+        deliver_to=_address(),
+        schedule=CronScheduleEvery(every=timedelta(minutes=30)),
+    )
+    store_path = tmp_path / "jobs.json"
+
+    async with CronStore(store_path) as store:
+        store.add(job)
+
+    data = json.loads(store_path.read_text())
+    assert data["jobs"][0]["schedule"]["every"] == "30m"
+
+
+@pytest.mark.asyncio
 async def test_last_run_at_accepts_legacy_iso_datetime(tmp_path) -> None:
     last_run = datetime(2026, 3, 10, 9, 14, 47).astimezone()
     timestamp = last_run.timestamp()

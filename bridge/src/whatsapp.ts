@@ -44,6 +44,9 @@ export interface InboundMessage {
   media_metadata: MediaMetadata[];
   mediaBase64?: string;
   mediaType?: string;
+  mentionedJids?: string[];
+  replyTo?: string;
+  botJid?: string;
 }
 
 export interface WhatsAppClientOptions {
@@ -139,6 +142,7 @@ export class WhatsAppClient {
         const extracted = this.extractMessageContent(msg);
         if (!extracted) continue;
         const { content, media_metadata } = extracted;
+        const context = this.extractContextInfo(msg.message);
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
 
@@ -151,6 +155,9 @@ export class WhatsAppClient {
           timestamp: msg.messageTimestamp as number,
           isGroup,
           media_metadata,
+          mentionedJids: context.mentionedJids,
+          replyTo: context.replyTo,
+          botJid: typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
         };
 
         // Download image if present and attach as base64 for Python-side persistence
@@ -193,6 +200,25 @@ export class WhatsAppClient {
       source_channel: 'whatsapp',
       original_name: typeof payload?.fileName === 'string' ? payload.fileName : null,
     };
+  }
+
+  private extractContextInfo(message: any): { mentionedJids: string[]; replyTo?: string } {
+    if (!message || typeof message !== 'object') {
+      return { mentionedJids: [] };
+    }
+
+    const context =
+      message.extendedTextMessage?.contextInfo
+      || message.imageMessage?.contextInfo
+      || message.videoMessage?.contextInfo
+      || message.documentMessage?.contextInfo
+      || message.audioMessage?.contextInfo;
+
+    const mentionedJids = Array.isArray(context?.mentionedJid)
+      ? context.mentionedJid.filter((v: unknown): v is string => typeof v === 'string')
+      : [];
+    const replyTo = typeof context?.participant === 'string' ? context.participant : undefined;
+    return { mentionedJids, replyTo };
   }
 
   private extractMessageContent(msg: any): ExtractedMessage | null {

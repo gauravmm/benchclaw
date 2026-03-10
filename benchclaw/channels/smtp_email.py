@@ -17,11 +17,14 @@ from typing import Any
 from loguru import logger
 
 from benchclaw.bus import MessageBus, OutboundMessage
+from benchclaw.channels.attention import AttentionPolicy
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 
 
 class EmailConfig(ChannelConfig):
     """Email channel configuration (IMAP inbound + SMTP outbound)."""
+
+    attention_policy: AttentionPolicy = AttentionPolicy.ALWAYS
 
     def make_channel(self, bus: MessageBus) -> "EmailChannel":
         return EmailChannel(self, bus)

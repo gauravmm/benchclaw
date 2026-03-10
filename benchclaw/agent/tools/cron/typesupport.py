@@ -11,6 +11,7 @@ from heapdict import heapdict
 from loguru import logger
 
 from benchclaw.bus import MessageAddress
+from benchclaw.utils import DurationField
 
 if TYPE_CHECKING:
     pass
@@ -47,14 +48,6 @@ def _decode_unix_ts(value: float | int | str | datetime | None) -> float | None:
     return float(value)
 
 
-def _encode_td(td: timedelta) -> float:
-    return td.total_seconds()
-
-
-def _decode_td(s: float) -> timedelta:
-    return timedelta(seconds=s)
-
-
 def _ts(default: datetime | None = None):
     return field(default=default, metadata=config(encoder=_encode_ts, decoder=_decode_ts))
 
@@ -83,9 +76,7 @@ class CronScheduleAt(DataClassJsonMixin):
 class CronScheduleEvery(DataClassJsonMixin):
     """Run repeatedly with a fixed interval, anchored to a starting time."""
 
-    every: timedelta = field(
-        default=timedelta(hours=1), metadata=config(encoder=_encode_td, decoder=_decode_td)
-    )
+    every: DurationField = timedelta(hours=1)
     anchor: datetime = _ts_now()
     until: datetime | None = _ts()
 

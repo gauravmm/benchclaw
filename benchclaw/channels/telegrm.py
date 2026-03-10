@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 from loguru import logger
 from telegram import Update
@@ -120,6 +121,8 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._bot_username: str | None = None
+        self._bot_user_id: int | None = None
 
     def status(self) -> tuple[bool, str]:
         if self._app:
@@ -167,6 +170,8 @@ class TelegramChannel(BaseChannel):
 
         # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
+        self._bot_username = bot_info.username
+        self._bot_user_id = bot_info.id
         logger.info(f"Telegram bot @{bot_info.username} connected")
 
         # Start polling (this runs until cancelled)
@@ -304,6 +309,16 @@ class TelegramChannel(BaseChannel):
                     )
 
         content = "\n".join(content_parts) if content_parts else "[empty message]"
+        summon_source = self._detect_summon_source(message)
+        message_metadata = {
+            "message_id": message.message_id,
+            "user_id": user.id,
+            "username": user.username,
+            "sender_label": user.first_name or user.username,
+            "is_group": message.chat.type != "private",
+        }
+        if summon_source:
+            message_metadata["_summon_source"] = summon_source
 
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
 
@@ -314,14 +329,28 @@ class TelegramChannel(BaseChannel):
             content=content,
             media=media_paths,
             media_metadata=media_metadata,
-            metadata={
-                "message_id": message.message_id,
-                "user_id": user.id,
-                "username": user.username,
-                "sender_label": user.first_name or user.username,
-                "is_group": message.chat.type != "private",
-            },
+            metadata=message_metadata,
+            timestamp=message.date,
         )
+
+    def _detect_summon_source(self, message: Any) -> str | None:
+        reply_to_message = getattr(message, "reply_to_message", None)
+        reply_author = getattr(reply_to_message, "from_user", None)
+        if (
+            self._bot_user_id is not None
+            and reply_author is not None
+            and getattr(reply_author, "id", None) == self._bot_user_id
+        ):
+            return "reply"
+
+        username = self._bot_username
+        if not username:
+            return None
+        mention_re = re.compile(rf"(?<!\w)@{re.escape(username)}\b", re.IGNORECASE)
+        for maybe_text in (getattr(message, "text", None), getattr(message, "caption", None)):
+            if isinstance(maybe_text, str) and mention_re.search(maybe_text):
+                return "mention"
+        return None
 
     def _start_typing(self, chat_id: str) -> None:
         """Start sending 'typing...' indicator for a chat."""

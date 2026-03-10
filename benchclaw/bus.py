@@ -124,7 +124,8 @@ class MessageBus:
     receives the next message regardless of which chat it came from.
 
     Usage:
-        await bus.publish_inbound(msg)              # enqueues InboundMessage to msg.address queue
+        await bus.publish_inbound(msg)              # enqueues one InboundMessage
+        await bus.publish_inbound(msg1, msg2, ...)  # enqueues multiple InboundMessages
         await bus.publish_tool_result(addr, event)  # enqueues ToolResultEvent to addr queue
         await bus.consume_inbound(address=addr)     # next AddressEvent for that address
         new_addrs = bus.subscribe_new_addresses()   # Queue[MessageAddress] of new addresses
@@ -149,17 +150,18 @@ class MessageBus:
         self._address_subscribers.append(q)
         return q
 
-    async def publish_inbound(self, msg: InboundMessage) -> None:
-        """Publish a user message from a channel to the agent.
+    async def publish_inbound(self, *msgs: InboundMessage) -> None:
+        """Publish zero or more user messages from channels to the agent.
 
         Creates a new per-address queue on first use and notifies all subscribers.
         No lock needed: asyncio is single-threaded so the check-then-set is atomic.
         """
-        if msg.address not in self.inbound:
-            self.inbound[msg.address] = asyncio.Queue()
-            for sub in self._address_subscribers:
-                sub.put_nowait(msg.address)
-        await self.inbound[msg.address].put(msg)
+        for msg in msgs:
+            if msg.address not in self.inbound:
+                self.inbound[msg.address] = asyncio.Queue()
+                for sub in self._address_subscribers:
+                    sub.put_nowait(msg.address)
+            await self.inbound[msg.address].put(msg)
 
     async def publish_tool_result(self, addr: MessageAddress, event: ToolResultEvent) -> None:
         """Post a completed tool result to an existing per-address queue."""

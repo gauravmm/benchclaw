@@ -3,7 +3,8 @@
 import asyncio
 import base64
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any, Literal
 
 import websockets
 from loguru import logger
@@ -116,6 +117,8 @@ class WhatsAppChannel(BaseChannel):
         if msg_type == "message":
             sender = str(data.get("sender", ""))
             content = str(data.get("content", ""))
+            source_ts = self._parse_source_timestamp(data.get("timestamp"))
+            summon_source = self._detect_summon_source(data)
             raw_media_metadata = data.get("media_metadata", [])
             media_metadata: list[MediaMetadata] = []
             if isinstance(raw_media_metadata, list):
@@ -168,11 +171,7 @@ class WhatsAppChannel(BaseChannel):
                             "image/webp": ".webp",
                         }
                         ext = ext_map.get(mime_type, ".bin")
-                        ts = (
-                            datetime.fromtimestamp(data["timestamp"])
-                            if data.get("timestamp")
-                            else None
-                        )
+                        ts = source_ts
                         sender_id = sender.split("@")[0] if "@" in sender else sender
                         file_path = self.media_repo.register(
                             MessageAddress(self.name, sender_id), ext, mime_type, ts
@@ -209,18 +208,23 @@ class WhatsAppChannel(BaseChannel):
                     f"Voice message received from {sender_id}, but direct download from bridge is not yet supported."
                 )
 
+            message_metadata = {
+                "message_id": data.get("id"),
+                "timestamp": data.get("timestamp"),
+                "is_group": data.get("isGroup", False),
+                "sender_label": data.get("pushName") or sender_id,
+            }
+            if summon_source:
+                message_metadata["_summon_source"] = summon_source
+
             await self._handle_message(
                 sender_id=sender_id,
                 chat_id=sender,  # Use full LID for replies
                 content=content,
                 media=media_paths or None,
                 media_metadata=media_metadata,
-                metadata={
-                    "message_id": data.get("id"),
-                    "timestamp": data.get("timestamp"),
-                    "is_group": data.get("isGroup", False),
-                    "sender_label": data.get("pushName") or sender_id,
-                },
+                metadata=message_metadata,
+                timestamp=source_ts,
             )
 
         elif msg_type == "status":
@@ -240,3 +244,46 @@ class WhatsAppChannel(BaseChannel):
 
         else:
             logger.error(f"Unknown type: {msg_type}: " + str(data))
+
+    @staticmethod
+    def _parse_source_timestamp(raw: Any) -> datetime | None:
+        ts_num: float | None = None
+        if isinstance(raw, int | float):
+            ts_num = float(raw)
+        elif isinstance(raw, str):
+            try:
+                ts_num = float(raw)
+            except ValueError:
+                return None
+        if ts_num is None:
+            return None
+        return datetime.fromtimestamp(ts_num, tz=timezone.utc)
+
+    @staticmethod
+    def _normalize_jid(raw: str) -> str:
+        text = raw.strip().lower()
+        local, sep, domain = text.partition("@")
+        local = local.split(":", 1)[0]
+        if sep:
+            return f"{local}@{domain}"
+        return local
+
+    def _detect_summon_source(self, payload: dict[str, Any]) -> Literal["mention", "reply"] | None:
+        if not payload.get("isGroup"):
+            return None
+
+        bot_raw = payload.get("botJid")
+        if not isinstance(bot_raw, str) or not bot_raw:
+            return None
+        bot_jid = self._normalize_jid(bot_raw)
+
+        reply_raw = payload.get("replyTo")
+        if isinstance(reply_raw, str) and self._normalize_jid(reply_raw) == bot_jid:
+            return "reply"
+
+        mentioned = payload.get("mentionedJids")
+        if isinstance(mentioned, list):
+            for item in mentioned:
+                if isinstance(item, str) and self._normalize_jid(item) == bot_jid:
+                    return "mention"
+        return None
