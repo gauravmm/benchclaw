@@ -176,14 +176,28 @@ class AgentLoop:
         )
 
     def _dump_messages(self, messages: list[dict]) -> None:
-        """Write the LLM input messages to the debug dump file."""
-        if self.debug_dump_path:
-            try:
-                self.debug_dump_path.write_text(
-                    json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to write debug dump: {e}")
+        """Write the LLM input messages to the debug dump file, stripping image data."""
+        if not self.debug_dump_path:
+            return
+
+        def _strip_images(obj: object) -> object:
+            if isinstance(obj, list):
+                return [_strip_images(item) for item in obj]
+            if isinstance(obj, dict):
+                if obj.get("type") == "image_url":
+                    url = (obj.get("image_url") or {}).get("url", "")
+                    truncated = url[:40] + "…" if len(url) > 40 else url
+                    return {"type": "image_url", "image_url": {"url": truncated}}
+                return {k: _strip_images(v) for k, v in obj.items()}
+            return obj
+
+        try:
+            self.debug_dump_path.write_text(
+                json.dumps(_strip_images(messages), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write debug dump: {e}")
 
     @staticmethod
     def _extract_plan(content: str) -> tuple[str, str | None]:
