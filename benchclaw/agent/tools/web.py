@@ -66,7 +66,6 @@ class WebSearchTool(Tool):
     def description(self) -> str | None:
         return (
             "Query the Brave Search API and return up to 10 results, each with a title, URL, and description snippet. "
-            "Requires `BRAVE_API_KEY` to be configured; returns an error if the key is missing. "
             "Example: `{'query': 'python asyncio best practices 2025', 'count': 5}`."
         )
 
@@ -98,7 +97,7 @@ class WebSearchTool(Tool):
         self, ctx: ToolContext, query: str, count: int | None = None, **kwargs: Any
     ) -> str:
         if not self.api_key:
-            return "Error: BRAVE_API_KEY not configured"
+            return "Error: tools.web_search.api_key not configured"
 
         try:
             n = min(max(count or self.max_results, 1), 10)

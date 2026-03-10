@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,9 @@ from benchclaw.session import Session, SessionManager
 
 # Compact the context when token usage exceeds this fraction of the context window.
 _COMPACT_THRESHOLD = 0.8
+
+# Regex for extracting model-authored plan tags from response content.
+_PLAN_TAG_RE = re.compile(r"<plan>(.*?)</plan>", re.DOTALL | re.IGNORECASE)
 
 
 class ToolCallTracker:
@@ -171,6 +175,61 @@ class AgentLoop:
             except Exception as e:
                 logger.warning(f"Failed to write debug dump: {e}")
 
+    @staticmethod
+    def _extract_plan(content: str) -> tuple[str, str | None]:
+        """Extract <plan>...</plan> tags from response content.
+
+        Returns (content_without_tags, plan_text_or_none). The plan text is
+        not shown to the user; it is injected as a system message at the top
+        of the next LLM call so the model can guide its own future steps.
+        """
+        matches = _PLAN_TAG_RE.findall(content)
+        if not matches:
+            return content, None
+        plan = "\n".join(m.strip() for m in matches)
+        cleaned = _PLAN_TAG_RE.sub("", content).strip()
+        return cleaned, plan
+
+    # Keep only this many chars of the most recent reasoning_content.
+    # Thinking models require it in the immediately preceding turn, but the
+    # full blob can be thousands of words and primes further circular reasoning.
+    _MAX_REASONING_CHARS = 500
+
+    @staticmethod
+    def _strip_old_reasoning(messages: list[dict]) -> list[dict]:
+        """
+        Return messages with reasoning_content stripped or truncated.
+
+        Thinking models (Qwen, etc.) require reasoning_content in the immediately
+        preceding assistant turn, but replaying old or verbose blobs balloons the
+        context and primes the model to continue prior circular reasoning.
+
+        - All but the last assistant message with reasoning_content: stripped.
+        - The last one: truncated to _MAX_REASONING_CHARS.
+        """
+        last_idx = next(
+            (
+                i
+                for i in range(len(messages) - 1, -1, -1)
+                if messages[i].get("role") == "assistant" and messages[i].get("reasoning_content")
+            ),
+            None,
+        )
+        if last_idx is None:
+            return messages
+        result = []
+        for i, m in enumerate(messages):
+            if m.get("role") == "assistant" and "reasoning_content" in m:
+                m = dict(m)
+                if i != last_idx:
+                    del m["reasoning_content"]
+                elif len(m["reasoning_content"]) > AgentLoop._MAX_REASONING_CHARS:
+                    m["reasoning_content"] = (
+                        m["reasoning_content"][: AgentLoop._MAX_REASONING_CHARS] + " [truncated]"
+                    )
+            result.append(m)
+        return result
+
     def _compact_context(
         self,
         session: Session,
@@ -227,6 +286,8 @@ class AgentLoop:
         iteration_count = 0
         channel = addr.channel
         chat_id = addr.chat_id
+        pending_system_events: list[str] = []
+        current_plan: str | None = None
         session.live_messages = self.context.build_context(
             history=session.get_history(max_messages=self.config.memory_window),
             tools=self.tools,
@@ -251,6 +312,10 @@ class AgentLoop:
                         .strftime("Current time: %Y-%m-%d %H:%M (%A) %z"),
                     }
                 )
+                # Flush any system events that arrived while tools were running
+                for content in pending_system_events:
+                    session.live_messages.append({"role": "system", "content": content})
+                pending_system_events.clear()
                 session.add_message(
                     "user",
                     event.content,
@@ -262,11 +327,22 @@ class AgentLoop:
                 iteration_count = 0
 
             elif isinstance(event, SystemEvent):
+                if tracker.pending:
+                    # A tool call is in flight; inserting a system message now would
+                    # create an assistant-tool-call with no result, confusing the LLM.
+                    # Buffer and inject after all results land.
+                    logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
+                    pending_system_events.append(event.content)
+                    continue
                 session.live_messages.append({"role": "system", "content": event.content})
 
             elif isinstance(event, ToolResultEvent):
                 if not tracker.handle_result(event, session):
                     continue  # still waiting for other tools in this batch
+                # All tools done — inject any system events that arrived during the wait
+                for content in pending_system_events:
+                    session.live_messages.append({"role": "system", "content": content})
+                pending_system_events.clear()
 
             # Check if the iterations have maxed out.
             if iteration_count >= self.config.max_tool_iterations:
@@ -277,10 +353,22 @@ class AgentLoop:
             # Dump input messages to the debug file if requested.
             self._dump_messages(session.live_messages)
 
+            # Build the message list for this LLM call, injecting the plan if set.
+            llm_messages = self._strip_old_reasoning(session.live_messages)
+            if current_plan:
+                llm_messages = [
+                    *llm_messages,
+                    {
+                        "role": "system",
+                        "content": f"Your plan from the previous turn:\n{current_plan}",
+                    },
+                ]
+                current_plan = None
+
             # Call LLM (shared path for both event types)
             try:
                 response = await self.provider.chat(
-                    messages=session.live_messages,
+                    messages=llm_messages,
                     tools=self.tools.get_definitions(master=True),
                     model=self.config.model,
                     temperature=self.config.temperature,
@@ -305,6 +393,12 @@ class AgentLoop:
                 )
                 self._compact_context(session, addr, channel, chat_id)
 
+            # Extract any <plan> the model wrote and strip it from visible content.
+            visible_content, new_plan = self._extract_plan(response.content or "")
+            if new_plan:
+                current_plan = new_plan
+                logger.debug(f"Plan captured: {new_plan[:120]}")
+
             # Process LLM response
             if response.has_tool_calls:
                 tool_call_dicts = [
@@ -317,7 +411,7 @@ class AgentLoop:
                 ]
                 session.live_messages.append(
                     self.context.assistant_message(
-                        response.content,
+                        visible_content,
                         tool_call_dicts,
                         reasoning_content=response.reasoning_content,
                     )
@@ -332,14 +426,12 @@ class AgentLoop:
                     )
                     tracker.add(tc.id, tc.name, task)
 
-                if response.content:
+                if visible_content:
                     await self.bus.publish_outbound(
-                        OutboundMessage(address=addr, content=response.content)
+                        OutboundMessage(address=addr, content=visible_content)
                     )
             else:
-                final = (
-                    response.content or "I've completed processing but have no response to give."
-                )
+                final = visible_content or "I've completed processing but have no response to give."
                 session.add_message("assistant", final)
                 preview = final[:120] + "..." if len(final) > 120 else final
                 logger.info(f"Response to {addr}: {preview}")
