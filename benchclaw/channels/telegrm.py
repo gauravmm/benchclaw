@@ -323,7 +323,7 @@ class TelegramChannel(BaseChannel):
                 "message_id": message.message_id,
                 "user_id": user.id,
                 "username": user.username,
-                "first_name": user.first_name,
+                "sender_label": user.first_name or user.username,
                 "is_group": message.chat.type != "private",
             },
         )

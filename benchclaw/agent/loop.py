@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -390,14 +389,6 @@ class AgentLoop:
 
                 preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
                 logger.info(f"Processing message from {addr}: {preview}")
-                session.live_messages.append(
-                    {
-                        "role": "system",
-                        "content": datetime.now()
-                        .astimezone()
-                        .strftime("Current time: %Y-%m-%d %H:%M (%A) %z"),
-                    }
-                )
                 # Flush any system events that arrived while tools were running
                 for content in pending_system_events:
                     session.live_messages.append({"role": "system", "content": content})

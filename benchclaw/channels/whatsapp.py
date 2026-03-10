@@ -199,7 +199,7 @@ class WhatsAppChannel(BaseChannel):
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),
                     "is_group": data.get("isGroup", False),
-                    "first_name": data.get("pushName"),
+                    "sender_label": data.get("pushName") or sender_id,
                 },
             )
 

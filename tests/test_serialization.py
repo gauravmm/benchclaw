@@ -120,6 +120,35 @@ def test_session_clear(tmp_path: Path):
     assert session.last_consolidated == 0
 
 
+def test_session_user_live_message_includes_sender_and_timestamp() -> None:
+    addr = MessageAddress(channel="telegram", chat_id="1")
+    session = Session(addr=addr)
+
+    session.add_message(
+        "user",
+        "hello",
+        sender_id="12345|gaurav",
+        metadata={"sender_label": "Gaurav"},
+    )
+
+    live = session.live_messages[-1]
+    assert live["role"] == "user"
+    assert live["content"].startswith("[Gaurav @")
+    assert live["content"].endswith(": hello")
+
+
+def test_session_history_includes_user_timestamp_prefix() -> None:
+    addr = MessageAddress(channel="telegram", chat_id="2")
+    session = Session(addr=addr)
+
+    session.add_message("user", "ping", sender_id="7|alice", metadata={"sender_label": "alice"})
+
+    history = session.get_history()
+    assert history[-1]["role"] == "user"
+    assert history[-1]["content"].startswith("[alice @")
+    assert history[-1]["content"].endswith(": ping")
+
+
 # ---------------------------------------------------------------------------
 # SessionManager
 # ---------------------------------------------------------------------------

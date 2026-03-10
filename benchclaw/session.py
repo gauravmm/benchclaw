@@ -3,6 +3,7 @@
 import base64
 import json
 import mimetypes
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -16,21 +17,42 @@ from benchclaw.bus import MessageAddress
 MAX_SESSIONS = 50
 
 
-def _sender_label(sender_id: str, metadata: dict[str, Any]) -> str | None:
-    """Return a display label for a sender, or None if no identity available."""
-    name = metadata.get("first_name")
-    if not name and sender_id:
-        # Telegram encodes "numericid|username" — extract the readable part
-        name = sender_id.split("|", 1)[-1]
-    return name or None
+def _sender_label(metadata: dict[str, Any]) -> str | None:
+    """Return a channel-provided display label for a sender, if present."""
+    label = metadata.get("sender_label")
+    return str(label) if label else None
+
+
+def _format_prefix_time(sent_at: str | None) -> str | None:
+    """Convert ISO timestamp to HH:MM for compact user prefixes."""
+    with suppress(ValueError, TypeError):
+        if sent_at:
+            return datetime.fromisoformat(sent_at).strftime("%H:%M")
+    return None
+
+
+def _user_prefix(sender: str | None, sent_at: str | None) -> str | None:
+    """Build a user message prefix containing sender and/or timestamp."""
+    short_time = _format_prefix_time(sent_at)
+    if sender and short_time:
+        return f"{sender} @{short_time}"
+    if sender:
+        return sender
+    if short_time:
+        return f"@{short_time}"
+    return None
 
 
 def _build_message(
-    role: str, content: str, media: list[str] | None = None, sender: str | None = None
+    role: str,
+    content: str,
+    media: list[str] | None = None,
+    sender: str | None = None,
+    sent_at: str | None = None,
 ) -> dict[str, Any]:
     """Build an LLM API message dict, embedding any media as base64 image_url parts."""
-    if sender:
-        content = f"[{sender}]: {content}"
+    if prefix := _user_prefix(sender, sent_at):
+        content = f"[{prefix}]: {content}"
     if not media:
         return {"role": role, "content": content}
 
@@ -70,30 +92,36 @@ class Session:
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the persistent session and to live_messages."""
-        sender = (
-            _sender_label(kwargs.get("sender_id", ""), kwargs.get("metadata") or {})
-            if role == "user"
-            else None
-        )
+        sender = _sender_label(kwargs.get("metadata") or {}) if role == "user" else None
+        timestamp = datetime.now().isoformat(timespec="seconds")
         msg = {
             "role": role,
             "content": content,
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "timestamp": timestamp,
             **kwargs,
         }
         if sender:
             msg["sender_label"] = sender
         self.messages.append(msg)
         self.updated_at = datetime.now()
-        self.live_messages.append(_build_message(role, content, kwargs.get("media"), sender=sender))
+        self.live_messages.append(
+            _build_message(
+                role,
+                content,
+                kwargs.get("media"),
+                sender=sender if role == "user" else None,
+                sent_at=timestamp if role == "user" else None,
+            )
+        )
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """Get recent messages in LLM format (role + content only)."""
         result = []
         for m in self.messages[-max_messages:]:
             content = m["content"]
-            if label := m.get("sender_label"):
-                content = f"[{label}]: {content}"
+            if m["role"] == "user":
+                if prefix := _user_prefix(m.get("sender_label"), m.get("timestamp")):
+                    content = f"[{prefix}]: {content}"
             result.append({"role": m["role"], "content": content})
         return result
 
