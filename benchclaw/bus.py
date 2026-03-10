@@ -1,6 +1,7 @@
 """Async message bus for decoupled channel-agent communication."""
 
 import asyncio
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
@@ -27,6 +28,11 @@ class MessageAddress:
 
     def __str__(self) -> str:
         return f"{self.channel}:{self.chat_id}"
+
+    @property
+    def hash8(self) -> str:
+        """8-char hex digest of this address, for use as a short stable directory name."""
+        return hashlib.sha256(str(self).encode()).hexdigest()[:8]
 
     @classmethod
     def from_string(cls, s: str) -> "MessageAddress":

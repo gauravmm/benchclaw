@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import mimetypes
 import re
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from benchclaw.bus import (
     ToolResultEvent,
 )
 from benchclaw.config import Config
+from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
 from benchclaw.session import Session, SessionManager
 
@@ -31,6 +34,11 @@ _COMPACT_THRESHOLD = 0.8
 
 # Regex for extracting model-authored plan tags from response content.
 _PLAN_TAG_RE = re.compile(r"<plan>(.*?)</plan>", re.DOTALL | re.IGNORECASE)
+
+# Regex for extracting image caption tags emitted by the model.
+_IMAGE_CAPTION_RE = re.compile(
+    r'<image_caption\s+path="([^"]+)">(.*?)</image_caption>', re.DOTALL | re.IGNORECASE
+)
 
 
 class ToolCallTracker:
@@ -124,12 +132,14 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         debug_dump_path: Path | None = None,
+        media_repo: MediaRepository | None = None,
     ):
         self.workspace_path = config.workspace_path
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
         self.debug_dump_path = debug_dump_path
+        self.media_repo = media_repo
 
         self.context = ContextBuilder(config.workspace_path)
         self.sessions = SessionManager(config.workspace_path / "sessions")
@@ -188,6 +198,36 @@ class AgentLoop:
         plan = "\n".join(m.strip() for m in matches)
         cleaned = _PLAN_TAG_RE.sub("", content).strip()
         return cleaned, plan
+
+    @staticmethod
+    def _build_image_blocks(paths: list[str], workspace: Path) -> list[dict]:
+        """Base64-encode image files and return image_url content blocks for the LLM."""
+        blocks = []
+        for path_str in paths:
+            p = workspace / path_str
+            mime, _ = mimetypes.guess_type(path_str)
+            if not p.is_file() or not mime or not mime.startswith("image/"):
+                logger.warning(f"Skipping non-image or missing file: {path_str}")
+                continue
+            b64 = base64.b64encode(p.read_bytes()).decode()
+            blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        return blocks
+
+    @staticmethod
+    def _extract_image_captions(content: str) -> tuple[str, dict[str, str]]:
+        """Extract <image_caption path="...">...</image_caption> tags from response content.
+
+        Returns (cleaned_content, {path: caption}). The path is workspace-relative
+        (e.g. "media/a3f7b2c1/0310/1423-01.jpg") as emitted by the model.
+        """
+        captions: dict[str, str] = {}
+
+        def _store(m: re.Match) -> str:
+            captions[m.group(1)] = m.group(2).strip()
+            return ""
+
+        cleaned = _IMAGE_CAPTION_RE.sub(_store, content).strip()
+        return cleaned, captions
 
     # Keep only this many chars of the most recent reasoning_content.
     # Thinking models require it in the immediately preceding turn, but the
@@ -264,6 +304,8 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
         current_plan: str | None,
+        pending_images: list[str] | None = None,
+        media_repo: MediaRepository | None = None,
     ) -> str | None:
         """
         Prepare messages, call the LLM, handle compaction, and dispatch the response.
@@ -282,6 +324,15 @@ class AgentLoop:
                     "content": f"Your plan from the previous turn:\n{current_plan}",
                 }
             )
+
+        # Inject pending images ephemerally into the last message (not stored in live_messages).
+        if pending_images:
+            blocks = self._build_image_blocks(pending_images, self.workspace_path)
+            if blocks and llm_messages:
+                last = llm_messages[-1]
+                text = last["content"] if isinstance(last["content"], str) else ""
+                llm_messages[-1] = {**last, "content": blocks + [{"type": "text", "text": text}]}
+            pending_images.clear()
 
         try:
             response = await self.provider.chat(
@@ -311,6 +362,12 @@ class AgentLoop:
         visible_content, new_plan = self._extract_plan(response.content or "")
         if new_plan:
             logger.debug(f"Plan captured: {new_plan[:120]}")
+
+        # Extract any <image_caption> tags and store them in the media repo.
+        visible_content, captions = self._extract_image_captions(visible_content)
+        if captions and media_repo:
+            for path_from_tag, caption in captions.items():
+                media_repo.set_caption(path_from_tag, caption)
 
         if response.has_tool_calls:
             tool_call_dicts = [
@@ -372,6 +429,7 @@ class AgentLoop:
         )
         iteration_count = 0
         pending_system_events: list[str] = []
+        pending_images: list[str] = []
         current_plan: str | None = None
         session.live_messages = self.context.build_context(
             history=session.get_history(max_messages=self.config.memory_window),
@@ -401,6 +459,7 @@ class AgentLoop:
                     media_metadata=event.media_metadata,
                     metadata=event.metadata,
                 )
+                pending_images = list(event.media)
                 iteration_count = 0
 
             elif isinstance(event, SystemEvent):
@@ -428,7 +487,13 @@ class AgentLoop:
             iteration_count += 1
 
             current_plan = await self._process_llm_turn(
-                session, tracker, call_ctx, addr, current_plan
+                session,
+                tracker,
+                call_ctx,
+                addr,
+                current_plan,
+                pending_images=pending_images,
+                media_repo=self.media_repo,
             )
 
     async def run(self) -> None:

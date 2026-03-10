@@ -10,9 +10,9 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from benchclaw.bus import MediaMetadata, MessageBus, OutboundMessage
+from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
-from benchclaw.utils import get_timestamped_media_dir
+from benchclaw.media import MediaRepository
 
 
 class TelegramConfig(ChannelConfig):
@@ -24,8 +24,10 @@ class TelegramConfig(ChannelConfig):
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
 
-    def make_channel(self, bus: MessageBus) -> "TelegramChannel":
-        return TelegramChannel(self, bus)
+    def make_channel(
+        self, bus: MessageBus, media_repo: MediaRepository | None = None
+    ) -> "TelegramChannel":
+        return TelegramChannel(self, bus, media_repo=media_repo)
 
 
 register_channel("telegram", TelegramConfig)
@@ -109,9 +111,11 @@ class TelegramChannel(BaseChannel):
         self,
         config: TelegramConfig,
         bus: MessageBus,
+        media_repo: MediaRepository | None = None,
     ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
+        self.media_repo = media_repo
         self.groq_api_key = None  # TODO: Remove
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
@@ -261,49 +265,46 @@ class TelegramChannel(BaseChannel):
 
         # Download media if present
         if media_file and media_type and self._app:
-            try:
-                file = await self._app.bot.get_file(media_file.file_id)
-                mime_type = getattr(media_file, "mime_type", None)
-                size_bytes = getattr(media_file, "file_size", None)
-                ext = self._get_extension(media_type, mime_type)
+            if not self.media_repo:
+                logger.warning("Telegram received media but media_repo not configured; skipping")
+            else:
+                try:
+                    file = await self._app.bot.get_file(media_file.file_id)
+                    mime_type = getattr(media_file, "mime_type", None)
+                    size_bytes = getattr(media_file, "file_size", None)
+                    ext = self._get_extension(media_type, mime_type)
 
-                media_dir = get_timestamped_media_dir(
-                    channel=self.name,
-                    chat_id=str_chat_id,
-                    timestamp=message.date,
-                )
+                    file_path = self.media_repo.register(
+                        MessageAddress(self.name, sender_id), ext, mime_type, message.date
+                    )
+                    await file.download_to_drive(str(file_path))
+                    media_paths.append(self.media_repo.media_relpath(file_path))
+                    media_metadata.append(
+                        {
+                            "path": str(file_path),
+                            "media_type": media_type,
+                            "mime_type": mime_type,
+                            "size_bytes": size_bytes,
+                            "saved_at": message.date.isoformat(timespec="seconds"),
+                            "source_channel": self.name,
+                            "original_name": getattr(media_file, "file_name", None),
+                        }
+                    )
 
-                file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
-                await file.download_to_drive(str(file_path))
-                media_paths.append(str(file_path))
-                content_parts.append(f"[{media_type}: {file_path}]")
-                media_metadata.append(
-                    {
-                        "path": str(file_path),
-                        "media_type": media_type,
-                        "mime_type": mime_type,
-                        "size_bytes": size_bytes,
-                        "saved_at": message.date.isoformat(timespec="seconds"),
-                        "source_channel": self.name,
-                        "original_name": getattr(media_file, "file_name", None),
-                    }
-                )
-
-                logger.debug(f"Downloaded {media_type} to {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to download media: {e}")
-                content_parts.append(f"[{media_type}: download failed]")
-                media_metadata.append(
-                    {
-                        "path": None,
-                        "media_type": media_type,
-                        "mime_type": getattr(media_file, "mime_type", None),
-                        "size_bytes": getattr(media_file, "file_size", None),
-                        "saved_at": None,
-                        "source_channel": self.name,
-                        "original_name": getattr(media_file, "file_name", None),
-                    }
-                )
+                    logger.debug(f"Downloaded {media_type} to {file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to download media: {e}")
+                    media_metadata.append(
+                        {
+                            "path": None,
+                            "media_type": media_type,
+                            "mime_type": getattr(media_file, "mime_type", None),
+                            "size_bytes": getattr(media_file, "file_size", None),
+                            "saved_at": None,
+                            "source_channel": self.name,
+                            "original_name": getattr(media_file, "file_name", None),
+                        }
+                    )
 
         content = "\n".join(content_parts) if content_parts else "[empty message]"
 

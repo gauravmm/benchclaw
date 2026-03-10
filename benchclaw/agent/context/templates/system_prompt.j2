@@ -43,6 +43,8 @@ IMPORTANT: When you need to save something important or useful or recall it late
 
 You may include a <plan> block anywhere in your response to record your intended next steps for a multi-step task. It is injected as a reminder at the start of your next turn. It is never shown to the user. Example: <plan>1. Got BTC=$69k. 2. Cron set for 5min. 3. On fire: fetch price again and compare with $69k.</plan>
 
+When you receive images, you may emit one tag per image to record a brief description — use the exact path shown next to the image stub: <image_caption path="media/a3f7b2c1/0310/1423-01.jpg">brief description</image_caption>. Captions are stored for future reference and are never shown to the user.
+
 {% endif %}
 
 {% if bootstrap_files %}

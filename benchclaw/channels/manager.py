@@ -10,6 +10,7 @@ from loguru import logger
 from benchclaw.bus import MessageBus
 from benchclaw.channels.base import BaseChannel
 from benchclaw.config import Config
+from benchclaw.media import MediaRepository
 
 
 class ChannelManager:
@@ -22,7 +23,7 @@ class ChannelManager:
     - Route outbound messages to each channel via per-channel bus queues
     """
 
-    def __init__(self, config: Config, bus: MessageBus):
+    def __init__(self, config: Config, bus: MessageBus, media_repo: MediaRepository | None = None):
         self.config = config
         self.bus = bus
         self.channels: dict[str, BaseChannel] = {}
@@ -30,7 +31,7 @@ class ChannelManager:
 
         for name, chconfig in self.config.channels:
             try:
-                self.channels[name] = chconfig.make_channel(self.bus)
+                self.channels[name] = chconfig.make_channel(self.bus, media_repo=media_repo)
             except Exception as e:
                 logger.warning(f"{name} channel not available: {e}")
 

@@ -22,7 +22,7 @@ def register_channel(name: str, cls: type["ChannelConfig"]) -> None:
 class ChannelConfig(BaseModel):
     allow_from: list[str] | None = None
 
-    def make_channel(self, bus: "MessageBus") -> "BaseChannel":
+    def make_channel(self, bus: "MessageBus", media_repo: Any = None) -> "BaseChannel":
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
 
 

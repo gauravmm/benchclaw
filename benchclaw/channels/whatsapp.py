@@ -10,7 +10,7 @@ from loguru import logger
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
-from benchclaw.utils import get_timestamped_media_dir
+from benchclaw.media import MediaRepository
 
 
 class WhatsAppConfig(ChannelConfig):
@@ -19,8 +19,10 @@ class WhatsAppConfig(ChannelConfig):
     bridge_url: str = "ws://localhost:3001"
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
 
-    def make_channel(self, bus: MessageBus) -> "WhatsAppChannel":
-        return WhatsAppChannel(self, bus)
+    def make_channel(
+        self, bus: MessageBus, media_repo: MediaRepository | None = None
+    ) -> "WhatsAppChannel":
+        return WhatsAppChannel(self, bus, media_repo=media_repo)
 
 
 register_channel("whatsapp", WhatsAppConfig)
@@ -36,9 +38,12 @@ class WhatsAppChannel(BaseChannel):
 
     name = "whatsapp"
 
-    def __init__(self, config: WhatsAppConfig, bus: MessageBus):
+    def __init__(
+        self, config: WhatsAppConfig, bus: MessageBus, media_repo: MediaRepository | None = None
+    ):
         super().__init__(config, bus)
         self.config: WhatsAppConfig = config
+        self.media_repo = media_repo
         self._ws = None
         self._connected = False
 
@@ -137,47 +142,50 @@ class WhatsAppChannel(BaseChannel):
             # Download and save image if the bridge sent base64 data
             media_paths: list[str] = []
             if data.get("mediaBase64"):
-                try:
-                    mime_type = data.get("mediaType", "image/jpeg")
-                    ext_map = {
-                        "image/jpeg": ".jpg",
-                        "image/png": ".png",
-                        "image/gif": ".gif",
-                        "image/webp": ".webp",
-                    }
-                    ext = ext_map.get(mime_type, ".bin")
-                    msg_id = str(data.get("id") or "")
-                    filename_base = msg_id[:16] if msg_id else "media"
-                    media_dir = get_timestamped_media_dir(
-                        channel=self.name,
-                        chat_id=sender,
-                        timestamp=datetime.fromtimestamp(data["timestamp"])
-                        if data.get("timestamp")
-                        else None,
+                if not self.media_repo:
+                    logger.warning(
+                        "WhatsApp received image but media_repo not configured; skipping"
                     )
-                    file_path = media_dir / f"{filename_base}{ext}"
-                    file_path.write_bytes(base64.b64decode(data["mediaBase64"]))
-                    media_paths.append(str(file_path))
-                    # Update or add MediaMetadata entry for this image
-                    saved_at = datetime.now().isoformat(timespec="seconds")
-                    if media_metadata:
-                        # Patch the first media entry with the saved path
-                        media_metadata[0]["path"] = str(file_path)
-                        media_metadata[0]["saved_at"] = saved_at
-                    else:
-                        media_metadata.append(
-                            {
-                                "path": str(file_path),
-                                "media_type": "image",
-                                "mime_type": mime_type,
-                                "size_bytes": None,
-                                "saved_at": saved_at,
-                                "source_channel": self.name,
-                            }
+                else:
+                    try:
+                        mime_type = data.get("mediaType", "image/jpeg")
+                        ext_map = {
+                            "image/jpeg": ".jpg",
+                            "image/png": ".png",
+                            "image/gif": ".gif",
+                            "image/webp": ".webp",
+                        }
+                        ext = ext_map.get(mime_type, ".bin")
+                        ts = (
+                            datetime.fromtimestamp(data["timestamp"])
+                            if data.get("timestamp")
+                            else None
                         )
-                    logger.debug(f"Saved WhatsApp image to {file_path}")
-                except Exception as e:
-                    logger.error(f"Failed to save WhatsApp image: {e}")
+                        sender_id = sender.split("@")[0] if "@" in sender else sender
+                        file_path = self.media_repo.register(
+                            MessageAddress(self.name, sender_id), ext, mime_type, ts
+                        )
+                        file_path.write_bytes(base64.b64decode(data["mediaBase64"]))
+                        media_paths.append(self.media_repo.media_relpath(file_path))
+                        # Update or add MediaMetadata entry for this image
+                        saved_at = datetime.now().isoformat(timespec="seconds")
+                        if media_metadata:
+                            media_metadata[0]["path"] = str(file_path)
+                            media_metadata[0]["saved_at"] = saved_at
+                        else:
+                            media_metadata.append(
+                                {
+                                    "path": str(file_path),
+                                    "media_type": "image",
+                                    "mime_type": mime_type,
+                                    "size_bytes": None,
+                                    "saved_at": saved_at,
+                                    "source_channel": self.name,
+                                }
+                            )
+                        logger.debug(f"Saved WhatsApp image to {file_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to save WhatsApp image: {e}")
 
             # Extract just the phone number or lid as chat_id
             sender_id = sender.split("@")[0] if "@" in sender else sender

@@ -1,8 +1,6 @@
 """Session management for conversation history."""
 
-import base64
 import json
-import mimetypes
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -50,24 +48,13 @@ def _build_message(
     sender: str | None = None,
     sent_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build an LLM API message dict, embedding any media as base64 image_url parts."""
+    """Build an LLM API message dict, appending image path stubs for any media."""
     if prefix := _user_prefix(sender, sent_at):
         content = f"[{prefix}]: {content}"
-    if not media:
-        return {"role": role, "content": content}
-
-    images = []
-    for path in media:
-        p = Path(path)
-        mime, _ = mimetypes.guess_type(path)
-        if not p.is_file() or not mime or not mime.startswith("image/"):
-            continue
-        b64 = base64.b64encode(p.read_bytes()).decode()
-        images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-
-    if not images:
-        return {"role": role, "content": content}
-    return {"role": role, "content": images + [{"type": "text", "text": content}]}
+    if media:
+        stubs = "\n".join(f"[image: {p}]" for p in media)
+        content = f"{content}\n{stubs}" if content else stubs
+    return {"role": role, "content": content}
 
 
 @dataclass
@@ -122,6 +109,9 @@ class Session:
             if m["role"] == "user":
                 if prefix := _user_prefix(m.get("sender_label"), m.get("timestamp")):
                     content = f"[{prefix}]: {content}"
+                if media := m.get("media"):
+                    stubs = "\n".join(f"[image: {p}]" for p in media)
+                    content = f"{content}\n{stubs}" if content else stubs
             result.append({"role": m["role"], "content": content})
         return result
 

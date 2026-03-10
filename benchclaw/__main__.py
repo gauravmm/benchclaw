@@ -10,6 +10,7 @@ from benchclaw.agent.loop import AgentLoop
 from benchclaw.bus import MessageBus
 from benchclaw.channels.manager import ChannelManager
 from benchclaw.config import ConfigManager
+from benchclaw.media import MediaRepository
 from benchclaw.providers.litellm_provider import LiteLLMProvider
 
 
@@ -22,29 +23,31 @@ def run(args) -> None:
 
     with ConfigManager(args.config) as config:
         provider = LiteLLMProvider(config.provider)
-        channels = ChannelManager(config, bus)
-
-        print("BenchClaw starting")
-        if channels.channels:
-            print(f"Channels: {', '.join(channels.channels)}")
-        else:
-            print("Warning: no channels enabled")
 
         async def run():
-            agent = AgentLoop(
-                config=config,
-                bus=bus,
-                provider=provider,
-                debug_dump_path=args.debug_dump,
-            )
+            async with MediaRepository(config.workspace_path / "media") as media_repo:
+                channels = ChannelManager(config, bus, media_repo=media_repo)
+                agent = AgentLoop(
+                    config=config,
+                    bus=bus,
+                    provider=provider,
+                    debug_dump_path=args.debug_dump,
+                    media_repo=media_repo,
+                )
 
-            try:
-                async with channels:
-                    await agent.run()
-            except KeyboardInterrupt:
-                print("\nShutting down...")
-            except asyncio.CancelledError:
-                return
+                print("BenchClaw starting")
+                if channels.channels:
+                    print(f"Channels: {', '.join(channels.channels)}")
+                else:
+                    print("Warning: no channels enabled")
+
+                try:
+                    async with channels:
+                        await agent.run()
+                except KeyboardInterrupt:
+                    print("\nShutting down...")
+                except asyncio.CancelledError:
+                    return
 
         asyncio.run(run())
 
