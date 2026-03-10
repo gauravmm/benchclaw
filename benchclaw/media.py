@@ -83,7 +83,7 @@ class MediaRepository:
         hhmm = ts.strftime("%H%M")
         mmdd = ts.strftime("%m%d")
         bucket = f"{sender.hash8}/{mmdd}/{hhmm}"
-        serial = f"{max(map(int, self._entries.get(bucket, {})), default=-1) + 1:02d}"
+        serial = f"{max(map(int, self._entries.get(bucket, {})), default=0) + 1:02d}"
         abs_path = self.media_dir / sender.hash8 / mmdd / f"{hhmm}-{serial}{ext}"
         abs_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -128,29 +128,23 @@ class MediaRepository:
 
     def purge_old(self) -> int:
         """Delete files older than max_age_days. Removes empty dirs. Returns count deleted."""
-        cutoff = datetime.now() - timedelta(days=self.max_age_days)
+        today = datetime.now().date()
+        today_md = today.strftime("%m%d")
+        cutoff_md = (today - timedelta(days=self.max_age_days)).strftime("%m%d")
         deleted = 0
         for bucket in list(self._entries):
-            hash8_mmdd, hhmm = bucket.rsplit("/", 1)
-            for serial, entry in list(self._entries[bucket].items()):
-                try:
-                    ts = datetime.fromisoformat(entry.timestamp)
-                except ValueError, TypeError:
-                    continue
-                if ts < cutoff:
-                    (self.media_dir / hash8_mmdd / f"{hhmm}-{serial}{entry.ext}").unlink(
+            hash8, mmdd, hhmm = bucket.split("/")
+            # Delete if mmdd is outside the rolling [cutoff_md, today_md] window.
+            # XOR of the two boundary comparisons, flipped by the year-wrap flag, handles both cases.
+            if (mmdd < cutoff_md) ^ (mmdd > today_md) ^ (cutoff_md > today_md):
+                deleted += len(self._entries[bucket])
+                for serial, entry in self._entries.pop(bucket).items():
+                    (self.media_dir / hash8 / mmdd / f"{hhmm}-{serial}{entry.ext}").unlink(
                         missing_ok=True
                     )
-                    del self._entries[bucket][serial]
-                    deleted += 1
-            if not self._entries[bucket]:
-                del self._entries[bucket]
 
-        # Remove empty bucket directories (deepest first)
-        for d in sorted(self.media_dir.glob("*/*"), reverse=True):
-            if d.is_dir() and not any(d.iterdir()):
-                d.rmdir()
-        for d in sorted(self.media_dir.glob("*"), reverse=True):
+        # Remove empty directories (deepest first)
+        for d in sorted(self.media_dir.rglob("*"), reverse=True):
             if d.is_dir() and not any(d.iterdir()):
                 d.rmdir()
 
