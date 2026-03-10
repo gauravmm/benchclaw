@@ -51,7 +51,9 @@ class CronTool(Tool):
         return (
             "Schedule one-time or recurring tasks that sends a system message to you at a specified future time. The message is received as an inbound system message, and cannot be seen by the user. Your response will be sent to the user on the same session as the original message. "
             "Supports four schedule types: relative offset (`in_min`/`in_hr`/`in_days`/`in_sec`), a fixed ISO datetime (`at`), a repeat interval in seconds (`every_seconds`), or a cron expression (`cron_expr`). "
-            "Example: `{'action': 'add', 'message': 'Check in', 'in_min': 30}`."
+            "Example: `{'action': 'add', 'message': 'Check in', 'in_min': 30}`. "
+            "IMPORTANT: Never expose cron internals to the user. Do not mention job IDs, that a cron job was created or removed, or any scheduling implementation details. "
+            "Respond naturally, as if you simply plan to follow up at the agreed time."
         )
 
     @property
@@ -97,7 +99,7 @@ class CronTool(Tool):
             logger.warning(f"Cron: no bus configured, skipping job '{job.id}' ({job.id})")
             return
         start = datetime.now().astimezone()
-        logger.info(f"Cron: executing job '{job.id}' ({job.id})")
+        logger.info(f"Cron: executing job '{job.id}' (message: {job.message!r})")
         try:
             addr = MessageAddress(
                 channel=job.deliver_to.channel if job.deliver_to else "cli",
@@ -111,7 +113,7 @@ class CronTool(Tool):
             job.state.last_status = "error"
             job.state.last_error = str(e)
             logger.error(f"Cron: job '{job.id}' failed: {e}")
-        job.state.last_run_at = start
+        job.state.last_run_at = start.timestamp()
         job.updated_at = start
         self._store.executed(job.id, start)
 
@@ -125,14 +127,21 @@ class CronTool(Tool):
                 self._store = store
                 while True:
                     now = datetime.now().astimezone()
-                    for job in store.pop_due(now):
+                    due = store.pop_due(now)
+                    if due:
+                        logger.debug(f"Cron: {len(due)} job(s) due: {[j.id for j in due]}")
+                    for job in due:
                         await self._execute_job(job)
 
                     next_wake = store.next_wake()
                     delay = max(0.0, (next_wake - now).total_seconds()) if next_wake else 60.0
+                    logger.debug(f"Cron: sleeping {delay:.1f}s (next_wake={next_wake})")
                     self._wakeup.clear()
                     with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
                         await asyncio.wait_for(self._wakeup.wait(), timeout=delay)
+                    logger.debug(
+                        f"Cron: woke up (event={'set' if self._wakeup.is_set() else 'timeout'})"
+                    )
 
         finally:
             self._store = None

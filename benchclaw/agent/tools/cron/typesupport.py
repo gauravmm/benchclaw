@@ -29,6 +29,23 @@ def _decode_ts(s: str | None) -> datetime | None:
     return None if s is None else _ensure_aware(datetime.fromisoformat(s))
 
 
+def _encode_unix_ts(ts: float | None) -> float | None:
+    return ts
+
+
+def _decode_unix_ts(value: float | int | str | datetime | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _ensure_aware(value).timestamp()
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return _ensure_aware(datetime.fromisoformat(value)).timestamp()
+    return float(value)
+
+
 def _encode_td(td: timedelta) -> float:
     return td.total_seconds()
 
@@ -152,7 +169,10 @@ def _decode_address(d: dict | None) -> "MessageAddress | None":
 class CronJobState(DataClassJsonMixin):
     """Runtime state of a job."""
 
-    last_run_at: datetime | None = None
+    last_run_at: float | None = field(
+        default=None,
+        metadata=config(encoder=_encode_unix_ts, decoder=_decode_unix_ts),
+    )
     last_status: Literal["ok", "error", "skipped"] | None = None
     last_error: str | None = None
 
@@ -290,6 +310,12 @@ class CronStore:
                 break
             self._queue.popitem()
             job = self._store.get(jid)
-            if job is not None and job.enabled:
+            if job is None:
+                logger.warning(
+                    f"Cron: job '{jid}' was in queue but not in store (ghost entry); skipping"
+                )
+            elif not job.enabled:
+                logger.debug(f"Cron: job '{jid}' was due but is disabled; skipping")
+            else:
                 due.append(job)
         return due

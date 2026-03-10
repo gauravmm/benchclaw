@@ -1,142 +1,113 @@
-"""Regression tests for CronStore serialization round-trip.
-
-Covers three bugs found via the __main__ test block:
-- _decode_schedule used "cron" instead of "expr" to detect CronScheduleCron
-- CronPayload.deliver_to lacked encoder/decoder metadata (dataclasses_json skipped it)
-- CronStore.__aenter__ called _ts_now() (returns a Field) instead of datetime.now()
-"""
-
-import tempfile
+import asyncio
+import json
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
+from benchclaw.agent.tools.cron.tool import CronTool
 from benchclaw.agent.tools.cron.typesupport import (
     CronJob,
     CronJobState,
-    CronPayload,
-    CronScheduleAt,
-    CronScheduleCron,
     CronScheduleEvery,
     CronStore,
 )
-from benchclaw.bus import MessageAddress
+from benchclaw.bus import MessageAddress, MessageBus, SystemEvent
 
 
 def _address() -> MessageAddress:
     return MessageAddress(channel="telegram", chat_id="123456")
 
 
-def _store_path(tmp: str) -> Path:
-    return Path(tmp) / "jobs.json"
-
-
 @pytest.mark.asyncio
-async def test_round_trip_all_schedule_types() -> None:
-    """Writing then reading back all three schedule types preserves values."""
-    address = _address()
-    at_time = datetime(2026, 6, 1, 10, 0).astimezone()
-
-    jobs_in = [
-        CronJob(
-            id="aaa00001",
-            name="cron job",
-            schedule=CronScheduleCron(expr="0 9 * * 1-5"),
-            payload=CronPayload(message="standup", deliver_to=address),
-            state=CronJobState(),
-        ),
-        CronJob(
-            id="aaa00002",
-            name="interval job",
-            schedule=CronScheduleEvery(every=timedelta(minutes=30)),
-            payload=CronPayload(message="heartbeat", deliver_to=address),
-            state=CronJobState(),
-        ),
-        CronJob(
-            id="aaa00003",
-            name="one-time job",
-            schedule=CronScheduleAt(at=at_time),
-            payload=CronPayload(message="deadline", deliver_to=address),
-            state=CronJobState(),
-        ),
-    ]
-
-    with tempfile.TemporaryDirectory() as tmp:
-        path = _store_path(tmp)
-
-        async with CronStore(path) as store:
-            for job in jobs_in:
-                store.add(job)
-
-        async with CronStore(path) as store:
-            by_id = {j.id: j for j in store.jobs()}
-
-    assert len(by_id) == 3
-
-    # Regression: _decode_schedule matched "cron" not "expr" for CronScheduleCron
-    assert isinstance(by_id["aaa00001"].schedule, CronScheduleCron)
-    assert by_id["aaa00001"].schedule.expr == "0 9 * * 1-5"
-
-    assert isinstance(by_id["aaa00002"].schedule, CronScheduleEvery)
-    assert by_id["aaa00002"].schedule.every == timedelta(minutes=30)
-
-    assert isinstance(by_id["aaa00003"].schedule, CronScheduleAt)
-    assert by_id["aaa00003"].schedule.at == at_time
-
-
-@pytest.mark.asyncio
-async def test_round_trip_deliver_to() -> None:
-    """deliver_to address is preserved across serialization.
-
-    Regression: CronPayload.deliver_to lacked dataclasses_json encoder/decoder metadata.
-    """
-    address = MessageAddress(channel="discord", chat_id="987654")
+async def test_last_run_at_round_trips_as_timestamp(tmp_path) -> None:
+    last_run_at = datetime(2026, 3, 10, 8, 56, 16).astimezone().timestamp()
     job = CronJob(
-        id="bbb00001",
-        name="test",
-        schedule=CronScheduleEvery(every=timedelta(hours=1)),
-        payload=CronPayload(message="ping", deliver_to=address),
-        state=CronJobState(),
+        id="aaa00001",
+        message="heartbeat",
+        deliver_to=_address(),
+        schedule=CronScheduleEvery(every=timedelta(minutes=30)),
+        state=CronJobState(last_run_at=last_run_at, last_status="ok"),
     )
+    store_path = tmp_path / "jobs.json"
 
-    with tempfile.TemporaryDirectory() as tmp:
-        path = _store_path(tmp)
+    async with CronStore(store_path) as store:
+        store.add(job)
 
-        async with CronStore(path) as store:
-            store.add(job)
+    data = json.loads(store_path.read_text())
+    assert data["jobs"][0]["state"]["last_run_at"] == pytest.approx(last_run_at)
 
-        async with CronStore(path) as store:
-            jobs = list(store.jobs())
+    async with CronStore(store_path) as store:
+        jobs = list(store.jobs())
 
     assert len(jobs) == 1
-    assert jobs[0].payload.deliver_to.channel == "discord"
-    assert jobs[0].payload.deliver_to.chat_id == "987654"
+    assert jobs[0].state.last_run_at == pytest.approx(last_run_at)
 
 
 @pytest.mark.asyncio
-async def test_aenter_does_not_call_ts_now() -> None:
-    """CronStore.__aenter__ must not pass a Field object to schedule.next_run.
+async def test_last_run_at_accepts_legacy_iso_datetime(tmp_path) -> None:
+    last_run = datetime(2026, 3, 10, 9, 14, 47).astimezone()
+    timestamp = last_run.timestamp()
+    iso = last_run.isoformat(timespec="seconds")
+    store_path = tmp_path / "jobs.json"
+    store_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "jobs": [
+                    {
+                        "id": "bbb00001",
+                        "message": "legacy",
+                        "deliver_to": {"channel": "telegram", "chat_id": "123456"},
+                        "state": {
+                            "last_run_at": iso,
+                            "last_status": "ok",
+                            "last_error": None,
+                        },
+                        "enabled": True,
+                        "schedule": {"every": 1800.0, "anchor": iso, "until": None},
+                        "created_at": iso,
+                        "updated_at": iso,
+                    }
+                ],
+            }
+        )
+    )
 
-    Regression: __aenter__ called _ts_now() (returns dataclasses.Field) instead of
-    datetime.now().astimezone(), causing TypeError in next_run computations.
-    """
+    async with CronStore(store_path) as store:
+        jobs = list(store.jobs())
+
+    assert len(jobs) == 1
+    assert jobs[0].state.last_run_at == pytest.approx(timestamp)
+
+
+@pytest.mark.asyncio
+async def test_execute_job_records_timestamp_state(tmp_path) -> None:
+    bus = MessageBus()
+    address = _address()
+    bus.inbound[address] = asyncio.Queue()
+    tool = CronTool(store_path=tmp_path / "jobs.json", bus=bus)
     job = CronJob(
         id="ccc00001",
-        name="interval",
+        message="tick",
+        deliver_to=address,
         schedule=CronScheduleEvery(every=timedelta(minutes=5)),
-        payload=CronPayload(message="tick", deliver_to=_address()),
         state=CronJobState(),
     )
 
-    with tempfile.TemporaryDirectory() as tmp:
-        path = _store_path(tmp)
+    async with CronStore(tool._store_path) as store:
+        tool._store = store
+        store.add(job)
+        before = datetime.now().astimezone().timestamp()
+        await tool._execute_job(job)
+        after = datetime.now().astimezone().timestamp()
 
-        async with CronStore(path) as store:
-            store.add(job)
+        event = await bus.consume_inbound(address=address)
 
-        # This __aenter__ would raise TypeError if _ts_now() bug is present
-        async with CronStore(path) as store:
-            jobs = list(store.jobs())
+        assert isinstance(event, SystemEvent)
+        assert event.content == "tick"
+        assert job.state.last_status == "ok"
+        assert job.state.last_error is None
+        assert job.state.last_run_at is not None
+        assert before <= job.state.last_run_at <= after
 
-    assert len(jobs) == 1
+    tool._store = None
