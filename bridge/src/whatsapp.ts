@@ -44,6 +44,7 @@ export interface InboundMessage {
   media_metadata: MediaMetadata[];
   mediaBase64?: string;
   mediaType?: string;
+  summonSource?: 'mention' | 'reply';
 }
 
 export interface WhatsAppClientOptions {
@@ -153,6 +154,11 @@ export class WhatsAppClient {
           media_metadata,
         };
 
+        const summonSource = this.detectSummonSource(msg);
+        if (summonSource) {
+          outMsg.summonSource = summonSource;
+        }
+
         // Download image if present and attach as base64 for Python-side persistence
         if (msg.message?.imageMessage && this.sock) {
           try {
@@ -241,6 +247,29 @@ export class WhatsAppClient {
         content: label,
         media_metadata: [this.mediaPlaceholder(mediaType, message.audioMessage)],
       };
+    }
+
+    return null;
+  }
+
+  private detectSummonSource(msg: any): 'mention' | 'reply' | null {
+    const message = msg.message;
+    if (!message) return null;
+
+    const ext = message.extendedTextMessage;
+    const context = ext?.contextInfo;
+    const botJid = this.sock?.user?.id?.split(':')[0];
+    if (!botJid || !context) return null;
+
+    const mentionedJid = Array.isArray(context.mentionedJid) ? context.mentionedJid : [];
+    if (mentionedJid.some((jid: string) => jid === botJid || jid.startsWith(`${botJid}:`))) {
+      return 'mention';
+    }
+
+    const participant = typeof context.participant === 'string' ? context.participant : '';
+    const hasQuoted = Boolean(context.stanzaId && context.quotedMessage);
+    if (hasQuoted && (participant === botJid || participant.startsWith(`${botJid}:`))) {
+      return 'reply';
     }
 
     return null;

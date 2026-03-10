@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import re
+from datetime import datetime
 
 from loguru import logger
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
+    summon: str = "mention_or_reply"
 from benchclaw.bus import MediaMetadata, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 from benchclaw.utils import get_timestamped_media_dir
@@ -116,6 +118,8 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._bot_user_id: int | None = None
+        self._bot_username: str | None = None
 
     def status(self) -> tuple[bool, str]:
         if self._app:
@@ -163,6 +167,8 @@ class TelegramChannel(BaseChannel):
 
         # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
+        self._bot_user_id = bot_info.id
+        self._bot_username = bot_info.username.lower() if bot_info.username else None
         logger.info(f"Telegram bot @{bot_info.username} connected")
 
         # Start polling (this runs until cancelled)
@@ -285,6 +291,48 @@ class TelegramChannel(BaseChannel):
                         "size_bytes": size_bytes,
                         "saved_at": message.date.isoformat(timespec="seconds"),
                         "source_channel": self.name,
+        summon_source = self._detect_summon_source(message)
+
+                "_summon_source": summon_source,
+                "timestamp": message.date.isoformat(timespec="seconds"),
+            occurred_at=self._message_timestamp(message.date),
+    def _message_timestamp(self, ts: datetime) -> datetime:
+        if ts.tzinfo:
+            return ts.astimezone().replace(tzinfo=None)
+        return ts
+
+    def _detect_summon_source(self, message) -> str | None:
+        if message.chat.type == "private":
+            return None
+
+        if message.reply_to_message and self._bot_user_id:
+            replied = message.reply_to_message.from_user
+            if replied and replied.id == self._bot_user_id:
+                return "reply"
+
+        if not self._bot_username:
+            return None
+
+        entities = []
+        if message.entities:
+            entities.extend(message.entities)
+        if message.caption_entities:
+            entities.extend(message.caption_entities)
+
+        full_text = message.text or message.caption or ""
+        for entity in entities:
+            entity_type = getattr(entity, "type", "")
+            if entity_type == "mention" and full_text:
+                mention_text = full_text[entity.offset : entity.offset + entity.length]
+                if mention_text.lower().lstrip("@") == self._bot_username:
+                    return "mention"
+            if entity_type == "text_mention":
+                mentioned_user = getattr(entity, "user", None)
+                if mentioned_user and self._bot_user_id and mentioned_user.id == self._bot_user_id:
+                    return "mention"
+
+        return None
+
                         "original_name": getattr(media_file, "file_name", None),
                     }
                 )

@@ -10,6 +10,7 @@ from loguru import logger
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
+    summon: str = "mention_or_reply"
 from benchclaw.utils import get_timestamped_media_dir
 
 
@@ -199,6 +200,12 @@ class WhatsAppChannel(BaseChannel):
                     "message_id": data.get("id"),
                     "timestamp": data.get("timestamp"),
                     "is_group": data.get("isGroup", False),
+                    "_summon_source": data.get("summonSource"),
+                occurred_at=(
+                    datetime.fromtimestamp(data["timestamp"])
+                    if isinstance(data.get("timestamp"), (int, float))
+                    else None
+                ),
                     "first_name": data.get("pushName"),
                 },
             )
