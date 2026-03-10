@@ -64,12 +64,8 @@ async def test_write_existing_file_requires_prior_read(tmp_path: Path) -> None:
     tool = WriteFileTool()
     ctx = ToolContext(workspace=tmp_path)
 
-    result = await tool.execute(ctx, path="notes.txt", content="new\n")
-
-    assert result == (
-        "Error: Refusing to modify existing file 'notes.txt' because it has not been read in "
-        "this session. Read it first with read_file."
-    )
+    with pytest.raises(RuntimeError, match="has not been read in this session"):
+        await tool.execute(ctx, path="notes.txt", content="new\n")
 
 
 @pytest.mark.asyncio
@@ -84,11 +80,8 @@ async def test_write_existing_file_fails_if_changed_after_read(tmp_path: Path) -
     assert await read_tool.execute(ctx, path="notes.txt") == "old\n"
     file_path.write_text("externally changed\n", encoding="utf-8")
 
-    result = await write_tool.execute(ctx, path="notes.txt", content="new\n")
-
-    assert result.startswith(
-        "Error: Refusing to modify 'notes.txt' because it changed after it was read."
-    )
+    with pytest.raises(RuntimeError, match="changed after it was read"):
+        await write_tool.execute(ctx, path="notes.txt", content="new\n")
 
 
 @pytest.mark.asyncio

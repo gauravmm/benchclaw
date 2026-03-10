@@ -176,7 +176,30 @@ class CronTool(Tool):
             return self._list_jobs()
         elif action == "remove":
             return self._remove_job(job_id)
-        return f"Unknown action: {action}"
+        raise ValueError(f"Unknown action: {action}")
+
+    def _resolve_schedule(
+        self,
+        every_seconds: int | None,
+        cron_expr: str | None,
+        at: str | None,
+        until_iso: str | None,
+    ) -> CronScheduleEvery | CronScheduleCron | CronScheduleAt:
+        if every_seconds:
+            until = _ensure_aware(datetime.fromisoformat(until_iso)) if until_iso else None
+            return CronScheduleEvery(every=timedelta(seconds=every_seconds), until=until)
+        if cron_expr:
+            return CronScheduleCron(expr=cron_expr)
+        if at:
+            at_dt = _ensure_aware(datetime.fromisoformat(at))
+            if at_dt <= datetime.now().astimezone():
+                raise ValueError(f"'{at}' is in the past")
+            return CronScheduleAt(at=at_dt)
+        raise ValueError("either every_seconds, cron_expr, or at is required")
+
+    def _signal_wakeup(self) -> None:
+        assert self._wakeup is not None
+        self._wakeup.set()
 
     def _add_job(
         self,
@@ -188,24 +211,13 @@ class CronTool(Tool):
         until_iso: str | None = None,
     ) -> str:
         if not message:
-            return "Error: message is required for add"
+            raise ValueError("message is required for add")
         if not address:
-            return "Error: no session context (address)"
+            raise ValueError("no session context (address)")
         if self._store is None:
-            return "Error: cron service not running"
+            raise RuntimeError("cron service not running")
 
-        if every_seconds:
-            until = _ensure_aware(datetime.fromisoformat(until_iso)) if until_iso else None
-            schedule = CronScheduleEvery(every=timedelta(seconds=every_seconds), until=until)
-        elif cron_expr:
-            schedule = CronScheduleCron(expr=cron_expr)
-        elif at:
-            at_dt = _ensure_aware(datetime.fromisoformat(at))
-            if at_dt <= datetime.now().astimezone():
-                return f"Error: '{at}' is in the past"
-            schedule = CronScheduleAt(at=at_dt)
-        else:
-            return "Error: either every_seconds, cron_expr, or at is required"
+        schedule = self._resolve_schedule(every_seconds, cron_expr, at, until_iso)
 
         job = CronJob(
             id=str(uuid.uuid4())[:8],
@@ -214,13 +226,12 @@ class CronTool(Tool):
             schedule=schedule,
         )
         self._store.add(job)
-        assert self._wakeup is not None
-        self._wakeup.set()
+        self._signal_wakeup()
         return f"Created job '{job.id}'"
 
     def _list_jobs(self) -> str:
         if self._store is None:
-            return "Error: cron service not running"
+            raise RuntimeError("cron service not running")
         jobs = self._store.jobs()
         if not jobs:
             return "No scheduled jobs."
@@ -229,11 +240,10 @@ class CronTool(Tool):
 
     def _remove_job(self, job_id: str | None) -> str:
         if not job_id:
-            return "Error: job_id is required for remove"
+            raise ValueError("job_id is required for remove")
         if self._store is None:
-            return "Error: cron service not running"
+            raise RuntimeError("cron service not running")
         if self._store.remove(job_id):
-            assert self._wakeup is not None
-            self._wakeup.set()
+            self._signal_wakeup()
             return f"Removed job {job_id}"
-        return f"Job {job_id} not found"
+        raise KeyError(f"job {job_id} not found")

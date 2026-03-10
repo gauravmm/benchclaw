@@ -93,17 +93,16 @@ class ExecTool(Tool):
         if self.restrict_to_workspace and working_dir and self._workspace_root:
             try:
                 requested = Path(working_dir).resolve()
-                if (
-                    requested != self._workspace_root
-                    and self._workspace_root not in requested.parents
-                ):
-                    return "Error: Command blocked by safety guard (working_dir outside workspace)"
             except Exception:
-                pass
+                requested = None
+            if requested is not None and (
+                requested != self._workspace_root and self._workspace_root not in requested.parents
+            ):
+                raise PermissionError(
+                    "Command blocked by safety guard (working_dir outside workspace)"
+                )
 
-        guard_error = self._guard_command(command, cwd)
-        if guard_error:
-            return guard_error
+        self._guard_command(command, cwd)
 
         try:
             process = await asyncio.create_subprocess_shell(
@@ -117,7 +116,7 @@ class ExecTool(Tool):
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout)
             except asyncio.TimeoutError:
                 process.kill()
-                return f"Error: Command timed out after {self.timeout} seconds"
+                raise TimeoutError(f"Command timed out after {self.timeout} seconds")
 
             output_parts = []
 
@@ -142,24 +141,26 @@ class ExecTool(Tool):
             return result
 
         except Exception as e:
-            return f"Error executing command: {str(e)}"
+            raise RuntimeError(f"Error executing command: {e}") from e
 
-    def _guard_command(self, command: str, cwd: str) -> str | None:
+    def _guard_command(self, command: str, cwd: str) -> None:
         """Best-effort safety guard for potentially destructive commands."""
         cmd = command.strip()
         lower = cmd.lower()
 
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):
-                return "Error: Command blocked by safety guard (dangerous pattern detected)"
+                raise PermissionError(
+                    "Command blocked by safety guard (dangerous pattern detected)"
+                )
 
         if self.allow_patterns:
             if not any(re.search(p, lower) for p in self.allow_patterns):
-                return "Error: Command blocked by safety guard (not in allowlist)"
+                raise PermissionError("Command blocked by safety guard (not in allowlist)")
 
         if self.restrict_to_workspace:
             if "..\\" in cmd or "../" in cmd:
-                return "Error: Command blocked by safety guard (path traversal detected)"
+                raise PermissionError("Command blocked by safety guard (path traversal detected)")
 
             cwd_path = Path(cwd).resolve()
 
@@ -175,9 +176,9 @@ class ExecTool(Tool):
                 except Exception:
                     continue
                 if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
-                    return "Error: Command blocked by safety guard (path outside working dir)"
-
-        return None
+                    raise PermissionError(
+                        "Command blocked by safety guard (path outside working dir)"
+                    )
 
 
 register_tool("exec", ExecTool)

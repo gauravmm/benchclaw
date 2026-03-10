@@ -61,10 +61,10 @@ class MessageTool(Tool):
         target_chat_id = chat_id or (ctx.address.chat_id if ctx.address else "")
 
         if not target_channel or not target_chat_id:
-            return "Error: No target channel/chat specified"
+            raise ValueError("No target channel/chat specified")
 
         if not self._send_callback:
-            return "Error: Message sending not configured"
+            raise RuntimeError("Message sending not configured")
 
         msg = OutboundMessage(
             address=MessageAddress(channel=target_channel, chat_id=target_chat_id),
@@ -75,7 +75,7 @@ class MessageTool(Tool):
             await self._send_callback(msg)
             return f"Message sent to {target_channel}:{target_chat_id}"
         except Exception as e:
-            return f"Error sending message: {str(e)}"
+            raise RuntimeError(f"Error sending message: {e}") from e
 
 
 register_tool("message", MessageTool)

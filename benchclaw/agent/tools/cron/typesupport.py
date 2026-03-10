@@ -34,6 +34,7 @@ def _encode_unix_ts(ts: float | None) -> float | None:
 
 
 def _decode_unix_ts(value: float | int | str | datetime | None) -> float | None:
+    """Decode numeric/legacy datetime inputs into a Unix timestamp."""
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -314,8 +315,9 @@ class CronStore:
                 logger.warning(
                     f"Cron: job '{jid}' was in queue but not in store (ghost entry); skipping"
                 )
-            elif not job.enabled:
+                continue
+            if not job.enabled:
                 logger.debug(f"Cron: job '{jid}' was due but is disabled; skipping")
-            else:
-                due.append(job)
+                continue
+            due.append(job)
         return due

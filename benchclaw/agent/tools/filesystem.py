@@ -37,33 +37,31 @@ def _record_snapshot(ctx: ToolContext, path: Path) -> None:
     ctx.file_snapshots[path] = _make_snapshot(path, path.stat())
 
 
-def _require_fresh_snapshot(ctx: ToolContext, path: Path) -> str | None:
+def _require_fresh_snapshot(ctx: ToolContext, path: Path) -> None:
     """Require that an existing file was read and has not changed since then."""
     display_path = _display_path(path, ctx)
     snapshot = ctx.file_snapshots.get(path)
     if snapshot is None:
-        return (
-            f"Error: Refusing to modify existing file '{display_path}' because it has not been "
+        raise RuntimeError(
+            f"Refusing to modify existing file '{display_path}' because it has not been "
             "read in this session. Read it first with read_file."
         )
 
     try:
         current_stat = path.stat()
     except FileNotFoundError:
-        return (
-            f"Error: Refusing to modify '{display_path}' because it existed when read but no "
+        raise FileNotFoundError(
+            f"Refusing to modify '{display_path}' because it existed when read but no "
             "longer exists. Re-read the file and retry."
         )
 
     if current_stat.st_size != snapshot.size or current_stat.st_mtime_ns != snapshot.mtime_ns:
-        return (
-            f"Error: Refusing to modify '{display_path}' because it changed after it was read. "
+        raise RuntimeError(
+            f"Refusing to modify '{display_path}' because it changed after it was read. "
             f"Expected size={snapshot.size} mtime_ns={snapshot.mtime_ns}, current "
             f"size={current_stat.st_size} mtime_ns={current_stat.st_mtime_ns}. Re-read the "
             "file and retry."
         )
-
-    return None
 
 
 class ReadFileTool(Tool):
@@ -100,18 +98,15 @@ class ReadFileTool(Tool):
         }
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
-        try:
-            file_path = _resolve_path(path, ctx)
-            if not file_path.exists():
-                return f"Error: File not found: {path}"
-            if not file_path.is_file():
-                return f"Error: Not a file: {path}"
+        file_path = _resolve_path(path, ctx)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        if not file_path.is_file():
+            raise ValueError(f"Not a file: {path}")
 
-            content = file_path.read_text(encoding="utf-8")
-            _record_snapshot(ctx, file_path)
-            return content
-        except Exception as e:
-            return f"Error: {e}"
+        content = file_path.read_text(encoding="utf-8")
+        _record_snapshot(ctx, file_path)
+        return content
 
 
 class WriteFileTool(Tool):
@@ -149,21 +144,16 @@ class WriteFileTool(Tool):
         }
 
     async def execute(self, ctx: ToolContext, path: str, content: str, **kwargs: Any) -> str:
-        try:
-            file_path = _resolve_path(path, ctx)
-            if file_path.exists():
-                if not file_path.is_file():
-                    return f"Error: Not a file: {path}"
-                snapshot_error = _require_fresh_snapshot(ctx, file_path)
-                if snapshot_error is not None:
-                    return snapshot_error
+        file_path = _resolve_path(path, ctx)
+        if file_path.exists():
+            if not file_path.is_file():
+                raise ValueError(f"Not a file: {path}")
+            _require_fresh_snapshot(ctx, file_path)
 
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
-            _record_snapshot(ctx, file_path)
-            return "Success"
-        except Exception as e:
-            return f"Error: {e}"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+        _record_snapshot(ctx, file_path)
+        return "Success"
 
 
 class EditFileTool(Tool):
@@ -204,36 +194,30 @@ class EditFileTool(Tool):
     async def execute(
         self, ctx: ToolContext, path: str, old_text: str, new_text: str, **kwargs: Any
     ) -> str:
-        try:
-            file_path = _resolve_path(path, ctx)
-            if not file_path.exists():
-                return f"Error: File not found: {path}"
-            if not file_path.is_file():
-                return f"Error: Not a file: {path}"
+        file_path = _resolve_path(path, ctx)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        if not file_path.is_file():
+            raise ValueError(f"Not a file: {path}")
 
-            snapshot_error = _require_fresh_snapshot(ctx, file_path)
-            if snapshot_error is not None:
-                return snapshot_error
+        _require_fresh_snapshot(ctx, file_path)
 
-            content = file_path.read_text(encoding="utf-8")
+        content = file_path.read_text(encoding="utf-8")
 
-            if old_text not in content:
-                return "Error: old_text not found in file. Make sure it matches exactly."
+        if old_text not in content:
+            raise ValueError("old_text not found in file. Make sure it matches exactly.")
 
-            # Count occurrences
-            count = content.count(old_text)
-            if count > 1:
-                return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
+        count = content.count(old_text)
+        if count > 1:
+            raise ValueError(
+                f"old_text appears {count} times. Please provide more context to make it unique."
+            )
 
-            new_content = content.replace(old_text, new_text, 1)
-            file_path.write_text(new_content, encoding="utf-8")
-            _record_snapshot(ctx, file_path)
+        new_content = content.replace(old_text, new_text, 1)
+        file_path.write_text(new_content, encoding="utf-8")
+        _record_snapshot(ctx, file_path)
 
-            return f"Successfully edited {path}"
-        except PermissionError as e:
-            return f"Error: {e}"
-        except Exception as e:
-            return f"Error editing file: {str(e)}"
+        return f"Successfully edited {path}"
 
 
 class ListDirTool(Tool):
@@ -270,26 +254,21 @@ class ListDirTool(Tool):
         }
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
-        try:
-            dir_path = _resolve_path(path, ctx)
-            if not dir_path.exists():
-                return f"Error: Directory not found: {path}"
-            if not dir_path.is_dir():
-                return f"Error: Not a directory: {path}"
+        dir_path = _resolve_path(path, ctx)
+        if not dir_path.exists():
+            raise FileNotFoundError(f"Directory not found: {path}")
+        if not dir_path.is_dir():
+            raise ValueError(f"Not a directory: {path}")
 
-            items = []
-            for item in sorted(dir_path.iterdir()):
-                prefix = "📁 " if item.is_dir() else "📄 "
-                items.append(f"{prefix}{item.name}")
+        items = []
+        for item in sorted(dir_path.iterdir()):
+            prefix = "📁 " if item.is_dir() else "📄 "
+            items.append(f"{prefix}{item.name}")
 
-            if not items:
-                return f"Directory {path} is empty"
+        if not items:
+            return f"Directory {path} is empty"
 
-            return "\n".join(items)
-        except PermissionError as e:
-            return f"Error: {e}"
-        except Exception as e:
-            return f"Error listing directory: {str(e)}"
+        return "\n".join(items)
 
 
 class GlobTool(Tool):
@@ -339,26 +318,21 @@ class GlobTool(Tool):
         max_results: int = 200,
         **kwargs: Any,
     ) -> str:
-        try:
-            root = _resolve_path(path, ctx)
-            if not root.exists():
-                return f"Error: Directory not found: {path}"
-            if not root.is_dir():
-                return f"Error: Not a directory: {path}"
+        root = _resolve_path(path, ctx)
+        if not root.exists():
+            raise FileNotFoundError(f"Directory not found: {path}")
+        if not root.is_dir():
+            raise ValueError(f"Not a directory: {path}")
 
-            matches = sorted(root.glob(pattern))
-            if not matches:
-                return f"No paths matched pattern: {pattern}"
+        matches = sorted(root.glob(pattern))
+        if not matches:
+            return f"No paths matched pattern: {pattern}"
 
-            limited_matches = matches[:max_results]
-            lines = [_display_path(match, ctx) for match in limited_matches]
-            if len(matches) > max_results:
-                lines.append(f"... and {len(matches) - max_results} more")
-            return "\n".join(lines)
-        except PermissionError as e:
-            return f"Error: {e}"
-        except Exception as e:
-            return f"Error matching glob: {str(e)}"
+        limited_matches = matches[:max_results]
+        lines = [_display_path(match, ctx) for match in limited_matches]
+        if len(matches) > max_results:
+            lines.append(f"... and {len(matches) - max_results} more")
+        return "\n".join(lines)
 
 
 class GrepTool(Tool):
@@ -426,46 +400,40 @@ class GrepTool(Tool):
         max_results: int = 200,
         **kwargs: Any,
     ) -> str:
-        try:
-            target = _resolve_path(path, ctx)
-            if not target.exists():
-                return f"Error: Path not found: {path}"
+        target = _resolve_path(path, ctx)
+        if not target.exists():
+            raise FileNotFoundError(f"Path not found: {path}")
 
+        try:
             flags = 0 if case_sensitive else re.IGNORECASE
             matcher = re.compile(pattern if is_regex else re.escape(pattern), flags)
-
-            if target.is_file():
-                files = [target]
-            else:
-                files = [
-                    candidate
-                    for candidate in sorted(target.rglob(file_pattern))
-                    if candidate.is_file()
-                ]
-
-            results: list[str] = []
-            for file_path in files:
-                try:
-                    lines = file_path.read_text(encoding="utf-8").splitlines()
-                except UnicodeDecodeError:
-                    continue
-
-                for line_number, line in enumerate(lines, start=1):
-                    if matcher.search(line):
-                        results.append(f"{_display_path(file_path, ctx)}:{line_number}: {line}")
-                        if len(results) >= max_results:
-                            return "\n".join(results)
-
-            if not results:
-                return f"No matches found for pattern: {pattern}"
-
-            return "\n".join(results)
         except re.error as e:
-            return f"Error: Invalid regular expression: {e}"
-        except PermissionError as e:
-            return f"Error: {e}"
-        except Exception as e:
-            return f"Error searching files: {str(e)}"
+            raise ValueError(f"Invalid regular expression: {e}") from e
+
+        if target.is_file():
+            files = [target]
+        else:
+            files = [
+                candidate for candidate in sorted(target.rglob(file_pattern)) if candidate.is_file()
+            ]
+
+        results: list[str] = []
+        for file_path in files:
+            try:
+                lines = file_path.read_text(encoding="utf-8").splitlines()
+            except UnicodeDecodeError:
+                continue
+
+            for line_number, line in enumerate(lines, start=1):
+                if matcher.search(line):
+                    results.append(f"{_display_path(file_path, ctx)}:{line_number}: {line}")
+                    if len(results) >= max_results:
+                        return "\n".join(results)
+
+        if not results:
+            return f"No matches found for pattern: {pattern}"
+
+        return "\n".join(results)
 
 
 register_tool("read_file", ReadFileTool)

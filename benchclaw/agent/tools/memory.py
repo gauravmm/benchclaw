@@ -114,13 +114,13 @@ class MemoryTool(Tool):
 
         if action == "write":
             if not tag:
-                return "Error: tag is required for write"
+                raise ValueError("tag is required for write")
             if not content:
-                return "Error: content is required for write"
+                raise ValueError("content is required for write")
             self._store.write(tag, content)
             return f"Memory '{tag}' updated"
 
-        return f"Unknown action: {action}"
+        raise ValueError(f"Unknown action: {action}")
 
 
 class LogStore:
@@ -191,7 +191,7 @@ class LogStore:
         try:
             pattern = re.compile(query, re.IGNORECASE)
         except re.error as e:
-            return f"Error: invalid regex: {e}"
+            raise ValueError(f"invalid regex: {e}") from e
         matches = [self._fmt(e) for e in self._buffer if pattern.search(e.get("content", ""))]
         return "\n".join(matches) if matches else f"No matches for: {query}"
 
@@ -258,16 +258,16 @@ class LogTool(Tool):
     ) -> str:
         if action == "append":
             if not content:
-                return "Error: content is required for append"
+                raise ValueError("content is required for append")
             self._store.append(content)
             return "Logged."
 
         if action == "search":
             if not query:
-                return "Error: query is required for search"
+                raise ValueError("query is required for search")
             return self._store.search(query)
 
-        return f"Unknown action: {action}"
+        raise ValueError(f"Unknown action: {action}")
 
 
 register_tool("memory", MemoryTool)

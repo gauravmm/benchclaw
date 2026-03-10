@@ -97,7 +97,7 @@ class WebSearchTool(Tool):
         self, ctx: ToolContext, query: str, count: int | None = None, **kwargs: Any
     ) -> str:
         if not self.api_key:
-            return "Error: tools.web_search.api_key not configured"
+            raise RuntimeError("tools.web_search.api_key not configured")
 
         try:
             n = min(max(count or self.max_results, 1), 10)
@@ -121,7 +121,7 @@ class WebSearchTool(Tool):
                     lines.append(f"   {desc}")
             return "\n".join(lines)
         except Exception as e:
-            return f"Error: {e}"
+            raise RuntimeError(str(e)) from e
 
 
 class WebFetchTool(Tool):
@@ -175,7 +175,7 @@ class WebFetchTool(Tool):
         # Validate URL before fetching
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
-            return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url})
+            raise ValueError(f"URL validation failed: {error_msg}")
 
         try:
             async with httpx.AsyncClient(
@@ -218,7 +218,7 @@ class WebFetchTool(Tool):
                 }
             )
         except Exception as e:
-            return json.dumps({"error": str(e), "url": url})
+            raise RuntimeError(str(e)) from e
 
     def _to_markdown(self, html: str) -> str:
         """Convert HTML to markdown."""

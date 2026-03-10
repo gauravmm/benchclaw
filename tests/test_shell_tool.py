@@ -15,10 +15,8 @@ async def test_exec_blocks_working_dir_outside_workspace(tmp_path: Path) -> None
     ctx = ToolContext(workspace=tmp_path)
     tool = ExecTool.build(ExecToolConfig(restrict_to_workspace=True), ctx)
 
-    result = await tool.execute(ctx, command="echo hi", working_dir=str(outside))
-
-    assert result.startswith("Error:")
-    assert "workspace" in result.lower() or "outside" in result.lower()
+    with pytest.raises(PermissionError, match="outside workspace"):
+        await tool.execute(ctx, command="echo hi", working_dir=str(outside))
 
 
 @pytest.mark.asyncio
@@ -39,10 +37,8 @@ async def test_exec_blocks_absolute_path_outside_workspace(tmp_path: Path) -> No
     ctx = ToolContext(workspace=tmp_path)
     tool = ExecTool.build(ExecToolConfig(restrict_to_workspace=True), ctx)
 
-    result = await tool.execute(ctx, command="cat /etc/hosts")
-
-    assert result.startswith("Error:")
-    assert "safety guard" in result.lower() or "workspace" in result.lower()
+    with pytest.raises(PermissionError, match="safety guard"):
+        await tool.execute(ctx, command="cat /etc/hosts")
 
 
 @pytest.mark.asyncio
@@ -64,6 +60,5 @@ async def test_exec_default_config_restricts_to_workspace(tmp_path: Path) -> Non
 
     assert tool.restrict_to_workspace is True
 
-    result = await tool.execute(ctx, command="echo hi", working_dir=str(tmp_path.parent))
-
-    assert result.startswith("Error:")
+    with pytest.raises(PermissionError, match="outside workspace"):
+        await tool.execute(ctx, command="echo hi", working_dir=str(tmp_path.parent))
