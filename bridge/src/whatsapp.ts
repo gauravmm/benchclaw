@@ -39,6 +39,7 @@ export interface InboundMessage {
   pn: string;
   pushName?: string;
   senderName?: string;
+  nameCache?: Record<string, string>;
   mentionNames?: Record<string, string>;
   content: string;
   timestamp: number;
@@ -159,6 +160,7 @@ export class WhatsAppClient {
           || undefined;
         const senderName = await this.resolveDisplayName(senderJid, groupJid);
         const mentionNames = await this.resolveMentionNames(context.mentionedJids, groupJid);
+        const nameCache = await this.buildNameCache(groupJid);
         const botJids = [
           typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
           typeof this.sock?.user?.lid === 'string' ? this.sock.user.lid : undefined,
@@ -170,6 +172,7 @@ export class WhatsAppClient {
           pn: msg.key.remoteJidAlt || '',
           pushName: msg.pushName || undefined,
           senderName: senderName || undefined,
+          nameCache: Object.keys(nameCache).length ? nameCache : undefined,
           mentionNames: Object.keys(mentionNames).length ? mentionNames : undefined,
           content,
           timestamp: msg.messageTimestamp as number,
@@ -302,6 +305,23 @@ export class WhatsAppClient {
     for (const jid of mentionedJids) {
       const name = await this.resolveDisplayName(jid, groupJid);
       result[jid] = name || this.jidKeys(jid)[0]?.split('@', 1)[0] || jid;
+    }
+    return result;
+  }
+
+  private async buildNameCache(groupJid: string | undefined): Promise<Record<string, string>> {
+    if (groupJid?.endsWith('@g.us')) {
+      await this.populateGroupParticipantNames(groupJid);
+    }
+
+    const result: Record<string, string> = {};
+    for (const [key, value] of this.contactsByJid.entries()) {
+      result[key] = value;
+    }
+    for (const names of this.groupParticipantNames.values()) {
+      for (const [key, value] of names.entries()) {
+        result[key] = value;
+      }
     }
     return result;
   }

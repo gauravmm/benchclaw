@@ -49,6 +49,7 @@ class _BridgeMessageEvent(_BridgeModel):
     isGroup: bool = False  # noqa: N815
     pushName: str | None = None  # noqa: N815
     senderName: str | None = None  # noqa: N815
+    nameCache: dict[str, str] | None = None  # noqa: N815
     mediaMetadata: list[_BridgeMediaMetadata] = Field(default_factory=list)  # noqa: N815
     mediaBase64: str | None = None  # noqa: N815
     mediaType: str | None = None  # noqa: N815
@@ -320,12 +321,38 @@ class WhatsAppChannel(BaseChannel):
     def _jid_localpart(raw: str) -> str:
         return raw.strip().lower().partition("@")[0].split(":", 1)[0]
 
+    def resolve_person_name(self, person_id: str, payload: dict[str, Any]) -> str | None:
+        if not person_id:
+            return None
+        name_cache = payload.get("nameCache")
+        if not isinstance(name_cache, dict):
+            return None
+
+        candidates = [
+            person_id,
+            self._normalize_jid(person_id),
+            self._jid_localpart(person_id),
+        ]
+        for candidate in candidates:
+            value = name_cache.get(candidate)
+            if isinstance(value, str):
+                value = value.strip()
+                if value:
+                    return value
+        return None
+
     def _bot_name(self, payload: dict[str, Any]) -> str | None:
         config_name = self.config.bot_name
         if isinstance(config_name, str):
             config_name = config_name.strip()
             if config_name:
                 return config_name
+        raw_bot_jids = payload.get("botJids")
+        if isinstance(raw_bot_jids, list):
+            for item in raw_bot_jids:
+                if isinstance(item, str):
+                    if resolved := self.resolve_person_name(item, payload):
+                        return resolved
         return None
 
     def _replace_mentions(self, content: str, payload: dict[str, Any]) -> str:

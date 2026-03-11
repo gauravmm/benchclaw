@@ -364,6 +364,31 @@ async def test_whatsapp_bridge_rewrites_bot_id_mentions_to_bot_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_whatsapp_bridge_uses_name_cache_for_bot_name() -> None:
+    bus = MessageBus()
+    channel = WhatsAppChannel(WhatsAppConfig(), bus, media_repo=None)
+    payload = {
+        "type": "message",
+        "id": "m4b",
+        "chatId": "12345-681@g.us",
+        "content": "hello @38818635882692",
+        "timestamp": 1_700_000_035,
+        "isGroup": True,
+        "botJids": ["38818635882692@lid"],
+        "nameCache": {"38818635882692@lid": "benchbot"},
+        "mentionNames": {"38818635882692@lid": "benchbot"},
+    }
+
+    await channel._handle_bridge_message(json.dumps(payload))
+
+    address = MessageAddress(channel="whatsapp", chat_id=str(payload["chatId"]))
+    msg = await bus.consume_inbound(address=address)
+    assert isinstance(msg, InboundMessage)
+    assert msg.content == "hello @benchbot"
+    assert msg.metadata["bot_name"] == "benchbot"
+
+
+@pytest.mark.asyncio
 async def test_whatsapp_bridge_rewrites_all_resolved_mentions_to_names() -> None:
     bus = MessageBus()
     channel = WhatsAppChannel(
