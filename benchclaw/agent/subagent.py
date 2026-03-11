@@ -199,7 +199,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
             content=announce_content,
         )
 
-        await self.bus.publish_inbound(msg)
+        await self.bus.publish_inbound(msg.address, msg)
         logger.debug(f"Subagent [{task_id}] announced result to {origin_chat_id}")
 
     def _build_subagent_prompt(self, task: str) -> str:

@@ -222,16 +222,13 @@ async def test_allow_from_still_applies_before_publish() -> None:
 
 
 @pytest.mark.asyncio
-async def test_message_bus_publish_inbound_accepts_zero_or_more() -> None:
+async def test_message_bus_publish_inbound_accepts_one_or_more() -> None:
     bus = MessageBus()
     address = MessageAddress(channel="dummy", chat_id="c1")
 
-    await bus.publish_inbound()
-    assert bus.inbound == {}
-
     m1 = InboundMessage(address=address, sender_id="u1", content="first", timestamp=_ts(0))
     m2 = InboundMessage(address=address, sender_id="u2", content="second", timestamp=_ts(1))
-    await bus.publish_inbound(m1, m2)
+    await bus.publish_inbound(address, m1, m2)
 
     first = await bus.consume_inbound(address=address)
     second = await bus.consume_inbound(address=address)

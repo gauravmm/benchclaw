@@ -182,4 +182,5 @@ class BaseChannel(AsyncContextManagerMixin):
             metadata=metadata,
             timestamp=timestamp,
         )
-        await self.bus.publish_inbound(*inbound)
+        if inbound:
+            await self.bus.publish_inbound(inbound[0].address, *inbound)

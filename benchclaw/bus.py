@@ -112,6 +112,18 @@ class TypingEvent:
 AddressEvent = InboundMessage | ToolResultEvent | SystemEvent
 
 
+@dataclass
+class InboundMessageBatch:
+    """A drained batch of inbound events, sorted by type."""
+
+    tool_results: list[ToolResultEvent] = field(default_factory=list)
+    system_events: list[SystemEvent] = field(default_factory=list)
+    user_messages: list[InboundMessage] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.tool_results or self.system_events or self.user_messages)
+
+
 class MessageBus:
     """
     Async message bus that decouples chat channels from the agent core.
@@ -124,11 +136,12 @@ class MessageBus:
     receives the next message regardless of which chat it came from.
 
     Usage:
-        await bus.publish_inbound(msg)              # enqueues one InboundMessage
-        await bus.publish_inbound(msg1, msg2, ...)  # enqueues multiple InboundMessages
-        await bus.publish_tool_result(addr, event)  # enqueues ToolResultEvent to addr queue
-        await bus.consume_inbound(address=addr)     # next AddressEvent for that address
-        new_addrs = bus.subscribe_new_addresses()   # Queue[MessageAddress] of new addresses
+        await bus.publish_inbound(addr, msg)              # enqueues one InboundMessage
+        await bus.publish_inbound(addr, msg1, msg2, ...)  # enqueues multiple
+        await bus.publish_inbound(addr, tool_result)      # enqueues ToolResultEvent
+        await bus.publish_inbound(addr, system_event)     # enqueues SystemEvent
+        await bus.consume_inbound(address=addr)           # next AddressEvent for that address
+        new_addrs = bus.subscribe_new_addresses()         # Queue[MessageAddress] of new addresses
 
         await bus.publish_outbound(msg)             # enqueues to msg.channel queue
         await bus.consume_outbound(channel="x")     # next message for channel x
@@ -150,34 +163,46 @@ class MessageBus:
         self._address_subscribers.append(q)
         return q
 
-    async def publish_inbound(self, *msgs: InboundMessage) -> None:
-        """Publish zero or more user messages from channels to the agent.
+    async def publish_inbound(self, addr: MessageAddress, *events: AddressEvent) -> None:
+        """Publish one or more events to an address's inbound queue.
 
         Creates a new per-address queue on first use and notifies all subscribers.
         No lock needed: asyncio is single-threaded so the check-then-set is atomic.
         """
-        for msg in msgs:
-            if msg.address not in self.inbound:
-                self.inbound[msg.address] = asyncio.Queue()
-                for sub in self._address_subscribers:
-                    sub.put_nowait(msg.address)
-            await self.inbound[msg.address].put(msg)
-
-    async def publish_tool_result(self, addr: MessageAddress, event: ToolResultEvent) -> None:
-        """Post a completed tool result to an existing per-address queue."""
-        await self.inbound[addr].put(event)
-
-    async def publish_system_event(self, addr: MessageAddress, event: SystemEvent) -> None:
-        """Post a system event to an existing per-address queue."""
-        await self.inbound[addr].put(event)
+        if addr not in self.inbound:
+            self.inbound[addr] = asyncio.Queue()
+            for sub in self._address_subscribers:
+                sub.put_nowait(addr)
+        for event in events:
+            await self.inbound[addr].put(event)
 
     async def consume_inbound(self, *, address: MessageAddress) -> AddressEvent:
         """Consume the next inbound event for the given address (blocks until available)."""
         return await self.inbound[address].get()
 
-    async def publish_typing(self, event: TypingEvent) -> None:
-        """Enqueue a typing state change into the channel's outbound queue."""
-        await self.publish_outbound(event)
+    async def consume_inbound_batch(self, *, address: MessageAddress) -> InboundMessageBatch:
+        """Block until at least one inbound event is available, then drain the queue.
+
+        Returns an InboundMessageBatch with events sorted into tool_results,
+        system_events, and user_messages. Raises TypeError on unknown event types.
+        """
+        events: list[AddressEvent] = [await self.inbound[address].get()]
+        try:
+            while True:
+                events.append(self.inbound[address].get_nowait())
+        except asyncio.QueueEmpty:
+            pass
+
+        batch = InboundMessageBatch()
+        for event in events:
+            match event:
+                case ToolResultEvent():
+                    batch.tool_results.append(event)
+                case SystemEvent():
+                    batch.system_events.append(event)
+                case InboundMessage():
+                    batch.user_messages.append(event)
+        return batch
 
     async def publish_outbound(self, msg: OutboundMessage | TypingEvent) -> None:
         """Enqueue a response or typing event into the channel's outbound queue, creating it if needed."""

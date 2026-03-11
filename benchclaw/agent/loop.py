@@ -21,7 +21,6 @@ from benchclaw.bus import (
     MessageAddress,
     MessageBus,
     OutboundMessage,
-    SystemEvent,
     ToolResultEvent,
     TypingEvent,
 )
@@ -123,7 +122,7 @@ class AgentLoop:
        messages (InboundMessage) and background tool results (ToolResultEvent)
     3. Calls the LLM whenever there is something to process
     4. Dispatches tool calls as background asyncio tasks; results are posted
-       back via bus.publish_tool_result() when done
+       back via bus.publish_inbound() when done
     5. Sends final responses back via the bus
     """
 
@@ -170,7 +169,7 @@ class AgentLoop:
             result = "Cancelled."
         except Exception as e:
             result = f"Error executing {tc.name}: {e}"
-        await self.bus.publish_tool_result(
+        await self.bus.publish_inbound(
             addr,
             ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
         )
@@ -227,6 +226,29 @@ class AgentLoop:
             b64 = base64.b64encode(p.read_bytes()).decode()
             blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
         return blocks
+
+    @staticmethod
+    def _merge_user_messages(messages: list[InboundMessage]) -> InboundMessage:
+        """Merge a batch of user messages into one.
+
+        A single message is returned as-is. Multiple messages are combined with
+        per-sender attribution, using the first message's address and metadata.
+        """
+        if len(messages) == 1:
+            return messages[0]
+        parts = [f"[{m.sender_id}] {m.content}" for m in messages if m.content]
+        media = [path for m in messages for path in m.media]
+        media_metadata = [mm for m in messages for mm in m.media_metadata]
+        first = messages[0]
+        return InboundMessage(
+            address=first.address,
+            sender_id=first.sender_id,
+            content="\n".join(parts),
+            timestamp=first.timestamp,
+            media=media,
+            media_metadata=media_metadata,
+            metadata=first.metadata,
+        )
 
     @staticmethod
     def _extract_image_captions(content: str) -> tuple[str, dict[str, str]]:
@@ -455,49 +477,56 @@ class AgentLoop:
 
         while True:
             if not tracker.pending:
-                await self.bus.publish_typing(TypingEvent(addr, is_typing=False))
+                await self.bus.publish_outbound(TypingEvent(addr, is_typing=False))
 
-            event = await self.bus.consume_inbound(address=addr)
+            batch = await self.bus.consume_inbound_batch(address=addr)
+            needs_llm = False
 
-            if isinstance(event, InboundMessage):
-                await self.bus.publish_typing(TypingEvent(addr, is_typing=True))
-                if tracker.pending:
-                    tracker.handle_interrupt(session)
-
-                preview = event.content[:80] + "..." if len(event.content) > 80 else event.content
-                logger.info(f"Processing message from {addr}: {preview}")
-                # Flush any system events that arrived while tools were running
+            # 1. Tool results (in received order; cross-batch hazard impossible since
+            #    AgentLoop is unique per address and the queue is FIFO).
+            for result in batch.tool_results:
+                tracker.handle_result(result, session)
+            if batch.tool_results and not tracker.pending:
                 for content in pending_system_events:
                     session.live_messages.append({"role": "system", "content": content})
                 pending_system_events.clear()
-                session.add_message(
-                    "user",
-                    event.content,
-                    sender_id=event.sender_id,
-                    media=event.media,
-                    media_metadata=event.media_metadata,
-                    metadata=event.metadata,
-                )
-                pending_images = list(event.media)
-                iteration_count = 0
+                needs_llm = True
 
-            elif isinstance(event, SystemEvent):
+            # 2. System events — buffer if tools are still in flight.
+            for event in batch.system_events:
                 if tracker.pending:
-                    # A tool call is in flight; inserting a system message now would
-                    # create an assistant-tool-call with no result, confusing the LLM.
-                    # Buffer and inject after all results land.
                     logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
                     pending_system_events.append(event.content)
-                    continue
-                session.live_messages.append({"role": "system", "content": event.content})
+                else:
+                    session.live_messages.append({"role": "system", "content": event.content})
+                    needs_llm = True
 
-            elif isinstance(event, ToolResultEvent):
-                if not tracker.handle_result(event, session):
-                    continue  # still waiting for other tools in this batch
-                # All tools done — inject any system events that arrived during the wait
+            # 3. User messages — merge into one turn, interrupt any in-flight tools.
+            if batch.user_messages:
+                await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
+                if tracker.pending:
+                    tracker.handle_interrupt(session)
                 for content in pending_system_events:
                     session.live_messages.append({"role": "system", "content": content})
                 pending_system_events.clear()
+
+                msg = self._merge_user_messages(batch.user_messages)
+                preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
+                logger.info(f"Processing message from {addr}: {preview}")
+                session.add_message(
+                    "user",
+                    msg.content,
+                    sender_id=msg.sender_id,
+                    media=msg.media,
+                    media_metadata=msg.media_metadata,
+                    metadata=msg.metadata,
+                )
+                pending_images = list(msg.media)
+                iteration_count = 0
+                needs_llm = True
+
+            if not needs_llm:
+                continue
 
             # Check if the iterations have maxed out.
             if iteration_count >= self.config.max_tool_iterations:
