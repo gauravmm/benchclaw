@@ -108,8 +108,18 @@ class TypingEvent:
     is_typing: bool  # True = start indicator, False = stop
 
 
+@dataclass(frozen=True)
+class AttentionEvent:
+    """Attention (awake/asleep) state change for one address."""
+
+    address: MessageAddress
+    awake: bool  # True = just became awake, False = just went asleep
+
+
 # All events that flow through bus.inbound[addr]
 AddressEvent = InboundMessage | ToolResultEvent | SystemEvent
+# All events that flow through bus.outbound[channel]
+OutboundEvent = OutboundMessage | TypingEvent | AttentionEvent
 
 
 @dataclass
@@ -150,7 +160,7 @@ class MessageBus:
     def __init__(self):
         self.inbound: dict[MessageAddress, asyncio.Queue[AddressEvent]] = {}
         self._address_subscribers: list[asyncio.Queue[MessageAddress]] = []
-        self.outbound: dict[str, asyncio.Queue[OutboundMessage | TypingEvent]] = {}
+        self.outbound: dict[str, asyncio.Queue[OutboundEvent]] = {}
         self._channel_created = asyncio.Condition()
 
     def subscribe_new_addresses(self) -> asyncio.Queue[MessageAddress]:
@@ -204,7 +214,7 @@ class MessageBus:
                     batch.user_messages.append(event)
         return batch
 
-    async def publish_outbound(self, msg: OutboundMessage | TypingEvent) -> None:
+    async def publish_outbound(self, msg: OutboundEvent) -> None:
         """Enqueue a response or typing event into the channel's outbound queue, creating it if needed."""
         ch = msg.address.channel
         if ch not in self.outbound:
@@ -218,7 +228,7 @@ class MessageBus:
                     self._channel_created.notify_all()
         await self.outbound[ch].put(msg)
 
-    async def consume_outbound(self, *, channel: str) -> OutboundMessage | TypingEvent:
+    async def consume_outbound(self, *, channel: str) -> OutboundEvent:
         """Block until the next outbound event for the given channel is available.
 
         If the channel queue does not exist yet, waits until it is created by
