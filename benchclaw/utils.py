@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import math
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, TypeAlias
 
 import jsonlines
 from pydantic import BeforeValidator, PlainSerializer
 from pytimeparse.timeparse import timeparse
+
+from benchclaw.bus import MessageAddress
 
 
 def read_jsonl(path: Path) -> list[Any]:
@@ -76,8 +78,71 @@ def parse_duration(value: timedelta | int | float | str, positive: bool = True) 
     return result
 
 
+def format_duration(delta: timedelta) -> str:
+    """Format duration in compact human-readable form (e.g. 30m, 2h, 45s)."""
+    total_seconds = delta.total_seconds()
+    if total_seconds.is_integer():
+        seconds = int(total_seconds)
+        if seconds % 3600 == 0:
+            return f"{seconds // 3600}h"
+        if seconds % 60 == 0:
+            return f"{seconds // 60}m"
+        return f"{seconds}s"
+    return f"{total_seconds}s"
+
+
 DurationField: TypeAlias = Annotated[
     timedelta,
     BeforeValidator(parse_duration),
-    PlainSerializer(str),
+    PlainSerializer(format_duration),
+]
+
+
+def _encode_timestamp(dt: datetime | None) -> str | None:
+    return None if dt is None else dt.astimezone().isoformat(timespec="seconds")
+
+
+def _parse_timestamp(value: datetime | str) -> datetime:
+    """Parse datetime/ISO string and force it to an aware datetime in system timezone."""
+    if isinstance(value, datetime):
+        return value.astimezone()
+    return datetime.fromisoformat(value).astimezone()
+
+
+def parse_optional_timestamp(value: datetime | str | None) -> datetime | None:
+    """Parse an optional timestamp into an aware datetime in system timezone."""
+    if value is None:
+        return None
+    return _parse_timestamp(value)
+
+
+TimestampSerializer: TypeAlias = Annotated[
+    datetime,
+    BeforeValidator(_parse_timestamp),
+    PlainSerializer(_encode_timestamp),
+]
+
+
+OptionalTimestampSerializer: TypeAlias = Annotated[
+    datetime | None,
+    BeforeValidator(parse_optional_timestamp),
+    PlainSerializer(_encode_timestamp),
+]
+
+
+def parse_optional_message_address(value: MessageAddress | dict | None) -> MessageAddress | None:
+    """Parse optional MessageAddress from object/dict form."""
+    if value is None or isinstance(value, MessageAddress):
+        return value
+    return MessageAddress(**value)
+
+
+def _encode_message_address(value: MessageAddress | None) -> dict | None:
+    return None if value is None else {"channel": value.channel, "chat_id": value.chat_id}
+
+
+MessageAddressField: TypeAlias = Annotated[
+    MessageAddress | None,
+    BeforeValidator(parse_optional_message_address),
+    PlainSerializer(_encode_message_address),
 ]

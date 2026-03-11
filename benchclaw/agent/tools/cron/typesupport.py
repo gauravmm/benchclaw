@@ -1,69 +1,31 @@
 """Cron types."""
 
 import math
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Literal
+from typing import Iterable, Literal
 
-from dataclasses_json import DataClassJsonMixin, config
 from heapdict import heapdict
 from loguru import logger
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
-from benchclaw.bus import MessageAddress
-from benchclaw.utils import DurationField
-
-if TYPE_CHECKING:
-    pass
-
-
-def _encode_ts(dt: datetime | None) -> str | None:
-    return None if dt is None else dt.astimezone().isoformat(timespec="seconds")
-
-
-def _ensure_aware(dt: datetime) -> datetime:
-    """Return dt with timezone; assumes system timezone if naive."""
-    return dt if dt.tzinfo is not None else dt.astimezone()
+from benchclaw.utils import (
+    DurationField,
+    MessageAddressField,
+    OptionalTimestampSerializer,
+    TimestampSerializer,
+    format_duration,
+)
 
 
-def _decode_ts(s: str | None) -> datetime | None:
-    return None if s is None else _ensure_aware(datetime.fromisoformat(s))
+class CronModel(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-def _encode_unix_ts(ts: float | None) -> float | None:
-    return ts
-
-
-def _decode_unix_ts(value: float | int | str | datetime | None) -> float | None:
-    """Decode numeric/legacy datetime inputs into a Unix timestamp."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return _ensure_aware(value).timestamp()
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return _ensure_aware(datetime.fromisoformat(value)).timestamp()
-    return float(value)
-
-
-def _ts(default: datetime | None = None):
-    return field(default=default, metadata=config(encoder=_encode_ts, decoder=_decode_ts))
-
-
-def _ts_now():
-    return field(
-        default_factory=lambda: datetime.now().astimezone(),
-        metadata=config(encoder=_encode_ts, decoder=_decode_ts),
-    )
-
-
-@dataclass
-class CronScheduleAt(DataClassJsonMixin):
+class CronScheduleAt(CronModel):
     """Run once at a specific datetime."""
 
-    at: datetime | None = _ts()
+    at: OptionalTimestampSerializer = None
 
     def next_run(self, dt: datetime) -> datetime | None:
         return self.at if self.at and self.at > dt else None
@@ -72,13 +34,12 @@ class CronScheduleAt(DataClassJsonMixin):
         return f"at {self.at.isoformat(timespec='seconds') if self.at else 'never'}"
 
 
-@dataclass
-class CronScheduleEvery(DataClassJsonMixin):
+class CronScheduleEvery(CronModel):
     """Run repeatedly with a fixed interval, anchored to a starting time."""
 
-    every: DurationField = timedelta(hours=1)
-    anchor: datetime = _ts_now()
-    until: datetime | None = _ts()
+    every: DurationField = Field(default_factory=lambda: timedelta(hours=1))
+    anchor: TimestampSerializer = Field(default_factory=lambda: datetime.now().astimezone())
+    until: OptionalTimestampSerializer = None
 
     def next_run(self, dt: datetime) -> datetime | None:
         if self.every <= timedelta(0):
@@ -91,20 +52,13 @@ class CronScheduleEvery(DataClassJsonMixin):
         return t
 
     def __str__(self) -> str:
-        s = int(self.every.total_seconds())
-        if s % 3600 == 0:
-            base = f"every {s // 3600}h"
-        elif s % 60 == 0:
-            base = f"every {s // 60}m"
-        else:
-            base = f"every {s}s"
+        base = f"every {format_duration(self.every)}"
         if self.until is not None:
             return f"{base} until {self.until.strftime('%Y-%m-%d %H:%M')}"
         return base
 
 
-@dataclass
-class CronScheduleCron(DataClassJsonMixin):
+class CronScheduleCron(CronModel):
     """Run on a cron expression schedule."""
 
     expr: str = ""  # required; empty string is invalid
@@ -131,70 +85,52 @@ class CronScheduleCron(DataClassJsonMixin):
 CronSchedule = CronScheduleAt | CronScheduleEvery | CronScheduleCron
 
 
-def _encode_schedule(s: CronScheduleAt | CronScheduleEvery | CronScheduleCron) -> dict:
-    return s.to_dict()
-
-
-def _decode_schedule(d: dict) -> CronScheduleAt | CronScheduleEvery | CronScheduleCron:
-    if "at" in d:
-        return CronScheduleAt.from_dict(d)
-    if "every" in d:
-        return CronScheduleEvery.from_dict(d)
-    if "expr" in d:
-        return CronScheduleCron.from_dict(d)
-    raise ValueError(f"Unknown schedule kind: {', '.join(d.keys())}")
-
-
-def _encode_address(addr: "MessageAddress | None") -> dict | None:
-    return None if addr is None else {"channel": addr.channel, "chat_id": addr.chat_id}
-
-
-def _decode_address(d: dict | None) -> "MessageAddress | None":
-    if d is None:
-        return None
-    from benchclaw.bus import MessageAddress
-
-    return MessageAddress(**d)
-
-
-@dataclass
-class CronJobState(DataClassJsonMixin):
+class CronJobState(CronModel):
     """Runtime state of a job."""
 
-    last_run_at: float | None = field(
-        default=None,
-        metadata=config(encoder=_encode_unix_ts, decoder=_decode_unix_ts),
-    )
+    last_run_at: OptionalTimestampSerializer = None
     last_status: Literal["ok", "error", "skipped"] | None = None
     last_error: str | None = None
 
 
-@dataclass
-class CronJob(DataClassJsonMixin):
+class CronJob(CronModel):
     """A scheduled job."""
 
     id: str
     message: str
-    deliver_to: MessageAddress = field(
-        default=None,  # type: ignore[assignment]
-        metadata=config(encoder=_encode_address, decoder=_decode_address),
-    )
-    state: CronJobState = field(default_factory=CronJobState)
+    deliver_to: MessageAddressField = None
+    state: CronJobState = Field(default_factory=CronJobState)
     enabled: bool = True
-    schedule: CronScheduleAt | CronScheduleEvery | CronScheduleCron = field(
-        default_factory=CronScheduleEvery,
-        metadata=config(encoder=_encode_schedule, decoder=_decode_schedule),
-    )
-    created_at: datetime = _ts_now()
-    updated_at: datetime = _ts_now()
+    schedule: CronSchedule = Field(default_factory=CronScheduleEvery)
+    created_at: TimestampSerializer = Field(default_factory=lambda: datetime.now().astimezone())
+    updated_at: TimestampSerializer = Field(default_factory=lambda: datetime.now().astimezone())
+
+    @field_validator("schedule", mode="before")
+    @classmethod
+    def _validate_schedule(
+        cls,
+        value: CronSchedule | dict,
+    ) -> CronScheduleAt | CronScheduleEvery | CronScheduleCron:
+        if isinstance(value, (CronScheduleAt, CronScheduleEvery, CronScheduleCron)):
+            return value
+        if "at" in value:
+            return CronScheduleAt.model_validate(value)
+        if "every" in value:
+            return CronScheduleEvery.model_validate(value)
+        if "expr" in value:
+            return CronScheduleCron.model_validate(value)
+        raise ValueError(f"Unknown schedule kind: {', '.join(value.keys())}")
+
+    @field_serializer("schedule")
+    def _serialize_schedule(self, value: CronSchedule) -> dict:
+        return value.model_dump(mode="json")
 
 
-@dataclass
-class CronData(DataClassJsonMixin):
+class CronData(CronModel):
     """Persistent store for cron jobs."""
 
     version: int = 1
-    jobs: list[CronJob] = field(default_factory=list)
+    jobs: list[CronJob] = Field(default_factory=list)
 
 
 class CronStore:
@@ -203,11 +139,11 @@ class CronStore:
     def __init__(self, path: Path):
         self._path = path
         self._store: dict[str, CronJob] = {}
-        self._queue: heapdict = heapdict()  # jid → next_run_at
+        self._queue: heapdict = heapdict()  # jid -> next_run_at
 
     async def __aenter__(self) -> "CronStore":
         try:
-            data = CronData.from_json(self._path.read_text())
+            data = CronData.model_validate_json(self._path.read_text())
             now = datetime.now().astimezone()
             for j in data.jobs:
                 next_run = j.schedule.next_run(now)
@@ -222,7 +158,7 @@ class CronStore:
 
     async def __aexit__(self, *_) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(CronData(jobs=list(self._store.values())).to_json(indent=2))
+        self._path.write_text(CronData(jobs=list(self._store.values())).model_dump_json(indent=2))
 
     def jobs(self) -> Iterable[CronJob]:
         return self._store.values()
