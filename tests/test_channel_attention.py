@@ -309,6 +309,20 @@ async def test_telegram_mapping_sets_internal_summon_source(
             },
             "reply",
         ),
+        (
+            {
+                "type": "message",
+                "id": "m3",
+                "sender": "12345-680@g.us",
+                "content": "@38818635882692",
+                "timestamp": 1_700_000_020,
+                "isGroup": True,
+                "botJid": "6580566418:2@s.whatsapp.net",
+                "botJids": ["6580566418:2@s.whatsapp.net", "38818635882692@lid"],
+                "mentionedJids": ["38818635882692@lid"],
+            },
+            "mention",
+        ),
     ],
 )
 async def test_whatsapp_bridge_mapping_sets_public_summon(
@@ -324,3 +338,80 @@ async def test_whatsapp_bridge_mapping_sets_public_summon(
     assert msg.metadata.get("summon") == expected
     assert "_summon_source" not in msg.metadata
     assert msg.timestamp.timestamp() == pytest.approx(float(payload["timestamp"]))
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_bridge_rewrites_bot_id_mentions_to_bot_name() -> None:
+    bus = MessageBus()
+    channel = WhatsAppChannel(WhatsAppConfig(bot_name="benchbot"), bus, media_repo=None)
+    payload = {
+        "type": "message",
+        "id": "m4",
+        "sender": "12345-681@g.us",
+        "content": "hello @38818635882692",
+        "timestamp": 1_700_000_030,
+        "isGroup": True,
+        "botJids": ["6580566418:2@s.whatsapp.net", "38818635882692@lid"],
+        "mentionedJids": ["38818635882692@lid"],
+    }
+
+    await channel._handle_bridge_message(json.dumps(payload))
+
+    address = MessageAddress(channel="whatsapp", chat_id=str(payload["sender"]))
+    msg = await bus.consume_inbound(address=address)
+    assert isinstance(msg, InboundMessage)
+    assert msg.content == "hello @benchbot"
+    assert msg.metadata["bot_name"] == "benchbot"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_bridge_rewrites_all_resolved_mentions_to_names() -> None:
+    bus = MessageBus()
+    channel = WhatsAppChannel(
+        WhatsAppConfig(attention_policy=AttentionPolicy.ALWAYS), bus, media_repo=None
+    )
+    payload = {
+        "type": "message",
+        "id": "m5",
+        "sender": "12345-682@g.us",
+        "content": "hello @38818635882692 and @12025550123",
+        "timestamp": 1_700_000_040,
+        "isGroup": True,
+        "mentionNames": {
+            "38818635882692@lid": "alice",
+            "12025550123@s.whatsapp.net": "bob",
+        },
+        "mentionedJids": ["38818635882692@lid", "12025550123@s.whatsapp.net"],
+    }
+
+    await channel._handle_bridge_message(json.dumps(payload))
+
+    address = MessageAddress(channel="whatsapp", chat_id=str(payload["sender"]))
+    msg = await bus.consume_inbound(address=address)
+    assert isinstance(msg, InboundMessage)
+    assert msg.content == "hello @alice and @bob"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_bridge_prefers_bridge_bot_name_for_rewrite() -> None:
+    bus = MessageBus()
+    channel = WhatsAppChannel(WhatsAppConfig(bot_name="fallbackbot"), bus, media_repo=None)
+    payload = {
+        "type": "message",
+        "id": "m6",
+        "sender": "12345-683@g.us",
+        "content": "@38818635882692 please check",
+        "timestamp": 1_700_000_050,
+        "isGroup": True,
+        "botName": "realbot",
+        "botJids": ["38818635882692@lid"],
+        "mentionedJids": ["38818635882692@lid"],
+    }
+
+    await channel._handle_bridge_message(json.dumps(payload))
+
+    address = MessageAddress(channel="whatsapp", chat_id=str(payload["sender"]))
+    msg = await bus.consume_inbound(address=address)
+    assert isinstance(msg, InboundMessage)
+    assert msg.content == "@realbot please check"
+    assert msg.metadata["bot_name"] == "realbot"

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -19,6 +20,7 @@ class WhatsAppConfig(ChannelConfig):
 
     bridge_url: str = "ws://localhost:3001"
     bridge_token: str = ""  # Shared token for bridge auth (optional, recommended)
+    bot_name: str | None = None
 
     def make_channel(
         self, bus: MessageBus, media_repo: MediaRepository | None = None
@@ -49,9 +51,11 @@ class WhatsAppChannel(BaseChannel):
         self._connected = False
 
     def status(self) -> tuple[bool, str]:
-        if self._connected:
-            return (True, f"bridge connected ({self.config.bridge_url})")
-        return (False, f"bridge disconnected ({self.config.bridge_url})")
+
+        return (
+            self._connected,
+            f"bridge {'connected' if self._connected else 'disconnected'} ({self.config.bridge_url})",
+        )
 
     async def background(self) -> None:
         """Start the WhatsApp channel by connecting to the bridge."""
@@ -78,7 +82,6 @@ class WhatsAppChannel(BaseChannel):
             except Exception as e:
                 logger.warning(f"WhatsApp bridge connection error: {e}. Retrying...")
                 await asyncio.sleep(5)
-        # asyncio.CancelledError falls through.
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through WhatsApp."""
@@ -117,8 +120,13 @@ class WhatsAppChannel(BaseChannel):
         if msg_type == "message":
             sender = str(data.get("sender", ""))
             content = str(data.get("content", ""))
+            content = self._replace_mentions(content, data)
             source_ts = self._parse_source_timestamp(data.get("timestamp"))
             summon_source = self._detect_summon_source(data)
+            if data.get("isGroup"):
+                logger.debug(
+                    f"WhatsApp summon detection: sender={sender} data={data} content={content!r} result={summon_source}"
+                )
             raw_media_metadata = data.get("media_metadata", [])
             media_metadata: list[MediaMetadata] = []
             if isinstance(raw_media_metadata, list):
@@ -214,6 +222,8 @@ class WhatsAppChannel(BaseChannel):
                 "is_group": data.get("isGroup", False),
                 "sender_label": data.get("pushName") or sender_id,
             }
+            if bot_name := self._bot_name(data):
+                message_metadata["bot_name"] = bot_name
             if summon_source:
                 message_metadata["_summon_source"] = summon_source
 
@@ -268,22 +278,86 @@ class WhatsAppChannel(BaseChannel):
             return f"{local}@{domain}"
         return local
 
+    @staticmethod
+    def _jid_localpart(raw: str) -> str:
+        return raw.strip().lower().partition("@")[0].split(":", 1)[0]
+
+    def _bot_name(self, payload: dict[str, Any]) -> str | None:
+        bridge_name = payload.get("botName")
+        if isinstance(bridge_name, str):
+            bridge_name = bridge_name.strip()
+            if bridge_name:
+                return bridge_name
+        config_name = self.config.bot_name
+        if isinstance(config_name, str):
+            config_name = config_name.strip()
+            if config_name:
+                return config_name
+        return None
+
+    def _replace_mentions(self, content: str, payload: dict[str, Any]) -> str:
+        replacements: dict[str, str] = {}
+
+        raw_mention_names = payload.get("mentionNames")
+        if isinstance(raw_mention_names, dict):
+            for jid, name in raw_mention_names.items():
+                if not isinstance(jid, str) or not isinstance(name, str):
+                    continue
+                name = name.strip()
+                if not name:
+                    continue
+                replacements[self._jid_localpart(jid)] = (
+                    name if name.startswith("@") else f"@{name}"
+                )
+
+        bot_name = self._bot_name(payload)
+        if bot_name:
+            replacement = bot_name if bot_name.startswith("@") else f"@{bot_name}"
+            raw_bot_jids = payload.get("botJids")
+            if isinstance(raw_bot_jids, list):
+                for item in raw_bot_jids:
+                    if isinstance(item, str) and item:
+                        replacements.setdefault(self._jid_localpart(item), replacement)
+
+            bot_jid = payload.get("botJid")
+            if isinstance(bot_jid, str) and bot_jid:
+                replacements.setdefault(self._jid_localpart(bot_jid), replacement)
+
+        if not replacements:
+            return content
+
+        updated = content
+        for localpart, replacement in replacements.items():
+            if not localpart:
+                continue
+            updated = re.sub(rf"(?<!\w)@{re.escape(localpart)}\b", replacement, updated)
+        return updated
+
     def _detect_summon_source(self, payload: dict[str, Any]) -> Literal["mention", "reply"] | None:
         if not payload.get("isGroup"):
             return None
 
+        raw_bot_jids = payload.get("botJids")
+        bot_jids: set[str] = set()
+        if isinstance(raw_bot_jids, list):
+            for item in raw_bot_jids:
+                if isinstance(item, str) and item:
+                    bot_jids.add(self._normalize_jid(item))
+
         bot_raw = payload.get("botJid")
-        if not isinstance(bot_raw, str) or not bot_raw:
+        if isinstance(bot_raw, str) and bot_raw:
+            bot_jids.add(self._normalize_jid(bot_raw))
+
+        if not bot_jids:
             return None
-        bot_jid = self._normalize_jid(bot_raw)
 
         reply_raw = payload.get("replyTo")
-        if isinstance(reply_raw, str) and self._normalize_jid(reply_raw) == bot_jid:
+        if isinstance(reply_raw, str) and self._normalize_jid(reply_raw) in bot_jids:
             return "reply"
 
         mentioned = payload.get("mentionedJids")
         if isinstance(mentioned, list):
             for item in mentioned:
-                if isinstance(item, str) and self._normalize_jid(item) == bot_jid:
+                if isinstance(item, str) and self._normalize_jid(item) in bot_jids:
                     return "mention"
         return None

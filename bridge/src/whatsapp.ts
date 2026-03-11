@@ -38,6 +38,8 @@ export interface InboundMessage {
   sender: string;
   pn: string;
   pushName?: string;
+  botName?: string;
+  mentionNames?: Record<string, string>;
   content: string;
   timestamp: number;
   isGroup: boolean;
@@ -47,6 +49,7 @@ export interface InboundMessage {
   mentionedJids?: string[];
   replyTo?: string;
   botJid?: string;
+  botJids?: string[];
 }
 
 export interface WhatsAppClientOptions {
@@ -60,6 +63,8 @@ export class WhatsAppClient {
   private sock: any = null;
   private options: WhatsAppClientOptions;
   private reconnecting = false;
+  private contactsByJid = new Map<string, string>();
+  private groupParticipantNames = new Map<string, Map<string, string>>();
 
   constructor(options: WhatsAppClientOptions) {
     this.options = options;
@@ -127,6 +132,8 @@ export class WhatsAppClient {
 
     // Save credentials on update
     this.sock.ev.on('creds.update', saveCreds);
+    this.sock.ev.on('contacts.upsert', (contacts: any[]) => this.ingestContacts(contacts));
+    this.sock.ev.on('contacts.update', (contacts: any[]) => this.ingestContacts(contacts));
 
     // Handle incoming messages
     this.sock.ev.on('messages.upsert', async ({ messages, type }: { messages: any[]; type: string }) => {
@@ -145,19 +152,27 @@ export class WhatsAppClient {
         const context = this.extractContextInfo(msg.message);
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
+        const mentionNames = await this.resolveMentionNames(context.mentionedJids, msg.key.remoteJid);
+        const botJids = [
+          typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
+          typeof this.sock?.user?.lid === 'string' ? this.sock.user.lid : undefined,
+        ].filter((v): v is string => typeof v === 'string' && v.length > 0);
 
         const outMsg: InboundMessage = {
           id: msg.key.id || '',
           sender: msg.key.remoteJid || '',
           pn: msg.key.remoteJidAlt || '',
           pushName: msg.pushName || undefined,
+          botName: typeof this.sock?.user?.name === 'string' ? this.sock.user.name : undefined,
+          mentionNames: Object.keys(mentionNames).length ? mentionNames : undefined,
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
           media_metadata,
           mentionedJids: context.mentionedJids,
           replyTo: context.replyTo,
-          botJid: typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
+          botJid: botJids[0],
+          botJids,
         };
 
         // Download image if present and attach as base64 for Python-side persistence
@@ -202,17 +217,130 @@ export class WhatsAppClient {
     };
   }
 
+  private jidKeys(raw: string): string[] {
+    const text = raw.trim().toLowerCase();
+    const [localAndDevice, domain] = text.split('@', 2);
+    const local = localAndDevice?.split(':', 1)[0] || '';
+    const keys = new Set<string>();
+    if (text) keys.add(text);
+    if (domain) keys.add(`${local}@${domain}`);
+    if (local) keys.add(local);
+    return [...keys];
+  }
+
+  private rememberContactId(raw: unknown, name: string): void {
+    if (typeof raw !== 'string' || !raw) {
+      return;
+    }
+    for (const key of this.jidKeys(raw)) {
+      this.contactsByJid.set(key, name);
+    }
+  }
+
+  private ingestContacts(contacts: any[]): void {
+    for (const contact of contacts) {
+      if (!contact || typeof contact !== 'object') {
+        continue;
+      }
+      const name =
+        (typeof contact.name === 'string' && contact.name.trim())
+        || (typeof contact.notify === 'string' && contact.notify.trim())
+        || (typeof contact.verifiedName === 'string' && contact.verifiedName.trim());
+      if (!name) {
+        continue;
+      }
+      this.rememberContactId(contact.id, name);
+      this.rememberContactId(contact.lid, name);
+      this.rememberContactId(contact.phoneNumber, name);
+    }
+  }
+
+  private async populateGroupParticipantNames(groupJid: string): Promise<void> {
+    if (!this.sock || this.groupParticipantNames.has(groupJid)) {
+      return;
+    }
+    try {
+      const metadata = await this.sock.groupMetadata(groupJid);
+      const names = new Map<string, string>();
+      for (const participant of metadata?.participants || []) {
+        const name =
+          (typeof participant.name === 'string' && participant.name.trim())
+          || (typeof participant.notify === 'string' && participant.notify.trim())
+          || (typeof participant.verifiedName === 'string' && participant.verifiedName.trim());
+        if (!name) {
+          continue;
+        }
+        for (const key of this.jidKeys(participant.id || '')) {
+          names.set(key, name);
+        }
+        for (const key of this.jidKeys(participant.lid || '')) {
+          names.set(key, name);
+        }
+        for (const key of this.jidKeys(participant.phoneNumber || '')) {
+          names.set(key, name);
+        }
+      }
+      this.groupParticipantNames.set(groupJid, names);
+    } catch (err) {
+      console.error('Failed to fetch WhatsApp group metadata for mention names:', err);
+    }
+  }
+
+  private async resolveMentionNames(
+    mentionedJids: string[],
+    groupJid: string | undefined,
+  ): Promise<Record<string, string>> {
+    const result: Record<string, string> = {};
+    if (!mentionedJids.length) {
+      return result;
+    }
+
+    if (groupJid?.endsWith('@g.us')) {
+      await this.populateGroupParticipantNames(groupJid);
+    }
+    const groupNames = groupJid ? this.groupParticipantNames.get(groupJid) : undefined;
+
+    for (const jid of mentionedJids) {
+      const name = this.jidKeys(jid)
+        .map((key) => groupNames?.get(key) || this.contactsByJid.get(key))
+        .find((value): value is string => typeof value === 'string' && value.length > 0);
+      if (name) {
+        result[jid] = name;
+      }
+    }
+    return result;
+  }
+
+  private unwrapMessageContent(message: any): any {
+    let current = message;
+    while (current && typeof current === 'object') {
+      const next =
+        current.ephemeralMessage?.message
+        || current.viewOnceMessage?.message
+        || current.viewOnceMessageV2?.message
+        || current.viewOnceMessageV2Extension?.message
+        || current.documentWithCaptionMessage?.message
+        || current.editedMessage?.message;
+      if (!next || next === current) {
+        return current;
+      }
+      current = next;
+    }
+    return current;
+  }
+
   private extractContextInfo(message: any): { mentionedJids: string[]; replyTo?: string } {
-    if (!message || typeof message !== 'object') {
+    const unwrapped = this.unwrapMessageContent(message);
+    if (!unwrapped || typeof unwrapped !== 'object') {
       return { mentionedJids: [] };
     }
 
     const context =
-      message.extendedTextMessage?.contextInfo
-      || message.imageMessage?.contextInfo
-      || message.videoMessage?.contextInfo
-      || message.documentMessage?.contextInfo
-      || message.audioMessage?.contextInfo;
+      unwrapped.extendedTextMessage?.contextInfo
+      || unwrapped.imageMessage?.contextInfo
+      || unwrapped.videoMessage?.contextInfo
+      || unwrapped.documentMessage?.contextInfo
+      || unwrapped.audioMessage?.contextInfo;
 
     const mentionedJids = Array.isArray(context?.mentionedJid)
       ? context.mentionedJid.filter((v: unknown): v is string => typeof v === 'string')
@@ -222,7 +350,7 @@ export class WhatsAppClient {
   }
 
   private extractMessageContent(msg: any): ExtractedMessage | null {
-    const message = msg.message;
+    const message = this.unwrapMessageContent(msg.message);
     if (!message) return null;
 
     // Text message
