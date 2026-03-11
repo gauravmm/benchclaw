@@ -224,17 +224,6 @@ export class WhatsAppClient {
     };
   }
 
-  private jidKeys(raw: string): string[] {
-    const text = raw.trim().toLowerCase();
-    const [localAndDevice, domain] = text.split('@', 2);
-    const local = localAndDevice?.split(':', 1)[0] || '';
-    const keys = new Set<string>();
-    if (text) keys.add(text);
-    if (domain) keys.add(`${local}@${domain}`);
-    if (local) keys.add(local);
-    return [...keys];
-  }
-
   private canonicalJid(raw: string): string {
     const text = raw.trim().toLowerCase();
     const [localAndDevice, domain] = text.split('@', 2);
@@ -246,9 +235,7 @@ export class WhatsAppClient {
     if (typeof raw !== 'string' || !raw) {
       return;
     }
-    for (const key of this.jidKeys(raw)) {
-      this.contactsByJid.set(key, name);
-    }
+    this.contactsByJid.set(this.canonicalJid(raw), name);
   }
 
   private ingestContacts(contacts: any[]): void {
@@ -284,15 +271,9 @@ export class WhatsAppClient {
         if (!name) {
           continue;
         }
-        for (const key of this.jidKeys(participant.id || '')) {
-          names.set(key, name);
-        }
-        for (const key of this.jidKeys(participant.lid || '')) {
-          names.set(key, name);
-        }
-        for (const key of this.jidKeys(participant.phoneNumber || '')) {
-          names.set(key, name);
-        }
+        if (participant.id) names.set(this.canonicalJid(participant.id), name);
+        if (participant.lid) names.set(this.canonicalJid(participant.lid), name);
+        if (participant.phoneNumber) names.set(this.canonicalJid(participant.phoneNumber), name);
       }
       this.groupParticipantNames.set(groupJid, names);
     } catch (err) {
@@ -327,9 +308,7 @@ export class WhatsAppClient {
         typeof this.sock?.user?.lid === 'string' ? this.sock.user.lid : undefined,
       ].filter((v): v is string => typeof v === 'string' && v.length > 0);
       for (const jid of botJids) {
-        for (const key of this.jidKeys(jid)) {
-          result[key] = botName;
-        }
+        result[this.canonicalJid(jid)] = botName;
       }
     }
     return result;
@@ -346,9 +325,7 @@ export class WhatsAppClient {
       await this.populateGroupParticipantNames(groupJid);
     }
     const groupNames = groupJid ? this.groupParticipantNames.get(groupJid) : undefined;
-    return this.jidKeys(jid)
-      .map((key) => groupNames?.get(key) || this.contactsByJid.get(key))
-      .find((value): value is string => typeof value === 'string' && value.length > 0);
+    return groupNames?.get(this.canonicalJid(jid)) || this.contactsByJid.get(this.canonicalJid(jid));
   }
 
   private unwrapMessageContent(message: any): any {

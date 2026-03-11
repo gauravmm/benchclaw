@@ -304,10 +304,6 @@ class WhatsAppChannel(BaseChannel):
             return f"{local}@{domain}"
         return local
 
-    @staticmethod
-    def _jid_localpart(raw: str) -> str:
-        return raw.strip().lower().partition("@")[0].split(":", 1)[0]
-
     def resolve_person_name(self, person_id: str, payload: _BridgeMessageEvent) -> str | None:
         if not person_id:
             return None
@@ -315,11 +311,7 @@ class WhatsAppChannel(BaseChannel):
         if not name_cache:
             return None
 
-        value = (
-            name_cache.get(person_id)
-            or name_cache.get(self.canonical_jid(person_id))
-            or name_cache.get(self._jid_localpart(person_id))
-        )
+        value = name_cache.get(self.canonical_jid(person_id))
         if not isinstance(value, str):
             return None
         value = value.strip()
@@ -334,7 +326,7 @@ class WhatsAppChannel(BaseChannel):
     def _replace_mentions(self, content: str, payload: _BridgeMessageEvent) -> str:
         for person_id in payload.mentions or []:
             name = (self.resolve_person_name(person_id, payload) or "").strip()
-            localpart = self._jid_localpart(person_id)
+            localpart = person_id.strip().lower().partition("@")[0].split(":", 1)[0]
             if name and localpart:
                 replacement = name if name.startswith("@") else f"@{name}"
                 content = re.sub(rf"(?<!\w)@{re.escape(localpart)}\b", replacement, content)
@@ -343,19 +335,9 @@ class WhatsAppChannel(BaseChannel):
     def _detect_summon_source(
         self, payload: _BridgeMessageEvent
     ) -> Literal["mention", "reply"] | None:
-        if not payload.isGroup:
-            return None
-
         bot_jids = self._bot_ids(payload)
-
-        if not bot_jids:
-            return None
-
-        reply_raw = payload.replyTo
-        if isinstance(reply_raw, str) and self.canonical_jid(reply_raw) in bot_jids:
-            return "reply"
-
-        for item in payload.mentions or []:
-            if isinstance(item, str) and self.canonical_jid(item) in bot_jids:
+        if payload.isGroup and bot_jids:
+            if payload.replyTo and self.canonical_jid(payload.replyTo) in bot_jids:
+                return "reply"
+            elif any(self.canonical_jid(item) in bot_jids for item in payload.mentions or []):
                 return "mention"
-        return None
