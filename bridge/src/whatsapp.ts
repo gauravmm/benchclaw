@@ -30,25 +30,23 @@ export interface MediaMetadata {
 
 interface ExtractedMessage {
   content: string;
-  media_metadata: MediaMetadata[];
+  mediaMetadata: MediaMetadata[];
 }
 
 export interface InboundMessage {
   id: string;
-  sender: string;
+  chatId: string;
   pn: string;
   pushName?: string;
-  botName?: string;
+  senderName?: string;
   mentionNames?: Record<string, string>;
   content: string;
   timestamp: number;
   isGroup: boolean;
-  media_metadata: MediaMetadata[];
+  mediaMetadata: MediaMetadata[];
   mediaBase64?: string;
   mediaType?: string;
-  mentionedJids?: string[];
   replyTo?: string;
-  botJid?: string;
   botJids?: string[];
 }
 
@@ -148,11 +146,19 @@ export class WhatsAppClient {
 
         const extracted = this.extractMessageContent(msg);
         if (!extracted) continue;
-        const { content, media_metadata } = extracted;
+        const { content, mediaMetadata } = extracted;
         const context = this.extractContextInfo(msg.message);
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
-        const mentionNames = await this.resolveMentionNames(context.mentionedJids, msg.key.remoteJid);
+        const groupJid = typeof msg.key.remoteJid === 'string' ? msg.key.remoteJid : undefined;
+        const senderJid =
+          (typeof msg.key.participantAlt === 'string' && msg.key.participantAlt)
+          || (typeof msg.key.participant === 'string' && msg.key.participant)
+          || (typeof msg.key.remoteJidAlt === 'string' && msg.key.remoteJidAlt)
+          || (typeof msg.key.remoteJid === 'string' && msg.key.remoteJid)
+          || undefined;
+        const senderName = await this.resolveDisplayName(senderJid, groupJid);
+        const mentionNames = await this.resolveMentionNames(context.mentionedJids, groupJid);
         const botJids = [
           typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
           typeof this.sock?.user?.lid === 'string' ? this.sock.user.lid : undefined,
@@ -160,18 +166,16 @@ export class WhatsAppClient {
 
         const outMsg: InboundMessage = {
           id: msg.key.id || '',
-          sender: msg.key.remoteJid || '',
+          chatId: msg.key.remoteJid || '',
           pn: msg.key.remoteJidAlt || '',
           pushName: msg.pushName || undefined,
-          botName: typeof this.sock?.user?.name === 'string' ? this.sock.user.name : undefined,
+          senderName: senderName || undefined,
           mentionNames: Object.keys(mentionNames).length ? mentionNames : undefined,
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
-          media_metadata,
-          mentionedJids: context.mentionedJids,
+          mediaMetadata,
           replyTo: context.replyTo,
-          botJid: botJids[0],
           botJids,
         };
 
@@ -295,20 +299,27 @@ export class WhatsAppClient {
       return result;
     }
 
+    for (const jid of mentionedJids) {
+      const name = await this.resolveDisplayName(jid, groupJid);
+      result[jid] = name || this.jidKeys(jid)[0]?.split('@', 1)[0] || jid;
+    }
+    return result;
+  }
+
+  private async resolveDisplayName(
+    jid: string | undefined,
+    groupJid: string | undefined,
+  ): Promise<string | undefined> {
+    if (!jid) {
+      return undefined;
+    }
     if (groupJid?.endsWith('@g.us')) {
       await this.populateGroupParticipantNames(groupJid);
     }
     const groupNames = groupJid ? this.groupParticipantNames.get(groupJid) : undefined;
-
-    for (const jid of mentionedJids) {
-      const name = this.jidKeys(jid)
-        .map((key) => groupNames?.get(key) || this.contactsByJid.get(key))
-        .find((value): value is string => typeof value === 'string' && value.length > 0);
-      if (name) {
-        result[jid] = name;
-      }
-    }
-    return result;
+    return this.jidKeys(jid)
+      .map((key) => groupNames?.get(key) || this.contactsByJid.get(key))
+      .find((value): value is string => typeof value === 'string' && value.length > 0);
   }
 
   private unwrapMessageContent(message: any): any {
@@ -355,19 +366,19 @@ export class WhatsAppClient {
 
     // Text message
     if (message.conversation) {
-      return { content: message.conversation, media_metadata: [] };
+      return { content: message.conversation, mediaMetadata: [] };
     }
 
     // Extended text (reply, link preview)
     if (message.extendedTextMessage?.text) {
-      return { content: message.extendedTextMessage.text, media_metadata: [] };
+      return { content: message.extendedTextMessage.text, mediaMetadata: [] };
     }
 
     if (message.imageMessage) {
       const caption = message.imageMessage.caption ? ` ${message.imageMessage.caption}` : '';
       return {
         content: `[Image: ${caption || 'No caption'}]`,
-        media_metadata: [this.mediaPlaceholder('image', message.imageMessage)],
+        mediaMetadata: [this.mediaPlaceholder('image', message.imageMessage)],
       };
     }
 
@@ -375,7 +386,7 @@ export class WhatsAppClient {
       const caption = message.videoMessage.caption ? ` ${message.videoMessage.caption}` : '';
       return {
         content: `[Video: ${caption || 'No caption'}]`,
-        media_metadata: [this.mediaPlaceholder('video', message.videoMessage)],
+        mediaMetadata: [this.mediaPlaceholder('video', message.videoMessage)],
       };
     }
 
@@ -383,7 +394,7 @@ export class WhatsAppClient {
       const caption = message.documentMessage.caption ? ` ${message.documentMessage.caption}` : '';
       return {
         content: `[Document: ${caption || 'No caption'}]`,
-        media_metadata: [this.mediaPlaceholder('file', message.documentMessage)],
+        mediaMetadata: [this.mediaPlaceholder('file', message.documentMessage)],
       };
     }
 
@@ -393,7 +404,7 @@ export class WhatsAppClient {
       const label = mediaType === 'voice' ? '[Voice Message]' : '[Audio]';
       return {
         content: label,
-        media_metadata: [this.mediaPlaceholder(mediaType, message.audioMessage)],
+        mediaMetadata: [this.mediaPlaceholder(mediaType, message.audioMessage)],
       };
     }
 

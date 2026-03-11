@@ -85,7 +85,8 @@ class InboundAttentionFilter:
         content: str,
         media: list[str] | None,
         media_metadata: list[MediaMetadata] | None,
-        metadata: dict[str, Any] | None,
+        metadata: dict[str, Any]
+        | None,  # TODO: Make this non-optional and default to {} at the call site instead of here.
         timestamp: datetime | None,
     ) -> list[InboundMessage]:
         ts = _normalize_timestamp(timestamp)
