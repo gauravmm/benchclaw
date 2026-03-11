@@ -124,7 +124,6 @@ class WhatsAppChannel(BaseChannel):
         self._connected = False
 
     def status(self) -> tuple[bool, str]:
-
         return (
             self._connected,
             f"bridge {'connected' if self._connected else 'disconnected'} ({self.config.bridge_url})",
@@ -191,109 +190,50 @@ class WhatsAppChannel(BaseChannel):
             )
             return
 
-        if isinstance(event, _BridgeMessageEvent):
-            chat_id = event.chatId
-            content = self._replace_mentions(event.content, event)
-            source_ts = parse_optional_timestamp(event.timestamp)
-            summon_source = self._detect_summon_source(event)
-            if event.isGroup:
-                logger.debug(
-                    f"WhatsApp summon detection: chat_id={chat_id} event={event} content={content!r} result={summon_source}"
-                )
-            media_metadata = [
-                item.to_media_metadata(source_channel=self.name) for item in event.mediaMetadata
-            ]
+        match event:
+            case _BridgeMessageEvent():
+                await self._handle_bridge_inbound(event)
+            case _BridgeStatusEvent():
+                logger.info(f"WhatsApp status: {event.status}")
+                self._connected = event.status == "connected"
+            case _BridgeQrEvent():
+                logger.error("Scan QR code in the bridge terminal to connect WhatsApp")
+            case _BridgeErrorEvent():
+                logger.error(f"WhatsApp bridge error: {event.error}")
+            case _BridgeSentEvent():
+                pass  # Ignore the acknowledgement.
 
-            # Download and save image if the bridge sent base64 data
-            media_paths: list[str] = []
-            if event.mediaBase64:
-                if not self.media_repo:
-                    logger.warning(
-                        "WhatsApp received image but media_repo not configured; skipping"
-                    )
-                else:
-                    try:
-                        mime_type = event.mediaType or "image/jpeg"
-                        ext_map = {
-                            "image/jpeg": ".jpg",
-                            "image/png": ".png",
-                            "image/gif": ".gif",
-                            "image/webp": ".webp",
-                        }
-                        ext = ext_map.get(mime_type, ".bin")
-                        ts = source_ts
-                        sender_id = chat_id.split("@")[0] if "@" in chat_id else chat_id
-                        file_path = self.media_repo.register(
-                            MessageAddress(self.name, sender_id), ext, mime_type, ts
-                        )
-                        file_path.write_bytes(base64.b64decode(event.mediaBase64))
-                        media_paths.append(self.media_repo.media_relpath(file_path))
-                        # Update or add MediaMetadata entry for this image
-                        saved_at = datetime.now().isoformat(timespec="seconds")
-                        if media_metadata:
-                            media_metadata[0]["path"] = str(file_path)
-                            media_metadata[0]["saved_at"] = saved_at
-                        else:
-                            media_metadata.append(
-                                {
-                                    "path": str(file_path),
-                                    "media_type": "image",
-                                    "mime_type": mime_type,
-                                    "size_bytes": None,
-                                    "saved_at": saved_at,
-                                    "source_channel": self.name,
-                                }
-                            )
-                        logger.debug(f"Saved WhatsApp image to {file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to save WhatsApp image: {e}")
-
-            # Extract just the phone number or lid as chat_id
-            sender_id = chat_id.split("@")[0] if "@" in chat_id else chat_id
-            logger.info(f"Chat {chat_id}")
-
-            # Handle voice transcription if it's a voice message
-            if content == "[Voice Message]":
-                logger.info(
-                    f"Voice message received from {sender_id}, but direct download from bridge is not yet supported."
-                )
-
-            message_metadata = {
-                "message_id": event.id,
-                "timestamp": event.timestamp,
-                "is_group": event.isGroup,
-                "sender_label": event.senderName or event.pushName or sender_id,
-            }
-            for item in event.botJids or []:
-                if resolved := self.resolve_person_name(item, event):
-                    message_metadata["bot_name"] = resolved
-                    break
-            if summon_source:
-                message_metadata["_summon_source"] = summon_source
-
-            await self._handle_message(
-                sender_id=sender_id,
-                chat_id=chat_id,  # Use full LID for replies
-                content=content,
-                media=media_paths or None,
-                media_metadata=media_metadata,
-                metadata=message_metadata,
-                timestamp=source_ts,
+    async def _handle_bridge_inbound(self, event: _BridgeMessageEvent) -> None:
+        chat_id = event.chatId
+        sender_id = self._sender_id(chat_id)
+        content = self._replace_mentions(event.content, event)
+        source_ts = parse_optional_timestamp(event.timestamp)
+        summon_source = self._detect_summon_source(event)
+        if event.isGroup:
+            logger.debug(
+                f"WhatsApp summon detection: chat_id={chat_id} event={event} content={content!r} result={summon_source}"
             )
 
-        elif isinstance(event, _BridgeStatusEvent):
-            # Connection status update
-            logger.info(f"WhatsApp status: {event.status}")
-            self._connected = event.status == "connected"
+        media_metadata = [
+            item.to_media_metadata(source_channel=self.name) for item in event.mediaMetadata
+        ]
+        media_paths = self._save_bridge_image(event, sender_id, source_ts, media_metadata)
 
-        elif isinstance(event, _BridgeQrEvent):
-            logger.error("Scan QR code in the bridge terminal to connect WhatsApp")
+        logger.info(f"Chat {chat_id}")
+        if content == "[Voice Message]":
+            logger.info(
+                f"Voice message received from {sender_id}, but direct download from bridge is not yet supported."
+            )
 
-        elif isinstance(event, _BridgeErrorEvent):
-            logger.error(f"WhatsApp bridge error: {event.error}")
-
-        elif isinstance(event, _BridgeSentEvent):
-            pass  # Ignore the acknowledgement.
+        await self._handle_message(
+            sender_id=sender_id,
+            chat_id=chat_id,
+            content=content,
+            media=media_paths or None,
+            media_metadata=media_metadata,
+            metadata=self._message_metadata(event, sender_id, summon_source),
+            timestamp=source_ts,
+        )
 
     @staticmethod
     def canonical_jid(raw: str) -> str:
@@ -305,28 +245,19 @@ class WhatsAppChannel(BaseChannel):
         return local
 
     def resolve_person_name(self, person_id: str, payload: _BridgeMessageEvent) -> str | None:
-        if not person_id:
-            return None
-        name_cache = payload.nameCache
-        if not name_cache:
-            return None
-
-        value = name_cache.get(self.canonical_jid(person_id))
+        value = (payload.nameCache or {}).get(self.canonical_jid(person_id))
         if not isinstance(value, str):
             return None
         value = value.strip()
         return value or None
 
     def _bot_ids(self, payload: _BridgeMessageEvent) -> set[str]:
-        raw_bot_jids = payload.botJids
-        if not isinstance(raw_bot_jids, list):
-            return set()
-        return {self.canonical_jid(item) for item in raw_bot_jids if isinstance(item, str) and item}
+        return {self.canonical_jid(item) for item in payload.botJids or [] if item}
 
     def _replace_mentions(self, content: str, payload: _BridgeMessageEvent) -> str:
         for person_id in payload.mentions or []:
             name = (self.resolve_person_name(person_id, payload) or "").strip()
-            localpart = person_id.strip().lower().partition("@")[0].split(":", 1)[0]
+            localpart = self._mention_id(person_id)
             if name and localpart:
                 replacement = name if name.startswith("@") else f"@{name}"
                 content = re.sub(rf"(?<!\w)@{re.escape(localpart)}\b", replacement, content)
@@ -336,8 +267,90 @@ class WhatsAppChannel(BaseChannel):
         self, payload: _BridgeMessageEvent
     ) -> Literal["mention", "reply"] | None:
         bot_jids = self._bot_ids(payload)
-        if payload.isGroup and bot_jids:
-            if payload.replyTo and self.canonical_jid(payload.replyTo) in bot_jids:
-                return "reply"
-            elif any(self.canonical_jid(item) in bot_jids for item in payload.mentions or []):
-                return "mention"
+        if not payload.isGroup or not bot_jids:
+            return None
+        if payload.replyTo and self.canonical_jid(payload.replyTo) in bot_jids:
+            return "reply"
+        if any(self.canonical_jid(item) in bot_jids for item in payload.mentions or []):
+            return "mention"
+        return None
+
+    @staticmethod
+    def _sender_id(chat_id: str) -> str:
+        return chat_id.split("@")[0] if "@" in chat_id else chat_id
+
+    @staticmethod
+    def _mention_id(person_id: str) -> str:
+        return person_id.strip().lower().partition("@")[0].split(":", 1)[0]
+
+    def _message_metadata(
+        self,
+        event: _BridgeMessageEvent,
+        sender_id: str,
+        summon_source: Literal["mention", "reply"] | None,
+    ) -> dict[str, str | int | float | None | bool]:
+        metadata: dict[str, str | int | float | None | bool] = {
+            "message_id": event.id,
+            "timestamp": event.timestamp,
+            "is_group": event.isGroup,
+            "sender_label": event.senderName or event.pushName or sender_id,
+            "bot_name": next(
+                (
+                    resolved
+                    for item in event.botJids or []
+                    if (resolved := self.resolve_person_name(item, event))
+                ),
+                None,
+            ),
+        }
+        if metadata["bot_name"] is None:
+            metadata.pop("bot_name")
+        if summon_source:
+            metadata["_summon_source"] = summon_source
+        return metadata
+
+    def _save_bridge_image(
+        self,
+        event: _BridgeMessageEvent,
+        sender_id: str,
+        source_ts: datetime | None,
+        media_metadata: list[MediaMetadata],
+    ) -> list[str]:
+        if not event.mediaBase64:
+            return []
+        if not self.media_repo:
+            logger.warning("WhatsApp received image but media_repo not configured; skipping")
+            return []
+
+        try:
+            mime_type = event.mediaType or "image/jpeg"
+            ext = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/gif": ".gif",
+                "image/webp": ".webp",
+            }.get(mime_type, ".bin")
+            file_path = self.media_repo.register(
+                MessageAddress(self.name, sender_id), ext, mime_type, source_ts
+            )
+            file_path.write_bytes(base64.b64decode(event.mediaBase64))
+            saved_at = datetime.now().isoformat(timespec="seconds")
+            if media_metadata:
+                media_metadata[0]["path"] = str(file_path)
+                media_metadata[0]["saved_at"] = saved_at
+            else:
+                media_metadata.append(
+                    {
+                        "path": str(file_path),
+                        "media_type": "image",
+                        "mime_type": mime_type,
+                        "size_bytes": None,
+                        "saved_at": saved_at,
+                        "source_channel": self.name,
+                    }
+                )
+            logger.debug(f"Saved WhatsApp image to {file_path}")
+            return [self.media_repo.media_relpath(file_path)]
+        except Exception as e:
+            logger.error(f"Failed to save WhatsApp image: {e}")
+            return []
