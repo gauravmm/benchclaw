@@ -101,14 +101,18 @@ def _encode_timestamp(dt: datetime | None) -> str | None:
     return None if dt is None else dt.astimezone().isoformat(timespec="seconds")
 
 
-def _parse_timestamp(value: datetime | str) -> datetime:
-    """Parse datetime/ISO string and force it to an aware datetime in system timezone."""
+def _parse_timestamp(value: datetime | str | int | float) -> datetime:
+    """Parse datetime, ISO string, or Unix seconds into an aware datetime in system timezone."""
     if isinstance(value, datetime):
         return value.astimezone()
+    if isinstance(value, int | float):
+        return datetime.fromtimestamp(
+            float(value), tz=datetime.now().astimezone().tzinfo
+        ).astimezone()
     return datetime.fromisoformat(value).astimezone()
 
 
-def parse_optional_timestamp(value: datetime | str | None) -> datetime | None:
+def parse_optional_timestamp(value: datetime | str | int | float | None) -> datetime | None:
     """Parse an optional timestamp into an aware datetime in system timezone."""
     if value is None:
         return None

@@ -292,7 +292,7 @@ async def test_telegram_mapping_sets_internal_summon_source(
                 "timestamp": 1_700_000_000,
                 "isGroup": True,
                 "botJids": ["15550001111:22@s.whatsapp.net"],
-                "mentionNames": {"15550001111@s.whatsapp.net": "benchbot"},
+                "mentions": ["15550001111@s.whatsapp.net"],
             },
             "mention",
         ),
@@ -318,7 +318,7 @@ async def test_telegram_mapping_sets_internal_summon_source(
                 "timestamp": 1_700_000_020,
                 "isGroup": True,
                 "botJids": ["6580566418:2@s.whatsapp.net", "38818635882692@lid"],
-                "mentionNames": {"38818635882692@lid": "benchbot"},
+                "mentions": ["38818635882692@lid"],
             },
             "mention",
         ),
@@ -342,7 +342,7 @@ async def test_whatsapp_bridge_mapping_sets_public_summon(
 @pytest.mark.asyncio
 async def test_whatsapp_bridge_rewrites_bot_id_mentions_to_bot_name() -> None:
     bus = MessageBus()
-    channel = WhatsAppChannel(WhatsAppConfig(bot_name="benchbot"), bus, media_repo=None)
+    channel = WhatsAppChannel(WhatsAppConfig(), bus, media_repo=None)
     payload = {
         "type": "message",
         "id": "m4",
@@ -351,7 +351,8 @@ async def test_whatsapp_bridge_rewrites_bot_id_mentions_to_bot_name() -> None:
         "timestamp": 1_700_000_030,
         "isGroup": True,
         "botJids": ["6580566418:2@s.whatsapp.net", "38818635882692@lid"],
-        "mentionNames": {"38818635882692@lid": "benchbot"},
+        "nameCache": {"38818635882692@lid": "benchbot"},
+        "mentions": ["38818635882692@lid"],
     }
 
     await channel._handle_bridge_message(json.dumps(payload))
@@ -376,7 +377,7 @@ async def test_whatsapp_bridge_uses_name_cache_for_bot_name() -> None:
         "isGroup": True,
         "botJids": ["38818635882692@lid"],
         "nameCache": {"38818635882692@lid": "benchbot"},
-        "mentionNames": {"38818635882692@lid": "benchbot"},
+        "mentions": ["38818635882692@lid"],
     }
 
     await channel._handle_bridge_message(json.dumps(payload))
@@ -401,10 +402,11 @@ async def test_whatsapp_bridge_rewrites_all_resolved_mentions_to_names() -> None
         "content": "hello @38818635882692 and @12025550123",
         "timestamp": 1_700_000_040,
         "isGroup": True,
-        "mentionNames": {
+        "nameCache": {
             "38818635882692@lid": "alice",
             "12025550123@s.whatsapp.net": "bob",
         },
+        "mentions": ["38818635882692@lid", "12025550123@s.whatsapp.net"],
     }
 
     await channel._handle_bridge_message(json.dumps(payload))
@@ -460,7 +462,7 @@ async def test_whatsapp_bridge_invalid_payload_is_dropped() -> None:
 @pytest.mark.asyncio
 async def test_whatsapp_bridge_uses_mention_names_for_bot_rewrite() -> None:
     bus = MessageBus()
-    channel = WhatsAppChannel(WhatsAppConfig(bot_name="fallbackbot"), bus, media_repo=None)
+    channel = WhatsAppChannel(WhatsAppConfig(), bus, media_repo=None)
     payload = {
         "type": "message",
         "id": "m7",
@@ -469,7 +471,8 @@ async def test_whatsapp_bridge_uses_mention_names_for_bot_rewrite() -> None:
         "timestamp": 1_700_000_060,
         "isGroup": True,
         "botJids": ["38818635882692@lid"],
-        "mentionNames": {"38818635882692@lid": "realbot"},
+        "nameCache": {"38818635882692@lid": "realbot"},
+        "mentions": ["38818635882692@lid"],
     }
 
     await channel._handle_bridge_message(json.dumps(payload))
@@ -478,4 +481,4 @@ async def test_whatsapp_bridge_uses_mention_names_for_bot_rewrite() -> None:
     msg = await bus.consume_inbound(address=address)
     assert isinstance(msg, InboundMessage)
     assert msg.content == "@realbot please check"
-    assert msg.metadata["bot_name"] == "fallbackbot"
+    assert msg.metadata["bot_name"] == "realbot"

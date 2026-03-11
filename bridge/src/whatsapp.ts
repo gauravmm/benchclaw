@@ -40,7 +40,7 @@ export interface InboundMessage {
   pushName?: string;
   senderName?: string;
   nameCache?: Record<string, string>;
-  mentionNames?: Record<string, string>;
+  mentions?: string[];
   content: string;
   timestamp: number;
   isGroup: boolean;
@@ -159,7 +159,7 @@ export class WhatsAppClient {
           || (typeof msg.key.remoteJid === 'string' && msg.key.remoteJid)
           || undefined;
         const senderName = await this.resolveDisplayName(senderJid, groupJid);
-        const mentionNames = await this.resolveMentionNames(context.mentionedJids, groupJid);
+        const mentions = this.resolveMentionIds(context.mentionedJids);
         const nameCache = await this.buildNameCache(groupJid);
         const botJids = [
           typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
@@ -173,7 +173,7 @@ export class WhatsAppClient {
           pushName: msg.pushName || undefined,
           senderName: senderName || undefined,
           nameCache: Object.keys(nameCache).length ? nameCache : undefined,
-          mentionNames: Object.keys(mentionNames).length ? mentionNames : undefined,
+          mentions: mentions.length ? mentions : undefined,
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
@@ -235,6 +235,13 @@ export class WhatsAppClient {
     return [...keys];
   }
 
+  private canonicalJid(raw: string): string {
+    const text = raw.trim().toLowerCase();
+    const [localAndDevice, domain] = text.split('@', 2);
+    const local = localAndDevice?.split(':', 1)[0] || '';
+    return domain ? `${local}@${domain}` : local;
+  }
+
   private rememberContactId(raw: unknown, name: string): void {
     if (typeof raw !== 'string' || !raw) {
       return;
@@ -293,20 +300,10 @@ export class WhatsAppClient {
     }
   }
 
-  private async resolveMentionNames(
+  private resolveMentionIds(
     mentionedJids: string[],
-    groupJid: string | undefined,
-  ): Promise<Record<string, string>> {
-    const result: Record<string, string> = {};
-    if (!mentionedJids.length) {
-      return result;
-    }
-
-    for (const jid of mentionedJids) {
-      const name = await this.resolveDisplayName(jid, groupJid);
-      result[jid] = name || this.jidKeys(jid)[0]?.split('@', 1)[0] || jid;
-    }
-    return result;
+  ): string[] {
+    return [...new Set(mentionedJids.map((jid) => this.canonicalJid(jid)).filter(Boolean))];
   }
 
   private async buildNameCache(groupJid: string | undefined): Promise<Record<string, string>> {
@@ -321,6 +318,18 @@ export class WhatsAppClient {
     for (const names of this.groupParticipantNames.values()) {
       for (const [key, value] of names.entries()) {
         result[key] = value;
+      }
+    }
+    const botName = typeof this.sock?.user?.name === 'string' ? this.sock.user.name.trim() : '';
+    if (botName) {
+      const botJids = [
+        typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
+        typeof this.sock?.user?.lid === 'string' ? this.sock.user.lid : undefined,
+      ].filter((v): v is string => typeof v === 'string' && v.length > 0);
+      for (const jid of botJids) {
+        for (const key of this.jidKeys(jid)) {
+          result[key] = botName;
+        }
       }
     }
     return result;
