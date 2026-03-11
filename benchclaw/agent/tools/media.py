@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import base64
-import mimetypes
 from typing import Any
+
+import filetype
 
 from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
 from benchclaw.bus import ToolResult
@@ -49,8 +50,7 @@ class ReadImageTool(Tool):
         file_path = ctx.workspace / path
         if not file_path.is_file():
             raise FileNotFoundError(f"Media file not found: {path}")
-        mime, _ = mimetypes.guess_type(str(file_path))
-        mime = mime or "image/jpeg"
+        mime = filetype.guess_mime(str(file_path)) or "image/jpeg"
         data = base64.b64encode(file_path.read_bytes()).decode()
         return [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}]
 

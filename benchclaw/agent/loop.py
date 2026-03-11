@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import mimetypes
 import re
 from pathlib import Path
 
+import filetype
 from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
@@ -219,8 +219,11 @@ class AgentLoop:
         blocks = []
         for path_str in paths:
             p = workspace / path_str
-            mime, _ = mimetypes.guess_type(path_str)
-            if not p.is_file() or not mime or not mime.startswith("image/"):
+            if not p.is_file():
+                logger.warning(f"Skipping non-image or missing file: {path_str}")
+                continue
+            mime = filetype.guess_mime(str(p))
+            if not mime or not mime.startswith("image/"):
                 logger.warning(f"Skipping non-image or missing file: {path_str}")
                 continue
             b64 = base64.b64encode(p.read_bytes()).decode()
