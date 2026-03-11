@@ -14,42 +14,29 @@ from pytimeparse.timeparse import timeparse
 from benchclaw.bus import MessageAddress
 
 
-def read_jsonl(path: Path) -> list[Any]:
-    """Read all valid entries from a JSONL file; returns [] if file doesn't exist."""
-    if not path.exists():
-        return []
-    with jsonlines.open(path) as reader:
-        return list(reader.iter(skip_invalid=True))
+class JsonlIO:
+    """Namespaced helpers for reading/writing JSONL files."""
 
+    @staticmethod
+    def read(path: Path) -> list[Any]:
+        """Read all valid entries from a JSONL file; returns [] if file doesn't exist."""
+        try:
+            with jsonlines.open(path) as reader:
+                return list(reader.iter(skip_invalid=True))
+        except FileNotFoundError:
+            return []
 
-def write_jsonl(path: Path, entries: list[dict]) -> None:
-    """Overwrite a JSONL file with entries."""
-    with jsonlines.open(path, mode="w") as writer:
-        writer.write_all(entries)
+    @staticmethod
+    def write(path: Path, entries: list[dict]) -> None:
+        """Overwrite a JSONL file with entries."""
+        with jsonlines.open(path, mode="w") as writer:
+            writer.write_all(entries)
 
-
-def append_jsonl(path: Path, entries: list[dict]) -> None:
-    """Append entries to a JSONL file."""
-    with jsonlines.open(path, mode="a") as writer:
-        writer.write_all(entries)
-
-
-def _ensure_dir(path: Path) -> Path:
-    """Ensure a directory exists, creating it if necessary."""
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def get_workspace_path() -> Path:
-    "Get the workspace path."
-    return _ensure_dir(Path("./workspace"))
-
-
-# TODO: Figure out where to move this.
-def get_skills_path(workspace: Path | None = None) -> Path:
-    """Get the skills directory within the workspace."""
-    ws = workspace or get_workspace_path()
-    return _ensure_dir(ws / "skills")
+    @staticmethod
+    def append(path: Path, entries: list[dict]) -> None:
+        """Append entries to a JSONL file."""
+        with jsonlines.open(path, mode="a") as writer:
+            writer.write_all(entries)
 
 
 def truncate_string(s: str, max_len: int = 100, suffix: str = "...") -> str:
@@ -81,14 +68,26 @@ def parse_duration(value: timedelta | int | float | str, positive: bool = True) 
 def format_duration(delta: timedelta) -> str:
     """Format duration in compact human-readable form (e.g. 30m, 2h, 45s)."""
     total_seconds = delta.total_seconds()
-    if total_seconds.is_integer():
-        seconds = int(total_seconds)
-        if seconds % 3600 == 0:
-            return f"{seconds // 3600}h"
-        if seconds % 60 == 0:
-            return f"{seconds // 60}m"
-        return f"{seconds}s"
-    return f"{total_seconds}s"
+    if not total_seconds.is_integer():
+        return f"{total_seconds}s"
+
+    seconds = int(total_seconds)
+    sign = "-" if seconds < 0 else ""
+    remaining = abs(seconds)
+    days, remaining = divmod(remaining, 86400)
+    hours, remaining = divmod(remaining, 3600)
+    minutes, remaining = divmod(remaining, 60)
+
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or parts:
+        parts.append(f"{hours}h")
+    if minutes or parts:
+        parts.append(f"{minutes}m")
+    if remaining or not parts:
+        parts.append(f"{remaining}s")
+    return sign + "".join(parts)
 
 
 DurationField: TypeAlias = Annotated[

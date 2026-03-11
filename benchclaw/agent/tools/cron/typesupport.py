@@ -7,7 +7,7 @@ from typing import Iterable, Literal
 
 from heapdict import heapdict
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from benchclaw.utils import (
     DurationField,
@@ -120,10 +120,6 @@ class CronJob(CronModel):
         if "expr" in value:
             return CronScheduleCron.model_validate(value)
         raise ValueError(f"Unknown schedule kind: {', '.join(value.keys())}")
-
-    @field_serializer("schedule")
-    def _serialize_schedule(self, value: CronSchedule) -> dict:
-        return value.model_dump(mode="json")
 
 
 class CronData(CronModel):

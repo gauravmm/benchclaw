@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
-from benchclaw.utils import _ensure_dir, append_jsonl, read_jsonl, write_jsonl
+from benchclaw.utils import JsonlIO
 
 
 class MemoryStore:
@@ -18,7 +18,8 @@ class MemoryStore:
     """
 
     def __init__(self, workspace: Path):
-        self.memory_dir = _ensure_dir(workspace / "memory")
+        self.memory_dir = workspace / "memory"
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
 
     def get_available_tags(self) -> list[str]:
         """Return sorted list of existing tag names."""
@@ -132,13 +133,15 @@ class LogStore:
     """
 
     def __init__(self, workspace: Path):
-        self.log_file = _ensure_dir(workspace / "logs") / "log.jsonl"
+        logs_dir = workspace / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        self.log_file = logs_dir / "log.jsonl"
         self._buffer: list[dict] = []  # invariant: sorted ascending by entry["ts"]
         self._date: date | None = None
 
     async def __aenter__(self) -> "LogStore":
         self._date = datetime.now().astimezone().date()
-        self._buffer = read_jsonl(self.log_file)
+        self._buffer = JsonlIO.read(self.log_file)
         return self
 
     async def __aexit__(self, *_: Any) -> None:
@@ -153,8 +156,8 @@ class LogStore:
         )
         old, recent = self._buffer[:idx], self._buffer[idx:]
         if old:
-            append_jsonl(self.log_file.parent / f"log-{self._date}.jsonl", old)
-        write_jsonl(self.log_file, recent)
+            JsonlIO.append(self.log_file.parent / f"log-{self._date}.jsonl", old)
+        JsonlIO.write(self.log_file, recent)
         self._buffer = recent
         self._date = new_date
 
@@ -172,7 +175,7 @@ class LogStore:
             "ts": now.isoformat(timespec="seconds"),
             "content": content,
         }
-        append_jsonl(self.log_file, [entry])
+        JsonlIO.append(self.log_file, [entry])
         self._buffer.append(entry)
 
     @staticmethod
