@@ -10,6 +10,8 @@ interface SendCommand {
   type: 'send';
   to: string;
   text: string;
+  imageBase64?: string;
+  imageMimeType?: string;
 }
 
 interface TypingCommand {
@@ -100,7 +102,7 @@ export class BridgeServer {
 
   private async handleCommand(cmd: SendCommand | TypingCommand): Promise<void> {
     if (cmd.type === 'send' && this.wa) {
-      await this.wa.sendMessage(cmd.to, cmd.text);
+      await this.wa.sendMessage(cmd.to, cmd.text, cmd.imageBase64, cmd.imageMimeType);
     } else if (cmd.type === 'typing' && this.wa) {
       await this.wa.sendTyping(cmd.to, cmd.is_typing);
     }

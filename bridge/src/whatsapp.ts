@@ -417,9 +417,23 @@ export class WhatsAppClient {
     return null;
   }
 
-  async sendMessage(to: string, text: string): Promise<void> {
+  async sendMessage(
+    to: string,
+    text: string,
+    imageBase64?: string,
+    imageMimeType?: string,
+  ): Promise<void> {
     if (!this.sock) {
       throw new Error('Not connected');
+    }
+
+    if (imageBase64) {
+      await this.sock.sendMessage(to, {
+        image: Buffer.from(imageBase64, 'base64'),
+        mimetype: imageMimeType || 'image/jpeg',
+        caption: text || undefined,
+      });
+      return;
     }
 
     await this.sock.sendMessage(to, { text });

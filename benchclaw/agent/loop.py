@@ -150,6 +150,7 @@ class AgentLoop:
             workspace=config.workspace_path,
             bus=bus,
             log_store=LogStore(config.workspace_path),
+            media_repo=media_repo,
             # subagent_manager=self.subagents,
         )
         self.master_ctx = master_ctx
@@ -464,6 +465,7 @@ class AgentLoop:
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
             log_store=self.tools._master_ctx.log_store,
+            media_repo=self.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
         )

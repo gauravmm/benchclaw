@@ -131,6 +131,8 @@ class EmailChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send email via SMTP."""
+        if msg.media:
+            raise ValueError("Email channel does not support outbound images")
         if not self.config.consent_granted:
             logger.warning("Skip email send: consent_granted is false")
             return

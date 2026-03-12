@@ -12,6 +12,7 @@ from benchclaw.bus import MessageAddress, MessageBus, ToolResult
 
 if TYPE_CHECKING:
     from benchclaw.agent.tools.memory import LogStore
+    from benchclaw.media import MediaRepository
 
 _TOOL_REGISTRY: dict[str, type["Tool"]] = {}
 _TOOL_CONFIG_REGISTRY: dict[str, type[BaseModel]] = {}
@@ -43,6 +44,7 @@ class ToolContext:
     workspace: Path
     bus: MessageBus | None = None  # MessageBus; None for subagents/tests
     log_store: "LogStore | None" = None  # LogStore; set by AgentLoop before building ToolRegistry
+    media_repo: "MediaRepository | None" = None
     is_subagent: bool = False
     subagent_manager: Any = None  # SubagentManager; None for subagents
     address: MessageAddress | None = None  # Current session address; None for background/subagents

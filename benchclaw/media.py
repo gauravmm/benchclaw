@@ -3,22 +3,41 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from benchclaw.bus import MessageAddress
 
 
 class MediaEntry(BaseModel):
-    channel: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    address: MessageAddress | None = None
     sender_id: str
     timestamp: str  # ISO
+    media_type: str = "file"
     mime_type: str | None
     ext: str  # file extension including dot, e.g. ".jpg"
+    original_name: str | None = None
     caption: str | None = None
+
+    @field_validator("address", mode="before")
+    @classmethod
+    def _parse_address(cls, value: Any) -> MessageAddress | None:
+        if value is None or isinstance(value, MessageAddress):
+            return value
+        if isinstance(value, str):
+            return MessageAddress.from_string(value)
+        raise TypeError(f"Unsupported media address value: {value!r}")
+
+    @field_serializer("address")
+    def _serialize_address(self, value: MessageAddress | None) -> str | None:
+        return str(value) if value else None
 
 
 class MediaRepository:
@@ -61,7 +80,7 @@ class MediaRepository:
         self.media_dir.mkdir(parents=True, exist_ok=True)
         meta_path = self.media_dir / ".meta.json"
         data = {
-            f"{bucket}/{serial}": entry.model_dump()
+            f"{bucket}/{serial}": entry.model_dump(mode="json")
             for bucket, serials in self._entries.items()
             for serial, entry in serials.items()
         }
@@ -69,10 +88,13 @@ class MediaRepository:
 
     def register(
         self,
-        sender: MessageAddress,
+        address: MessageAddress,
+        sender_id: str,
+        media_type: str,
         ext: str,
         mime_type: str | None,
         timestamp: datetime | None = None,
+        original_name: str | None = None,
     ) -> Path:
         """
         Allocate a new media file path, record the entry, save metadata, and return the abs path.
@@ -82,17 +104,19 @@ class MediaRepository:
         ts = timestamp or datetime.now()
         hhmm = ts.strftime("%H%M")
         mmdd = ts.strftime("%m%d")
-        bucket = f"{sender.hash8}/{mmdd}/{hhmm}"
+        bucket = f"{address.hash8}/{mmdd}/{hhmm}"
         serial = f"{max(map(int, self._entries.get(bucket, {})), default=0) + 1:02d}"
-        abs_path = self.media_dir / sender.hash8 / mmdd / f"{hhmm}-{serial}{ext}"
+        abs_path = self.media_dir / address.hash8 / mmdd / f"{hhmm}-{serial}{ext}"
         abs_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._entries.setdefault(bucket, {})[serial] = MediaEntry(
-            channel=sender.channel,
-            sender_id=sender.chat_id,
+            address=address,
+            sender_id=sender_id,
             timestamp=ts.isoformat(timespec="seconds"),
+            media_type=media_type,
             mime_type=mime_type,
             ext=ext,
+            original_name=original_name,
             caption=None,
         )
         self.save()
@@ -115,6 +139,92 @@ class MediaRepository:
         except ValueError, AssertionError, KeyError:
             raise KeyError(f"set_caption: no entry for {path}")
         self.save()
+
+    def iter_records(self) -> Iterable[dict[str, Any]]:
+        """Yield stored media records with their workspace-relative path."""
+        for bucket, serials in self._entries.items():
+            hash8, mmdd, hhmm = bucket.split("/")
+            for serial, entry in serials.items():
+                relpath = f"{self.media_dir.name}/{hash8}/{mmdd}/{hhmm}-{serial}{entry.ext}"
+                yield {
+                    "path": relpath,
+                    "address": str(entry.address) if entry.address else None,
+                    "sender_id": entry.sender_id,
+                    "timestamp": entry.timestamp,
+                    "media_type": entry.media_type,
+                    "mime_type": entry.mime_type,
+                    "original_name": entry.original_name,
+                    "caption": entry.caption,
+                }
+
+    def search(
+        self,
+        *,
+        query: str | None = None,
+        address: MessageAddress | None = None,
+        sender_id: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Search media metadata deterministically using stored fields and captions."""
+        limit = max(1, min(limit, 20))
+        needle = (query or "").strip().casefold()
+        lower_from = self._parse_date_bound(date_from, end=False)
+        upper_to = self._parse_date_bound(date_to, end=True)
+        matches: list[tuple[int, datetime, dict[str, Any]]] = []
+
+        for record in self.iter_records():
+            record_ts = datetime.fromisoformat(record["timestamp"])
+            record_addr = record["address"]
+            if address is not None and record_addr != str(address):
+                continue
+            if sender_id is not None and record["sender_id"] != sender_id:
+                continue
+            if lower_from is not None and record_ts < lower_from:
+                continue
+            if upper_to is not None and record_ts > upper_to:
+                continue
+
+            score = self._score_record(record, needle)
+            if needle and score < 0:
+                continue
+            matches.append((score, record_ts, record))
+
+        matches.sort(key=lambda item: (-item[0], -item[1].timestamp(), item[2]["path"]))
+        return [record for _, _, record in matches[:limit]]
+
+    @staticmethod
+    def _parse_date_bound(value: str | None, *, end: bool) -> datetime | None:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value)
+        if "T" in value:
+            return parsed
+        if end:
+            return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    @staticmethod
+    def _score_record(record: dict[str, Any], needle: str) -> int:
+        if not needle:
+            return 0
+        path = str(record["path"]).casefold()
+        name = (record.get("original_name") or "").casefold()
+        caption = (record.get("caption") or "").casefold()
+        mime = (record.get("mime_type") or "").casefold()
+        address = (record.get("address") or "").casefold()
+        sender_id = (record.get("sender_id") or "").casefold()
+
+        if any(value == needle for value in (path, name, address, sender_id)):
+            return 300
+        if needle in path or needle in name:
+            return 200
+        if needle in caption:
+            return 100
+        if any(needle in hay for hay in (mime, address, sender_id)):
+            return 50
+        return -1
 
     async def __aenter__(self) -> "MediaRepository":
         self.media_dir.mkdir(parents=True, exist_ok=True)

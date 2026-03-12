@@ -5,8 +5,10 @@ import base64
 import json
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
+import filetype
 import websockets
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -164,6 +166,18 @@ class WhatsAppChannel(BaseChannel):
 
         try:
             payload = {"type": "send", "to": msg.chat_id, "text": msg.content}
+            if msg.media:
+                image_path = Path(msg.media[0])
+                if not image_path.is_absolute():
+                    base_dir = self.media_repo.media_dir.parent if self.media_repo else Path.cwd()
+                    image_path = base_dir / image_path
+                if not image_path.is_file():
+                    raise FileNotFoundError(f"WhatsApp image not found: {msg.media[0]}")
+                mime = filetype.guess_mime(str(image_path))
+                if not mime or not mime.startswith("image/"):
+                    raise ValueError(f"WhatsApp outbound media is not an image: {msg.media[0]}")
+                payload["imageBase64"] = base64.b64encode(image_path.read_bytes()).decode()
+                payload["imageMimeType"] = mime
             await self._ws.send(json.dumps(payload))
         except Exception as e:
             logger.error(f"Error sending WhatsApp message: {e}")
@@ -209,17 +223,12 @@ class WhatsAppChannel(BaseChannel):
         content = self._replace_mentions(event.content, event)
         source_ts = parse_optional_timestamp(event.timestamp)
         summon_source = self._detect_summon_source(event)
-        if event.isGroup:
-            logger.debug(
-                f"WhatsApp summon detection: chat_id={chat_id} event={event} content={content!r} result={summon_source}"
-            )
 
         media_metadata = [
             item.to_media_metadata(source_channel=self.name) for item in event.mediaMetadata
         ]
         media_paths = self._save_bridge_image(event, sender_id, source_ts, media_metadata)
 
-        logger.info(f"Chat {chat_id}")
         if content == "[Voice Message]":
             logger.info(
                 f"Voice message received from {sender_id}, but direct download from bridge is not yet supported."
@@ -331,7 +340,13 @@ class WhatsAppChannel(BaseChannel):
                 "image/webp": ".webp",
             }.get(mime_type, ".bin")
             file_path = self.media_repo.register(
-                MessageAddress(self.name, sender_id), ext, mime_type, source_ts
+                MessageAddress(self.name, chat_id=event.chatId),
+                sender_id=sender_id,
+                media_type="image",
+                ext=ext,
+                mime_type=mime_type,
+                timestamp=source_ts,
+                original_name=media_metadata[0].get("original_name") if media_metadata else None,
             )
             file_path.write_bytes(base64.b64decode(event.mediaBase64))
             saved_at = datetime.now().isoformat(timespec="seconds")
