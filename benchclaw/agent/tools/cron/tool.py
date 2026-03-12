@@ -191,10 +191,7 @@ class CronTool(Tool):
         if cron_expr:
             return CronScheduleCron(expr=cron_expr)
         if at:
-            at_dt = _parse_timestamp(at)
-            if at_dt <= datetime.now().astimezone():
-                raise ValueError(f"'{at}' is in the past")
-            return CronScheduleAt(at=at_dt)
+            return CronScheduleAt(at=_parse_timestamp(at))
         raise ValueError("either every_seconds, cron_expr, or at is required")
 
     def _signal_wakeup(self) -> None:
