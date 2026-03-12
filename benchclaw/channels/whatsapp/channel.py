@@ -165,7 +165,7 @@ class WhatsAppChannel(BaseChannel):
 
     async def _handle_bridge_inbound(self, event: BridgeMessageEvent) -> None:
         chat_id = str(event.chatId)
-        sender_id = self._sender_id(chat_id)
+        sender_id = event.chatId.localpart
         content = self._replace_mentions(event.content, event)
         source_ts = parse_optional_timestamp(event.timestamp)
         summon_source = self._detect_summon_source(event)
@@ -190,25 +190,20 @@ class WhatsAppChannel(BaseChannel):
             timestamp=source_ts,
         )
 
-    def resolve_person_name(self, person_id: WhatsAppId, payload: BridgeMessageEvent) -> str | None:
-        return payload.resolve_name(person_id)
-
     def _replace_mentions(self, content: str, payload: BridgeMessageEvent) -> str:
         for person_id in payload.mentions or []:
-            name = (self.resolve_person_name(person_id, payload) or "").strip()
-            localpart = self._mention_id(str(person_id))
-            if name and localpart:
+            name = payload.resolve_name(person_id) or ""
+            if name and person_id.localpart:
                 replacement = name if name.startswith("@") else f"@{name}"
-                content = re.sub(rf"(?<!\w)@{re.escape(localpart)}\b", replacement, content)
+                content = re.sub(
+                    rf"(?<!\w)@{re.escape(person_id.localpart)}\b", replacement, content
+                )
         return content
-
-    def _bot_ids(self, payload: BridgeMessageEvent) -> set[WhatsAppId]:
-        return set(payload.botJids or [])
 
     def _detect_summon_source(
         self, payload: BridgeMessageEvent
     ) -> Literal["mention", "reply"] | None:
-        bot_jids = self._bot_ids(payload)
+        bot_jids = set(payload.botJids or [])
         if not payload.isGroup or not bot_jids:
             return None
         if payload.replyTo and payload.replyTo in bot_jids:
@@ -216,14 +211,6 @@ class WhatsAppChannel(BaseChannel):
         if any(item in bot_jids for item in payload.mentions or []):
             return "mention"
         return None
-
-    @staticmethod
-    def _sender_id(chat_id: str) -> str:
-        return WhatsAppId.from_raw(chat_id).localpart
-
-    @staticmethod
-    def _mention_id(person_id: str) -> str:
-        return person_id.strip().lower().partition("@")[0].split(":", 1)[0]
 
     def _message_metadata(
         self,
@@ -240,7 +227,7 @@ class WhatsAppChannel(BaseChannel):
                 (
                     resolved
                     for item in event.botJids or []
-                    if (resolved := self.resolve_person_name(item, event))
+                    if (resolved := event.resolve_name(item))
                 ),
                 None,
             ),
