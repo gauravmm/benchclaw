@@ -12,6 +12,8 @@ from benchclaw.channels.attention import AttentionPolicy, InboundAttentionFilter
 from benchclaw.channels.base import BaseChannel, ChannelConfig
 from benchclaw.channels.telegrm import TelegramChannel, TelegramConfig
 from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig
+from benchclaw.channels.whatsapp.address import WhatsAppId
+from benchclaw.channels.whatsapp.bridge import BridgeMessageEvent
 
 
 def _ts(seconds: int) -> datetime:
@@ -235,6 +237,27 @@ async def test_message_bus_publish_inbound_accepts_one_or_more() -> None:
     assert isinstance(first, InboundMessage)
     assert isinstance(second, InboundMessage)
     assert [first.content, second.content] == ["first", "second"]
+
+
+def test_whatsapp_bridge_event_parses_typed_ids() -> None:
+    event = BridgeMessageEvent.model_validate(
+        {
+            "type": "message",
+            "id": "m-typed",
+            "chatId": "222355137806442@lid",
+            "content": "hello",
+            "replyTo": "12025550123@s.whatsapp.net",
+            "mentions": ["38818635882692@lid"],
+            "botJids": ["38818635882692@lid"],
+            "nameCache": {"38818635882692@lid": "benchbot"},
+        }
+    )
+
+    assert event.chatId == WhatsAppId("222355137806442")
+    assert event.replyTo == WhatsAppId("12025550123")
+    assert event.mentions == [WhatsAppId("38818635882692")]
+    assert event.botJids == [WhatsAppId("38818635882692")]
+    assert event.resolve_name(WhatsAppId("38818635882692")) == "benchbot"
 
 
 @pytest.mark.asyncio

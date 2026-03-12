@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer, TypeAdapter
 
 from benchclaw.bus import MediaMetadata
+from benchclaw.channels.whatsapp.address import WhatsAppId
+
+
+def _parse_whatsapp_id(value: WhatsAppId | str) -> WhatsAppId:
+    if isinstance(value, WhatsAppId):
+        return value
+    if isinstance(value, str):
+        return WhatsAppId.from_raw(value)
+    raise TypeError(f"Unsupported WhatsAppId value: {value!r}")
+
+
+WhatsAppIdField = Annotated[
+    WhatsAppId,
+    BeforeValidator(_parse_whatsapp_id),
+    PlainSerializer(lambda value: str(value), return_type=str),
+]
 
 
 class _BridgeModel(BaseModel):
@@ -36,7 +52,7 @@ class BridgeMediaMetadata(_BridgeModel):
 class BridgeMessageEvent(_BridgeModel):
     type: Literal["message"]
     id: str
-    chatId: str  # noqa: N815
+    chatId: WhatsAppIdField  # noqa: N815
     content: str
     timestamp: int | float | str | None = None
     isGroup: bool = False  # noqa: N815
@@ -46,9 +62,18 @@ class BridgeMessageEvent(_BridgeModel):
     mediaMetadata: list[BridgeMediaMetadata] = Field(default_factory=list)  # noqa: N815
     mediaBase64: str | None = None  # noqa: N815
     mediaType: str | None = None  # noqa: N815
-    mentions: list[str] | None = None  # noqa: N815
-    replyTo: str | None = None  # noqa: N815
-    botJids: list[str] | None = None  # noqa: N815
+    mentions: list[WhatsAppIdField] | None = None  # noqa: N815
+    replyTo: WhatsAppIdField | None = None  # noqa: N815
+    botJids: list[WhatsAppIdField] | None = None  # noqa: N815
+
+    def resolve_name(self, person_id: WhatsAppId) -> str | None:
+        cache = self.nameCache or {}
+        for key, value in cache.items():
+            if isinstance(key, str) and isinstance(value, str):
+                if WhatsAppId.from_raw(key) == person_id:
+                    value = value.strip()
+                    return value or None
+        return None
 
 
 class BridgeStatusEvent(_BridgeModel):

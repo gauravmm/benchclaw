@@ -164,7 +164,7 @@ class WhatsAppChannel(BaseChannel):
                 pass
 
     async def _handle_bridge_inbound(self, event: BridgeMessageEvent) -> None:
-        chat_id = str(WhatsAppId.from_raw(event.chatId))
+        chat_id = str(event.chatId)
         sender_id = self._sender_id(chat_id)
         content = self._replace_mentions(event.content, event)
         source_ts = parse_optional_timestamp(event.timestamp)
@@ -190,31 +190,20 @@ class WhatsAppChannel(BaseChannel):
             timestamp=source_ts,
         )
 
-    def _normalized_name_cache(self, payload: BridgeMessageEvent) -> dict[str, str]:
-        cache = payload.nameCache or {}
-        return {
-            str(WhatsAppId.from_raw(key)): value
-            for key, value in cache.items()
-            if isinstance(key, str) and isinstance(value, str)
-        }
-
-    def resolve_person_name(self, person_id: str, payload: BridgeMessageEvent) -> str | None:
-        value = self._normalized_name_cache(payload).get(str(WhatsAppId.from_raw(person_id)))
-        if isinstance(value, str):
-            return value.strip() or None
-        return None
-
-    def _bot_ids(self, payload: BridgeMessageEvent) -> set[str]:
-        return {str(WhatsAppId.from_raw(item)) for item in payload.botJids or [] if item}
+    def resolve_person_name(self, person_id: WhatsAppId, payload: BridgeMessageEvent) -> str | None:
+        return payload.resolve_name(person_id)
 
     def _replace_mentions(self, content: str, payload: BridgeMessageEvent) -> str:
         for person_id in payload.mentions or []:
             name = (self.resolve_person_name(person_id, payload) or "").strip()
-            localpart = self._mention_id(person_id)
+            localpart = self._mention_id(str(person_id))
             if name and localpart:
                 replacement = name if name.startswith("@") else f"@{name}"
                 content = re.sub(rf"(?<!\w)@{re.escape(localpart)}\b", replacement, content)
         return content
+
+    def _bot_ids(self, payload: BridgeMessageEvent) -> set[WhatsAppId]:
+        return set(payload.botJids or [])
 
     def _detect_summon_source(
         self, payload: BridgeMessageEvent
@@ -222,9 +211,9 @@ class WhatsAppChannel(BaseChannel):
         bot_jids = self._bot_ids(payload)
         if not payload.isGroup or not bot_jids:
             return None
-        if payload.replyTo and str(WhatsAppId.from_raw(payload.replyTo)) in bot_jids:
+        if payload.replyTo and payload.replyTo in bot_jids:
             return "reply"
-        if any(str(WhatsAppId.from_raw(item)) in bot_jids for item in payload.mentions or []):
+        if any(item in bot_jids for item in payload.mentions or []):
             return "mention"
         return None
 
@@ -284,7 +273,7 @@ class WhatsAppChannel(BaseChannel):
                 "image/webp": ".webp",
             }.get(mime_type, ".bin")
             file_path = self.media_repo.register(
-                WhatsAppId.from_raw(event.chatId).as_address(),
+                event.chatId.as_address(),
                 sender_id=sender_id,
                 media_type="image",
                 ext=ext,
