@@ -12,6 +12,11 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from benchclaw.bus import MessageAddress
+from benchclaw.channels.whatsapp.address import (
+    normalize_whatsapp_address,
+    parse_normalized_whatsapp_address,
+    whatsapp_addresses_match,
+)
 
 
 class MediaEntry(BaseModel):
@@ -30,9 +35,9 @@ class MediaEntry(BaseModel):
     @classmethod
     def _parse_address(cls, value: Any) -> MessageAddress | None:
         if value is None or isinstance(value, MessageAddress):
-            return value
+            return normalize_whatsapp_address(value) if isinstance(value, MessageAddress) else value
         if isinstance(value, str):
-            return MessageAddress.from_string(value)
+            return parse_normalized_whatsapp_address(value)
         raise TypeError(f"Unsupported media address value: {value!r}")
 
     @field_serializer("address")
@@ -177,7 +182,7 @@ class MediaRepository:
         for record in self.iter_records():
             record_ts = datetime.fromisoformat(record["timestamp"])
             record_addr = record["address"]
-            if address is not None and record_addr != str(address):
+            if address is not None and not whatsapp_addresses_match(record_addr, str(address)):
                 continue
             if sender_id is not None and record["sender_id"] != sender_id:
                 continue
@@ -229,14 +234,14 @@ class MediaRepository:
     async def __aenter__(self) -> "MediaRepository":
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.load()
-        if purged := self.purge_old():
+        if purged := self._purge_old():
             logger.info(f"Purged {purged} old media files")
         return self
 
     async def __aexit__(self, *_: object) -> None:
         pass  # save() is called after every mutation
 
-    def purge_old(self) -> int:
+    def _purge_old(self) -> int:
         """Delete files older than max_age_days. Removes empty dirs. Returns count deleted."""
         today = datetime.now().date()
         today_md = today.strftime("%m%d")

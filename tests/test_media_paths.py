@@ -189,7 +189,7 @@ def test_purge_old(tmp_path: Path):
     old_path.touch()
     new_path.touch()
 
-    deleted = repo.purge_old()
+    deleted = repo._purge_old()
 
     assert deleted == 1
     assert not old_path.exists()
@@ -301,3 +301,31 @@ def test_search_includes_legacy_entries_in_global_search(tmp_path: Path):
 
     assert len(results) == 1
     assert results[0]["address"] is None
+
+
+def test_search_normalizes_whatsapp_address_matching(tmp_path: Path):
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(parents=True)
+    meta = {
+        "hash/0310/1423/01": {
+            "address": "whatsapp:222355137806442@lid",
+            "sender_id": "legacy-user",
+            "timestamp": "2026-03-10T14:23:00",
+            "media_type": "image",
+            "mime_type": "image/jpeg",
+            "ext": ".jpg",
+            "caption": "legacy receipt photo",
+        }
+    }
+    (media_dir / ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    repo = MediaRepository(media_dir)
+    repo.load()
+    results = repo.search(
+        query="receipt",
+        address=MessageAddress("whatsapp", "222355137806442"),
+        limit=5,
+    )
+
+    assert len(results) == 1
+    assert results[0]["address"] == "whatsapp:222355137806442"

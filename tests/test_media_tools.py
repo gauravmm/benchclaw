@@ -44,6 +44,31 @@ async def test_send_image_uses_current_address(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_send_image_normalizes_whatsapp_shorthand_address(tmp_path: Path):
+    workspace = tmp_path
+    image = workspace / "media" / "x.png"
+    _write_png(image)
+    bus = MessageBus()
+    ctx = ToolContext(
+        workspace=workspace,
+        bus=bus,
+        address=MessageAddress("whatsapp", "222355137806442@lid"),
+    )
+
+    result = await SendImageTool().execute(
+        ctx,
+        path="media/x.png",
+        caption="hello",
+        address="whatsapp:222355137806442",
+    )
+    outbound = await bus.consume_outbound(channel="whatsapp")
+
+    assert result == "Image sent to whatsapp:222355137806442"
+    assert isinstance(outbound, OutboundMessage)
+    assert outbound.address == MessageAddress("whatsapp", "222355137806442")
+
+
+@pytest.mark.asyncio
 async def test_send_image_rejects_non_image(tmp_path: Path):
     workspace = tmp_path
     bad = workspace / "notes.txt"
@@ -123,6 +148,68 @@ async def test_search_images_filters_explicit_address(tmp_path: Path):
     assert [item["address"] for item in parsed] == ["telegram:chat-2"]
 
 
+@pytest.mark.asyncio
+async def test_search_images_normalizes_whatsapp_shorthand_address(tmp_path: Path):
+    repo = MediaRepository(tmp_path / "media")
+    repo.load()
+    path = repo.register(
+        MessageAddress("whatsapp", "222355137806442@lid"),
+        sender_id="alice",
+        media_type="image",
+        ext=".png",
+        mime_type="image/png",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
+        original_name="receipt.png",
+    )
+    _write_png(path)
+    repo.set_caption(repo.media_relpath(path), "receipt")
+
+    ctx = ToolContext(
+        workspace=tmp_path,
+        media_repo=repo,
+        address=MessageAddress("whatsapp", "222355137806442@lid"),
+    )
+    result = await SearchImagesTool().execute(
+        ctx,
+        query="receipt",
+        address="whatsapp:222355137806442",
+    )
+    parsed = json.loads(result)
+
+    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442"]
+
+
+@pytest.mark.asyncio
+async def test_search_images_matches_legacy_whatsapp_lid_record(tmp_path: Path):
+    media_dir = tmp_path / "media"
+    media_dir.mkdir(parents=True)
+    legacy = {
+        "hash/0310/1423/01": {
+            "address": "whatsapp:222355137806442@lid",
+            "sender_id": "alice",
+            "timestamp": "2026-03-10T14:23:00",
+            "media_type": "image",
+            "mime_type": "image/png",
+            "ext": ".png",
+            "original_name": "receipt.png",
+            "caption": "receipt",
+        }
+    }
+    (media_dir / ".meta.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    repo = MediaRepository(media_dir)
+    repo.load()
+    ctx = ToolContext(workspace=tmp_path, media_repo=repo)
+    result = await SearchImagesTool().execute(
+        ctx,
+        query="receipt",
+        address="whatsapp:222355137806442",
+    )
+    parsed = json.loads(result)
+
+    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442"]
+
+
 class _FakeTelegramBot:
     def __init__(self) -> None:
         self.sent_photo: dict | None = None
@@ -188,3 +275,43 @@ async def test_whatsapp_send_serializes_image_payload(tmp_path: Path):
     assert parsed["text"] == "caption"
     assert parsed["imageMimeType"] == "image/png"
     assert isinstance(parsed["imageBase64"], str)
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_normalizes_bare_chat_id(tmp_path: Path):
+    image = tmp_path / "media" / "out.png"
+    _write_png(image)
+    channel = WhatsAppChannel(WhatsAppConfig(), MessageBus(), media_repo=None)
+    channel._ws = _FakeWS()
+    channel._connected = True
+
+    await channel.send(
+        OutboundMessage(
+            address=MessageAddress("whatsapp", "123"),
+            content="caption",
+            media=[str(image)],
+        )
+    )
+
+    [payload] = channel._ws.payloads
+    parsed = json.loads(payload)
+    assert parsed["to"] == "123@s.whatsapp.net"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_inbound_normalizes_direct_chat_id(tmp_path: Path):
+    bus = MessageBus()
+    channel = WhatsAppChannel(WhatsAppConfig(), bus, media_repo=None)
+    payload = {
+        "type": "message",
+        "id": "m-direct",
+        "chatId": "222355137806442@lid",
+        "content": "hello",
+        "timestamp": 1_700_000_060,
+        "isGroup": False,
+    }
+
+    await channel._handle_bridge_message(json.dumps(payload))
+
+    msg = await bus.consume_inbound(address=MessageAddress("whatsapp", "222355137806442"))
+    assert msg.address == MessageAddress("whatsapp", "222355137806442")

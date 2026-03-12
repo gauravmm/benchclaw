@@ -1,4 +1,6 @@
-"""WhatsApp channel implementation using Node.js bridge."""
+"""WhatsApp channel implementation using the Node.js bridge."""
+
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -6,89 +8,30 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
 
 import filetype
 import websockets
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
+from benchclaw.channels.whatsapp.address import (
+    normalize_whatsapp_chat_id,
+    normalize_whatsapp_person_id,
+    outbound_whatsapp_chat_id,
+)
+from benchclaw.channels.whatsapp.bridge import (
+    BRIDGE_EVENT_ADAPTER,
+    BridgeErrorEvent,
+    BridgeMessageEvent,
+    BridgeQrEvent,
+    BridgeSentEvent,
+    BridgeStatusEvent,
+)
 from benchclaw.media import MediaRepository
 from benchclaw.utils import parse_optional_timestamp
-
-
-class _BridgeModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-
-class _BridgeMediaMetadata(_BridgeModel):
-    path: str | None = None
-    media_type: str = "file"
-    mime_type: str | None = None
-    size_bytes: int | None = None
-    saved_at: str | None = None
-    original_name: str | None = None
-
-    def to_media_metadata(self, *, source_channel: str) -> MediaMetadata:
-        return {
-            "path": self.path,
-            "media_type": self.media_type,
-            "mime_type": self.mime_type,
-            "size_bytes": self.size_bytes,
-            "saved_at": self.saved_at,
-            "source_channel": source_channel,
-            "original_name": self.original_name,
-        }
-
-
-class _BridgeMessageEvent(_BridgeModel):
-    type: Literal["message"]
-    id: str
-    chatId: str  # noqa: N815
-    content: str
-    timestamp: int | float | str | None = None
-    isGroup: bool = False  # noqa: N815
-    pushName: str | None = None  # noqa: N815
-    senderName: str | None = None  # noqa: N815
-    nameCache: dict[str, str] | None = None  # noqa: N815
-    mediaMetadata: list[_BridgeMediaMetadata] = Field(default_factory=list)  # noqa: N815
-    mediaBase64: str | None = None  # noqa: N815
-    mediaType: str | None = None  # noqa: N815
-    mentions: list[str] | None = None  # noqa: N815
-    replyTo: str | None = None  # noqa: N815
-    botJids: list[str] | None = None  # noqa: N815
-
-
-class _BridgeStatusEvent(_BridgeModel):
-    type: Literal["status"]
-    status: str
-
-
-class _BridgeQrEvent(_BridgeModel):
-    type: Literal["qr"]
-    qr: str | None = None
-
-
-class _BridgeErrorEvent(_BridgeModel):
-    type: Literal["error"]
-    error: str | None = None
-
-
-class _BridgeSentEvent(_BridgeModel):
-    type: Literal["sent"]
-
-
-WhatsAppBridgeEvent = Annotated[
-    _BridgeMessageEvent
-    | _BridgeStatusEvent
-    | _BridgeQrEvent
-    | _BridgeErrorEvent
-    | _BridgeSentEvent,
-    Field(discriminator="type"),
-]
-_BRIDGE_EVENT_ADAPTER = TypeAdapter(WhatsAppBridgeEvent)
 
 
 class WhatsAppConfig(ChannelConfig):
@@ -138,7 +81,6 @@ class WhatsAppChannel(BaseChannel):
             try:
                 async with websockets.connect(self.config.bridge_url) as ws:
                     self._ws = ws
-                    # Send auth token if configured
                     if self.config.bridge_token:
                         await ws.send(
                             json.dumps({"type": "auth", "token": self.config.bridge_token})
@@ -146,7 +88,6 @@ class WhatsAppChannel(BaseChannel):
                     self._connected = True
                     logger.info("Connected to WhatsApp bridge")
 
-                    # Listen for messages
                     async for message in ws:
                         try:
                             await self._handle_bridge_message(str(message))
@@ -161,11 +102,14 @@ class WhatsAppChannel(BaseChannel):
         """Send a message through WhatsApp."""
         if not self._ws or not self._connected:
             logger.warning("WhatsApp bridge not connected")
-            # TODO: Propagate a message back to the loop saying that WhatsApp is down.
             return
 
         try:
-            payload = {"type": "send", "to": msg.chat_id, "text": msg.content}
+            payload = {
+                "type": "send",
+                "to": outbound_whatsapp_chat_id(msg.chat_id),
+                "text": msg.content,
+            }
             if msg.media:
                 image_path = Path(msg.media[0])
                 if not image_path.is_absolute():
@@ -188,7 +132,11 @@ class WhatsAppChannel(BaseChannel):
         try:
             await self._ws.send(
                 json.dumps(
-                    {"type": "typing", "to": event.address.chat_id, "is_typing": event.is_typing}
+                    {
+                        "type": "typing",
+                        "to": outbound_whatsapp_chat_id(event.address.chat_id),
+                        "is_typing": event.is_typing,
+                    }
                 )
             )
         except Exception as e:
@@ -197,7 +145,7 @@ class WhatsAppChannel(BaseChannel):
     async def _handle_bridge_message(self, raw: str) -> None:
         """Handle a message from the bridge."""
         try:
-            event = _BRIDGE_EVENT_ADAPTER.validate_json(raw)
+            event = BRIDGE_EVENT_ADAPTER.validate_json(raw)
         except ValidationError as e:
             logger.warning(
                 f"Invalid WhatsApp bridge payload: {e.errors()[0]['msg']}; raw={raw[:160]}"
@@ -205,20 +153,20 @@ class WhatsAppChannel(BaseChannel):
             return
 
         match event:
-            case _BridgeMessageEvent():
+            case BridgeMessageEvent():
                 await self._handle_bridge_inbound(event)
-            case _BridgeStatusEvent():
+            case BridgeStatusEvent():
                 logger.info(f"WhatsApp status: {event.status}")
                 self._connected = event.status == "connected"
-            case _BridgeQrEvent():
+            case BridgeQrEvent():
                 logger.error("Scan QR code in the bridge terminal to connect WhatsApp")
-            case _BridgeErrorEvent():
+            case BridgeErrorEvent():
                 logger.error(f"WhatsApp bridge error: {event.error}")
-            case _BridgeSentEvent():
-                pass  # Ignore the acknowledgement.
+            case BridgeSentEvent():
+                pass
 
-    async def _handle_bridge_inbound(self, event: _BridgeMessageEvent) -> None:
-        chat_id = event.chatId
+    async def _handle_bridge_inbound(self, event: BridgeMessageEvent) -> None:
+        chat_id = normalize_whatsapp_chat_id(event.chatId)
         sender_id = self._sender_id(chat_id)
         content = self._replace_mentions(event.content, event)
         source_ts = parse_optional_timestamp(event.timestamp)
@@ -246,24 +194,27 @@ class WhatsAppChannel(BaseChannel):
 
     @staticmethod
     def canonical_jid(raw: str) -> str:
-        text = raw.strip().lower()
-        local, sep, domain = text.partition("@")
-        local = local.split(":", 1)[0]
-        if sep:
-            return f"{local}@{domain}"
-        return local
+        return normalize_whatsapp_person_id(raw)
 
-    def resolve_person_name(self, person_id: str, payload: _BridgeMessageEvent) -> str | None:
-        value = (payload.nameCache or {}).get(self.canonical_jid(person_id))
+    def _normalized_name_cache(self, payload: BridgeMessageEvent) -> dict[str, str]:
+        cache = payload.nameCache or {}
+        return {
+            self.canonical_jid(key): value
+            for key, value in cache.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+
+    def resolve_person_name(self, person_id: str, payload: BridgeMessageEvent) -> str | None:
+        value = self._normalized_name_cache(payload).get(self.canonical_jid(person_id))
         if not isinstance(value, str):
             return None
         value = value.strip()
         return value or None
 
-    def _bot_ids(self, payload: _BridgeMessageEvent) -> set[str]:
+    def _bot_ids(self, payload: BridgeMessageEvent) -> set[str]:
         return {self.canonical_jid(item) for item in payload.botJids or [] if item}
 
-    def _replace_mentions(self, content: str, payload: _BridgeMessageEvent) -> str:
+    def _replace_mentions(self, content: str, payload: BridgeMessageEvent) -> str:
         for person_id in payload.mentions or []:
             name = (self.resolve_person_name(person_id, payload) or "").strip()
             localpart = self._mention_id(person_id)
@@ -273,7 +224,7 @@ class WhatsAppChannel(BaseChannel):
         return content
 
     def _detect_summon_source(
-        self, payload: _BridgeMessageEvent
+        self, payload: BridgeMessageEvent
     ) -> Literal["mention", "reply"] | None:
         bot_jids = self._bot_ids(payload)
         if not payload.isGroup or not bot_jids:
@@ -286,7 +237,7 @@ class WhatsAppChannel(BaseChannel):
 
     @staticmethod
     def _sender_id(chat_id: str) -> str:
-        return chat_id.split("@")[0] if "@" in chat_id else chat_id
+        return normalize_whatsapp_person_id(chat_id).split("@", 1)[0]
 
     @staticmethod
     def _mention_id(person_id: str) -> str:
@@ -294,7 +245,7 @@ class WhatsAppChannel(BaseChannel):
 
     def _message_metadata(
         self,
-        event: _BridgeMessageEvent,
+        event: BridgeMessageEvent,
         sender_id: str,
         summon_source: Literal["mention", "reply"] | None,
     ) -> dict[str, str | int | float | None | bool]:
@@ -320,7 +271,7 @@ class WhatsAppChannel(BaseChannel):
 
     def _save_bridge_image(
         self,
-        event: _BridgeMessageEvent,
+        event: BridgeMessageEvent,
         sender_id: str,
         source_ts: datetime | None,
         media_metadata: list[MediaMetadata],
@@ -340,7 +291,7 @@ class WhatsAppChannel(BaseChannel):
                 "image/webp": ".webp",
             }.get(mime_type, ".bin")
             file_path = self.media_repo.register(
-                MessageAddress(self.name, chat_id=event.chatId),
+                MessageAddress(self.name, chat_id=normalize_whatsapp_chat_id(event.chatId)),
                 sender_id=sender_id,
                 media_type="image",
                 ext=ext,

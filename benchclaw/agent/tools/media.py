@@ -11,6 +11,18 @@ import filetype
 
 from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
 from benchclaw.bus import MessageAddress, OutboundMessage, ToolResult
+from benchclaw.channels.whatsapp.address import (
+    normalize_whatsapp_address,
+    parse_normalized_whatsapp_address,
+)
+
+
+def _resolve_target_address(ctx: ToolContext, address: str | None) -> MessageAddress | None:
+    """Resolve an explicit or implicit target address."""
+    target = parse_normalized_whatsapp_address(address) if address else ctx.address
+    if target is None:
+        return None
+    return normalize_whatsapp_address(target)
 
 
 class ReadImageTool(Tool):
@@ -107,7 +119,7 @@ class SendImageTool(Tool):
     ) -> str:
         if not ctx.bus:
             raise RuntimeError("send_image requires message bus access")
-        target = MessageAddress.from_string(address) if address else ctx.address
+        target = _resolve_target_address(ctx, address)
         if target is None:
             raise ValueError("No target address available")
 
@@ -200,7 +212,7 @@ class SearchImagesTool(Tool):
     ) -> str:
         if not ctx.media_repo:
             raise RuntimeError("search_images requires media repository access")
-        resolved_address = MessageAddress.from_string(address) if address else ctx.address
+        resolved_address = _resolve_target_address(ctx, address)
 
         results = ctx.media_repo.search(
             query=query or None,
