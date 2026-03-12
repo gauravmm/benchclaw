@@ -15,9 +15,9 @@ from benchclaw.agent.tools.cron.typesupport import (
     CronScheduleCron,
     CronScheduleEvery,
     CronStore,
-    _ensure_aware,
 )
 from benchclaw.bus import MessageAddress, MessageBus, SystemEvent
+from benchclaw.utils import _parse_timestamp
 
 
 class CronTool(Tool):
@@ -105,7 +105,7 @@ class CronTool(Tool):
                 channel=job.deliver_to.channel if job.deliver_to else "cli",
                 chat_id=job.deliver_to.chat_id if job.deliver_to else "cron",
             )
-            await self._bus.publish_system_event(addr, SystemEvent(content=job.message))
+            await self._bus.publish_inbound(addr, SystemEvent(content=job.message))
             job.state.last_status = "ok"
             job.state.last_error = None
             logger.info(f"Cron: job '{job.id}' completed")
@@ -113,7 +113,7 @@ class CronTool(Tool):
             job.state.last_status = "error"
             job.state.last_error = str(e)
             logger.error(f"Cron: job '{job.id}' failed: {e}")
-        job.state.last_run_at = start.timestamp()
+        job.state.last_run_at = start
         job.updated_at = start
         self._store.executed(job.id, start)
 
@@ -186,12 +186,12 @@ class CronTool(Tool):
         until_iso: str | None,
     ) -> CronScheduleEvery | CronScheduleCron | CronScheduleAt:
         if every_seconds:
-            until = _ensure_aware(datetime.fromisoformat(until_iso)) if until_iso else None
+            until = _parse_timestamp(until_iso) if until_iso else None
             return CronScheduleEvery(every=timedelta(seconds=every_seconds), until=until)
         if cron_expr:
             return CronScheduleCron(expr=cron_expr)
         if at:
-            at_dt = _ensure_aware(datetime.fromisoformat(at))
+            at_dt = _parse_timestamp(at)
             if at_dt <= datetime.now().astimezone():
                 raise ValueError(f"'{at}' is in the past")
             return CronScheduleAt(at=at_dt)

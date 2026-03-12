@@ -85,12 +85,14 @@ class SubagentManager:
         try:
             build_ctx = ToolContext(
                 workspace=self.workspace,
+                media_repo=None,
                 is_subagent=True,
                 # No bus/subagent_manager → master_only tools are excluded
             )
             # Per-call context for subagent tool executions (no session address)
             call_ctx = ToolContext(
                 workspace=self.workspace,
+                media_repo=None,
                 is_subagent=True,
             )
             # TODO: Remove this call
@@ -199,7 +201,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
             content=announce_content,
         )
 
-        await self.bus.publish_inbound(msg)
+        await self.bus.publish_inbound(msg.address, msg)
         logger.debug(f"Subagent [{task_id}] announced result to {origin_chat_id}")
 
     def _build_subagent_prompt(self, task: str) -> str:

@@ -30,20 +30,25 @@ export interface MediaMetadata {
 
 interface ExtractedMessage {
   content: string;
-  media_metadata: MediaMetadata[];
+  mediaMetadata: MediaMetadata[];
 }
 
 export interface InboundMessage {
   id: string;
-  sender: string;
+  chatId: string;
   pn: string;
   pushName?: string;
+  senderName?: string;
+  nameCache?: Record<string, string>;
+  mentions?: string[];
   content: string;
   timestamp: number;
   isGroup: boolean;
-  media_metadata: MediaMetadata[];
+  mediaMetadata: MediaMetadata[];
   mediaBase64?: string;
   mediaType?: string;
+  replyTo?: string;
+  botJids?: string[];
 }
 
 export interface WhatsAppClientOptions {
@@ -57,6 +62,8 @@ export class WhatsAppClient {
   private sock: any = null;
   private options: WhatsAppClientOptions;
   private reconnecting = false;
+  private contactsByJid = new Map<string, string>();
+  private groupParticipantNames = new Map<string, Map<string, string>>();
 
   constructor(options: WhatsAppClientOptions) {
     this.options = options;
@@ -124,6 +131,8 @@ export class WhatsAppClient {
 
     // Save credentials on update
     this.sock.ev.on('creds.update', saveCreds);
+    this.sock.ev.on('contacts.upsert', (contacts: any[]) => this.ingestContacts(contacts));
+    this.sock.ev.on('contacts.update', (contacts: any[]) => this.ingestContacts(contacts));
 
     // Handle incoming messages
     this.sock.ev.on('messages.upsert', async ({ messages, type }: { messages: any[]; type: string }) => {
@@ -138,19 +147,39 @@ export class WhatsAppClient {
 
         const extracted = this.extractMessageContent(msg);
         if (!extracted) continue;
-        const { content, media_metadata } = extracted;
+        const { content, mediaMetadata } = extracted;
+        const context = this.extractContextInfo(msg.message);
 
         const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;
+        const groupJid = typeof msg.key.remoteJid === 'string' ? msg.key.remoteJid : undefined;
+        const senderJid =
+          (typeof msg.key.participantAlt === 'string' && msg.key.participantAlt)
+          || (typeof msg.key.participant === 'string' && msg.key.participant)
+          || (typeof msg.key.remoteJidAlt === 'string' && msg.key.remoteJidAlt)
+          || (typeof msg.key.remoteJid === 'string' && msg.key.remoteJid)
+          || undefined;
+        const senderName = await this.resolveDisplayName(senderJid, groupJid);
+        const mentions = this.resolveMentionIds(context.mentionedJids);
+        const nameCache = await this.buildNameCache(groupJid);
+        const botJids = [
+          typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
+          typeof this.sock?.user?.lid === 'string' ? this.sock.user.lid : undefined,
+        ].filter((v): v is string => typeof v === 'string' && v.length > 0);
 
         const outMsg: InboundMessage = {
           id: msg.key.id || '',
-          sender: msg.key.remoteJid || '',
+          chatId: msg.key.remoteJid || '',
           pn: msg.key.remoteJidAlt || '',
           pushName: msg.pushName || undefined,
+          senderName: senderName || undefined,
+          nameCache: Object.keys(nameCache).length ? nameCache : undefined,
+          mentions: mentions.length ? mentions : undefined,
           content,
           timestamp: msg.messageTimestamp as number,
           isGroup,
-          media_metadata,
+          mediaMetadata,
+          replyTo: context.replyTo,
+          botJids,
         };
 
         // Download image if present and attach as base64 for Python-side persistence
@@ -195,25 +224,167 @@ export class WhatsAppClient {
     };
   }
 
+  private canonicalJid(raw: string): string {
+    const text = raw.trim().toLowerCase();
+    const [localAndDevice, domain] = text.split('@', 2);
+    const local = localAndDevice?.split(':', 1)[0] || '';
+    return domain ? `${local}@${domain}` : local;
+  }
+
+  private rememberContactId(raw: unknown, name: string): void {
+    if (typeof raw !== 'string' || !raw) {
+      return;
+    }
+    this.contactsByJid.set(this.canonicalJid(raw), name);
+  }
+
+  private ingestContacts(contacts: any[]): void {
+    for (const contact of contacts) {
+      if (!contact || typeof contact !== 'object') {
+        continue;
+      }
+      const name =
+        (typeof contact.name === 'string' && contact.name.trim())
+        || (typeof contact.notify === 'string' && contact.notify.trim())
+        || (typeof contact.verifiedName === 'string' && contact.verifiedName.trim());
+      if (!name) {
+        continue;
+      }
+      this.rememberContactId(contact.id, name);
+      this.rememberContactId(contact.lid, name);
+      this.rememberContactId(contact.phoneNumber, name);
+    }
+  }
+
+  private async populateGroupParticipantNames(groupJid: string): Promise<void> {
+    if (!this.sock || this.groupParticipantNames.has(groupJid)) {
+      return;
+    }
+    try {
+      const metadata = await this.sock.groupMetadata(groupJid);
+      const names = new Map<string, string>();
+      for (const participant of metadata?.participants || []) {
+        const name =
+          (typeof participant.name === 'string' && participant.name.trim())
+          || (typeof participant.notify === 'string' && participant.notify.trim())
+          || (typeof participant.verifiedName === 'string' && participant.verifiedName.trim());
+        if (!name) {
+          continue;
+        }
+        if (participant.id) names.set(this.canonicalJid(participant.id), name);
+        if (participant.lid) names.set(this.canonicalJid(participant.lid), name);
+        if (participant.phoneNumber) names.set(this.canonicalJid(participant.phoneNumber), name);
+      }
+      this.groupParticipantNames.set(groupJid, names);
+    } catch (err) {
+      console.error('Failed to fetch WhatsApp group metadata for mention names:', err);
+    }
+  }
+
+  private resolveMentionIds(
+    mentionedJids: string[],
+  ): string[] {
+    return [...new Set(mentionedJids.map((jid) => this.canonicalJid(jid)).filter(Boolean))];
+  }
+
+  private async buildNameCache(groupJid: string | undefined): Promise<Record<string, string>> {
+    if (groupJid?.endsWith('@g.us')) {
+      await this.populateGroupParticipantNames(groupJid);
+    }
+
+    const result: Record<string, string> = {};
+    for (const [key, value] of this.contactsByJid.entries()) {
+      result[key] = value;
+    }
+    for (const names of this.groupParticipantNames.values()) {
+      for (const [key, value] of names.entries()) {
+        result[key] = value;
+      }
+    }
+    const botName = typeof this.sock?.user?.name === 'string' ? this.sock.user.name.trim() : '';
+    if (botName) {
+      const botJids = [
+        typeof this.sock?.user?.id === 'string' ? this.sock.user.id : undefined,
+        typeof this.sock?.user?.lid === 'string' ? this.sock.user.lid : undefined,
+      ].filter((v): v is string => typeof v === 'string' && v.length > 0);
+      for (const jid of botJids) {
+        result[this.canonicalJid(jid)] = botName;
+      }
+    }
+    return result;
+  }
+
+  private async resolveDisplayName(
+    jid: string | undefined,
+    groupJid: string | undefined,
+  ): Promise<string | undefined> {
+    if (!jid) {
+      return undefined;
+    }
+    if (groupJid?.endsWith('@g.us')) {
+      await this.populateGroupParticipantNames(groupJid);
+    }
+    const groupNames = groupJid ? this.groupParticipantNames.get(groupJid) : undefined;
+    return groupNames?.get(this.canonicalJid(jid)) || this.contactsByJid.get(this.canonicalJid(jid));
+  }
+
+  private unwrapMessageContent(message: any): any {
+    let current = message;
+    while (current && typeof current === 'object') {
+      const next =
+        current.ephemeralMessage?.message
+        || current.viewOnceMessage?.message
+        || current.viewOnceMessageV2?.message
+        || current.viewOnceMessageV2Extension?.message
+        || current.documentWithCaptionMessage?.message
+        || current.editedMessage?.message;
+      if (!next || next === current) {
+        return current;
+      }
+      current = next;
+    }
+    return current;
+  }
+
+  private extractContextInfo(message: any): { mentionedJids: string[]; replyTo?: string } {
+    const unwrapped = this.unwrapMessageContent(message);
+    if (!unwrapped || typeof unwrapped !== 'object') {
+      return { mentionedJids: [] };
+    }
+
+    const context =
+      unwrapped.extendedTextMessage?.contextInfo
+      || unwrapped.imageMessage?.contextInfo
+      || unwrapped.videoMessage?.contextInfo
+      || unwrapped.documentMessage?.contextInfo
+      || unwrapped.audioMessage?.contextInfo;
+
+    const mentionedJids = Array.isArray(context?.mentionedJid)
+      ? context.mentionedJid.filter((v: unknown): v is string => typeof v === 'string')
+      : [];
+    const replyTo = typeof context?.participant === 'string' ? context.participant : undefined;
+    return { mentionedJids, replyTo };
+  }
+
   private extractMessageContent(msg: any): ExtractedMessage | null {
-    const message = msg.message;
+    const message = this.unwrapMessageContent(msg.message);
     if (!message) return null;
 
     // Text message
     if (message.conversation) {
-      return { content: message.conversation, media_metadata: [] };
+      return { content: message.conversation, mediaMetadata: [] };
     }
 
     // Extended text (reply, link preview)
     if (message.extendedTextMessage?.text) {
-      return { content: message.extendedTextMessage.text, media_metadata: [] };
+      return { content: message.extendedTextMessage.text, mediaMetadata: [] };
     }
 
     if (message.imageMessage) {
       const caption = message.imageMessage.caption ? ` ${message.imageMessage.caption}` : '';
       return {
         content: `[Image: ${caption || 'No caption'}]`,
-        media_metadata: [this.mediaPlaceholder('image', message.imageMessage)],
+        mediaMetadata: [this.mediaPlaceholder('image', message.imageMessage)],
       };
     }
 
@@ -221,7 +392,7 @@ export class WhatsAppClient {
       const caption = message.videoMessage.caption ? ` ${message.videoMessage.caption}` : '';
       return {
         content: `[Video: ${caption || 'No caption'}]`,
-        media_metadata: [this.mediaPlaceholder('video', message.videoMessage)],
+        mediaMetadata: [this.mediaPlaceholder('video', message.videoMessage)],
       };
     }
 
@@ -229,7 +400,7 @@ export class WhatsAppClient {
       const caption = message.documentMessage.caption ? ` ${message.documentMessage.caption}` : '';
       return {
         content: `[Document: ${caption || 'No caption'}]`,
-        media_metadata: [this.mediaPlaceholder('file', message.documentMessage)],
+        mediaMetadata: [this.mediaPlaceholder('file', message.documentMessage)],
       };
     }
 
@@ -239,16 +410,30 @@ export class WhatsAppClient {
       const label = mediaType === 'voice' ? '[Voice Message]' : '[Audio]';
       return {
         content: label,
-        media_metadata: [this.mediaPlaceholder(mediaType, message.audioMessage)],
+        mediaMetadata: [this.mediaPlaceholder(mediaType, message.audioMessage)],
       };
     }
 
     return null;
   }
 
-  async sendMessage(to: string, text: string): Promise<void> {
+  async sendMessage(
+    to: string,
+    text: string,
+    imageBase64?: string,
+    imageMimeType?: string,
+  ): Promise<void> {
     if (!this.sock) {
       throw new Error('Not connected');
+    }
+
+    if (imageBase64) {
+      await this.sock.sendMessage(to, {
+        image: Buffer.from(imageBase64, 'base64'),
+        mimetype: imageMimeType || 'image/jpeg',
+        caption: text || undefined,
+      });
+      return;
     }
 
     await this.sock.sendMessage(to, { text });

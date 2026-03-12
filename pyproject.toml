@@ -18,6 +18,7 @@ classifiers = [
 
 dependencies = [
     "typer>=0.9.0",
+    "filetype>=1.2.0",
     "litellm>=1.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -28,7 +29,6 @@ dependencies = [
     "readability-lxml>=0.8.0",
     "rich>=13.0.0",
     "croniter>=2.0.0",
-    "dataclasses-json>=0.6.0",
     "dingtalk-stream>=0.4.0",
     "python-telegram-bot[socks]>=21.0",
     "lark-oapi>=1.0.0",
@@ -45,6 +45,7 @@ dependencies = [
     "heapdict>=1.0.1",
     "mcp>=1.0.0",
     "jsonlines>=4.0.0",
+    "pytimeparse>=1.1.8",
 ]
 
 [project.optional-dependencies]

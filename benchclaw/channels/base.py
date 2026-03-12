@@ -3,6 +3,7 @@
 import asyncio
 from abc import abstractmethod
 from asyncio import Task
+from datetime import datetime, timedelta
 from typing import Any, Self
 
 from anyio import AsyncContextManagerMixin
@@ -10,13 +11,16 @@ from loguru import logger
 from pydantic import BaseModel
 
 from benchclaw.bus import (
-    InboundMessage,
     MediaMetadata,
-    MessageAddress,
     MessageBus,
     OutboundMessage,
     TypingEvent,
 )
+from benchclaw.channels.attention import (
+    AttentionPolicy,
+    InboundAttentionFilter,
+)
+from benchclaw.utils import DurationField
 
 _CONFIG_REGISTRY: dict[str, type["ChannelConfig"]] = {}
 
@@ -28,6 +32,9 @@ def register_channel(name: str, cls: type["ChannelConfig"]) -> None:
 
 class ChannelConfig(BaseModel):
     allow_from: list[str] | None = None
+    attention_policy: AttentionPolicy = AttentionPolicy.SUMMON_GROUP
+    attention_lookback: DurationField = timedelta(minutes=5)
+    attention_gap: DurationField = timedelta(minutes=2)
 
     def make_channel(self, bus: "MessageBus", media_repo: Any = None) -> "BaseChannel":
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
@@ -55,6 +62,12 @@ class BaseChannel(AsyncContextManagerMixin):
         self.bus = bus
 
         self._task: Task | None = None  # Background task
+        self._inbound_attention = InboundAttentionFilter(
+            channel=self.name,
+            policy=self.config.attention_policy,
+            lookback=self.config.attention_lookback,
+            gap=self.config.attention_gap,
+        )
 
     async def background(self) -> None:
         """
@@ -137,6 +150,7 @@ class BaseChannel(AsyncContextManagerMixin):
         media: list[str] | None = None,
         media_metadata: list[MediaMetadata] | None = None,
         metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
     ) -> None:
         """
         Handle an incoming message from the chat platform.
@@ -150,6 +164,7 @@ class BaseChannel(AsyncContextManagerMixin):
             media: Optional list of media URLs.
             media_metadata: Optional structured metadata for media attachments.
             metadata: Optional channel-specific metadata.
+            timestamp: Optional source timestamp for attention decisions.
         """
         if not self.is_allowed(sender_id):
             logger.warning(
@@ -158,13 +173,14 @@ class BaseChannel(AsyncContextManagerMixin):
             )
             return
 
-        msg = InboundMessage(
-            address=MessageAddress(channel=self.name, chat_id=str(chat_id)),
+        inbound = self._inbound_attention.apply(
             sender_id=str(sender_id),
+            chat_id=str(chat_id),
             content=content,
-            media=media or [],
-            media_metadata=media_metadata or [],
-            metadata=metadata or {},
+            media=media,
+            media_metadata=media_metadata,
+            metadata=metadata,
+            timestamp=timestamp,
         )
-
-        await self.bus.publish_inbound(msg)
+        if inbound:
+            await self.bus.publish_inbound(inbound[0].address, *inbound)

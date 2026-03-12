@@ -28,8 +28,8 @@ class MessageTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Deliver a text message to a user on a chat channel (Telegram, Discord, etc.) that is not the current conversation channel. "
-            "You MUST NOT use this if the user expects a message on the same channel as the current conversation or cron job. "
+            "Deliver a text-only message to a user on a chat channel (Telegram, Discord, etc.) that is not the current conversation channel. "
+            "Use send_image for images. You MUST NOT use this if the user expects a message on the same channel as the current conversation or cron job. "
             "Example: `{'content': 'Your report is ready!', 'channel': 'telegram', 'chat_id': '123456'}`."
         )
 

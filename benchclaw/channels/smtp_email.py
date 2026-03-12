@@ -17,11 +17,14 @@ from typing import Any
 from loguru import logger
 
 from benchclaw.bus import MessageBus, OutboundMessage
+from benchclaw.channels.attention import AttentionPolicy
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 
 
 class EmailConfig(ChannelConfig):
     """Email channel configuration (IMAP inbound + SMTP outbound)."""
+
+    attention_policy: AttentionPolicy = AttentionPolicy.ALWAYS
 
     def make_channel(self, bus: MessageBus) -> "EmailChannel":
         return EmailChannel(self, bus)
@@ -128,6 +131,8 @@ class EmailChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send email via SMTP."""
+        if msg.media:
+            raise ValueError("Email channel does not support outbound images")
         if not self.config.consent_granted:
             logger.warning("Skip email send: consent_granted is false")
             return

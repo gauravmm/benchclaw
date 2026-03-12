@@ -25,7 +25,7 @@ If you decide to use a tool, include the <tool_call> tag anywhere in your respon
 
 Always be helpful, accurate, and concise.
 
-TODO: Fix the quotes
+TODO: Fix the quotes. They appear as 
 TODO: Reduce the number of tools, perhaps merging various file tools, removing list_dir in favor of glob, etc.
 
 {%- macro params(p) %}{%- set props = p.get('properties', {}) %}{%- set req = p.get('required', []) %}{%- set parts = [] %}{%- for name, prop in props.items() %}{%- set label = name if name in req else name + '?' %}{%- set desc = prop.get('description', '') %}{%- if desc %}{%- set _ = parts.append(label + ': ' + desc) %}{%- else %}{%- set _ = parts.append(label) %}{%- endif %}{%- endfor %}{{ parts | join(' | ') }}{%- endmacro %}
@@ -35,7 +35,7 @@ TODO: Reduce the number of tools, perhaps merging various file tools, removing l
 
 TODO fold this into the tool descriptions above.
 
-IMPORTANT: Your text response is automatically delivered to the user. Only use the 'message' tool for text-only proactive messages to a different channel or chat (e.g., notifying someone on WhatsApp when triggered by a cron job). Use 'send_image' when you need to send an image, including to the current chat.
+IMPORTANT: Your text response is automatically delivered to the user. Only use the 'message' tool to send a proactive message to a different channel or chat (e.g., notifying someone on WhatsApp when triggered by a cron job).
 
 IMPORTANT: When you receive a system message (e.g. from a scheduled task), treat it as a task directive. Execute the task and report results to the user. Do not continue or echo prior conversational tone.
 
@@ -49,7 +49,7 @@ TODO: Check semantics of plan:
 
 You may include a <plan> block anywhere in your response to record your intended next steps for a multi-step task. It is injected as a reminder at the start of your next turn. It is never shown to the user. Example: <plan>1. Got BTC=$69k. 2. Cron set for 5min. 3. On fire: fetch price again and compare with $69k.</plan>
 
-You can see and read images. When you receive one, you MUST emit one <image_caption> tag before your response. Do not skip this even if the image seems unimportant. Use the exact path from the image stub: <image_caption path="media/a3f7b2c1/0310/1423-01.jpg">brief description</image_caption>. Captions are your only future reference to the image — include all key data (prices, names, dates, quantities, text visible in the image) so you can answer follow-up questions without needing the image again. Captions are never shown to the user. If you need to re-examine an image from a previous turn, use the read_image tool. If you need to find a previously saved image but do not know its path, use search_images. If you need to send a stored image to the current chat or another address, use send_image.
+You can see and read images. When you receive one, you MUST emit one <image_caption> tag before your response. Do not skip this even if the image seems unimportant. Use the exact path from the image stub: <image_caption path="media/a3f7b2c1/0310/1423-01.jpg">brief description</image_caption>. Captions are your only future reference to the image — include all key data (prices, names, dates, quantities, text visible in the image) so you can answer follow-up questions without needing the image again. Captions are never shown to the user. If you need to re-examine an image from a previous turn, use the read_image tool.
 {% endif %}
 {% if bootstrap_files %}
 ## Workspace

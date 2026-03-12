@@ -108,8 +108,30 @@ class TypingEvent:
     is_typing: bool  # True = start indicator, False = stop
 
 
+@dataclass(frozen=True)
+class AttentionEvent:
+    """Attention (awake/asleep) state change for one address."""
+
+    address: MessageAddress
+    awake: bool  # True = just became awake, False = just went asleep
+
+
 # All events that flow through bus.inbound[addr]
 AddressEvent = InboundMessage | ToolResultEvent | SystemEvent
+# All events that flow through bus.outbound[channel]
+OutboundEvent = OutboundMessage | TypingEvent | AttentionEvent
+
+
+@dataclass
+class InboundMessageBatch:
+    """A drained batch of inbound events, sorted by type."""
+
+    tool_results: list[ToolResultEvent] = field(default_factory=list)
+    system_events: list[SystemEvent] = field(default_factory=list)
+    user_messages: list[InboundMessage] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.tool_results or self.system_events or self.user_messages)
 
 
 class MessageBus:
@@ -124,10 +146,12 @@ class MessageBus:
     receives the next message regardless of which chat it came from.
 
     Usage:
-        await bus.publish_inbound(msg)              # enqueues InboundMessage to msg.address queue
-        await bus.publish_tool_result(addr, event)  # enqueues ToolResultEvent to addr queue
-        await bus.consume_inbound(address=addr)     # next AddressEvent for that address
-        new_addrs = bus.subscribe_new_addresses()   # Queue[MessageAddress] of new addresses
+        await bus.publish_inbound(addr, msg)              # enqueues one InboundMessage
+        await bus.publish_inbound(addr, msg1, msg2, ...)  # enqueues multiple
+        await bus.publish_inbound(addr, tool_result)      # enqueues ToolResultEvent
+        await bus.publish_inbound(addr, system_event)     # enqueues SystemEvent
+        await bus.consume_inbound(address=addr)           # next AddressEvent for that address
+        new_addrs = bus.subscribe_new_addresses()         # Queue[MessageAddress] of new addresses
 
         await bus.publish_outbound(msg)             # enqueues to msg.channel queue
         await bus.consume_outbound(channel="x")     # next message for channel x
@@ -136,7 +160,7 @@ class MessageBus:
     def __init__(self):
         self.inbound: dict[MessageAddress, asyncio.Queue[AddressEvent]] = {}
         self._address_subscribers: list[asyncio.Queue[MessageAddress]] = []
-        self.outbound: dict[str, asyncio.Queue[OutboundMessage | TypingEvent]] = {}
+        self.outbound: dict[str, asyncio.Queue[OutboundEvent]] = {}
         self._channel_created = asyncio.Condition()
 
     def subscribe_new_addresses(self) -> asyncio.Queue[MessageAddress]:
@@ -149,35 +173,48 @@ class MessageBus:
         self._address_subscribers.append(q)
         return q
 
-    async def publish_inbound(self, msg: InboundMessage) -> None:
-        """Publish a user message from a channel to the agent.
+    async def publish_inbound(self, addr: MessageAddress, *events: AddressEvent) -> None:
+        """Publish one or more events to an address's inbound queue.
 
         Creates a new per-address queue on first use and notifies all subscribers.
         No lock needed: asyncio is single-threaded so the check-then-set is atomic.
         """
-        if msg.address not in self.inbound:
-            self.inbound[msg.address] = asyncio.Queue()
+        if addr not in self.inbound:
+            self.inbound[addr] = asyncio.Queue()
             for sub in self._address_subscribers:
-                sub.put_nowait(msg.address)
-        await self.inbound[msg.address].put(msg)
-
-    async def publish_tool_result(self, addr: MessageAddress, event: ToolResultEvent) -> None:
-        """Post a completed tool result to an existing per-address queue."""
-        await self.inbound[addr].put(event)
-
-    async def publish_system_event(self, addr: MessageAddress, event: SystemEvent) -> None:
-        """Post a system event to an existing per-address queue."""
-        await self.inbound[addr].put(event)
+                sub.put_nowait(addr)
+        for event in events:
+            await self.inbound[addr].put(event)
 
     async def consume_inbound(self, *, address: MessageAddress) -> AddressEvent:
         """Consume the next inbound event for the given address (blocks until available)."""
         return await self.inbound[address].get()
 
-    async def publish_typing(self, event: TypingEvent) -> None:
-        """Enqueue a typing state change into the channel's outbound queue."""
-        await self.publish_outbound(event)
+    async def consume_inbound_batch(self, *, address: MessageAddress) -> InboundMessageBatch:
+        """Block until at least one inbound event is available, then drain the queue.
 
-    async def publish_outbound(self, msg: OutboundMessage | TypingEvent) -> None:
+        Returns an InboundMessageBatch with events sorted into tool_results,
+        system_events, and user_messages. Raises TypeError on unknown event types.
+        """
+        events: list[AddressEvent] = [await self.inbound[address].get()]
+        try:
+            while True:
+                events.append(self.inbound[address].get_nowait())
+        except asyncio.QueueEmpty:
+            pass
+
+        batch = InboundMessageBatch()
+        for event in events:
+            match event:
+                case ToolResultEvent():
+                    batch.tool_results.append(event)
+                case SystemEvent():
+                    batch.system_events.append(event)
+                case InboundMessage():
+                    batch.user_messages.append(event)
+        return batch
+
+    async def publish_outbound(self, msg: OutboundEvent) -> None:
         """Enqueue a response or typing event into the channel's outbound queue, creating it if needed."""
         ch = msg.address.channel
         if ch not in self.outbound:
@@ -191,7 +228,7 @@ class MessageBus:
                     self._channel_created.notify_all()
         await self.outbound[ch].put(msg)
 
-    async def consume_outbound(self, *, channel: str) -> OutboundMessage | TypingEvent:
+    async def consume_outbound(self, *, channel: str) -> OutboundEvent:
         """Block until the next outbound event for the given channel is available.
 
         If the channel queue does not exist yet, waits until it is created by

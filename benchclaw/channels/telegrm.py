@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+from pathlib import Path
+from typing import Any
 
+import filetype
 from loguru import logger
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
@@ -120,6 +123,8 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._bot_username: str | None = None
+        self._bot_user_id: int | None = None
 
     def status(self) -> tuple[bool, str]:
         if self._app:
@@ -167,6 +172,8 @@ class TelegramChannel(BaseChannel):
 
         # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
+        self._bot_username = bot_info.username
+        self._bot_user_id = bot_info.id
         logger.info(f"Telegram bot @{bot_info.username} connected")
 
         # Start polling (this runs until cancelled)
@@ -199,18 +206,39 @@ class TelegramChannel(BaseChannel):
             return
 
         try:
-            # chat_id should be the Telegram chat ID (integer)
             chat_id = int(msg.chat_id)
+        except ValueError:
+            logger.error(f"Invalid chat_id: {msg.chat_id}")
+            return
+
+        try:
+            if msg.media:
+                image_path = Path(msg.media[0])
+                if not image_path.is_absolute():
+                    base_dir = self.media_repo.media_dir.parent if self.media_repo else Path.cwd()
+                    image_path = base_dir / image_path
+                if not image_path.is_file():
+                    raise FileNotFoundError(f"Telegram image not found: {msg.media[0]}")
+                mime = filetype.guess_mime(str(image_path))
+                if not mime or not mime.startswith("image/"):
+                    raise ValueError(f"Telegram outbound media is not an image: {msg.media[0]}")
+                caption = _markdown_to_telegram_html(msg.content) if msg.content else None
+                with image_path.open("rb") as photo:
+                    await self._app.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        caption=caption,
+                        parse_mode="HTML" if caption else None,
+                    )
+                return
             # Convert markdown to Telegram HTML
             html_content = _markdown_to_telegram_html(msg.content)
             await self._app.bot.send_message(chat_id=chat_id, text=html_content, parse_mode="HTML")
-        except ValueError:
-            logger.error(f"Invalid chat_id: {msg.chat_id}")
         except Exception as e:
             # Fallback to plain text if HTML parsing fails
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
             try:
-                await self._app.bot.send_message(chat_id=int(msg.chat_id), text=msg.content)
+                await self._app.bot.send_message(chat_id=chat_id, text=msg.content)
             except Exception as e2:
                 logger.error(f"Error sending Telegram message: {e2}")
 
@@ -272,7 +300,13 @@ class TelegramChannel(BaseChannel):
                     ext = self._get_extension(media_type, mime_type)
 
                     file_path = self.media_repo.register(
-                        MessageAddress(self.name, sender_id), ext, mime_type, message.date
+                        MessageAddress(self.name, str_chat_id),
+                        sender_id=sender_id,
+                        media_type=media_type,
+                        ext=ext,
+                        mime_type=mime_type,
+                        timestamp=message.date,
+                        original_name=getattr(media_file, "file_name", None),
                     )
                     await file.download_to_drive(str(file_path))
                     media_paths.append(self.media_repo.media_relpath(file_path))
@@ -304,6 +338,16 @@ class TelegramChannel(BaseChannel):
                     )
 
         content = "\n".join(content_parts) if content_parts else "[empty message]"
+        summon_source = self._detect_summon_source(message)
+        message_metadata = {
+            "message_id": message.message_id,
+            "user_id": user.id,
+            "username": user.username,
+            "sender_label": user.first_name or user.username,
+            "is_group": message.chat.type != "private",
+        }
+        if summon_source:
+            message_metadata["_summon_source"] = summon_source
 
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
 
@@ -314,14 +358,28 @@ class TelegramChannel(BaseChannel):
             content=content,
             media=media_paths,
             media_metadata=media_metadata,
-            metadata={
-                "message_id": message.message_id,
-                "user_id": user.id,
-                "username": user.username,
-                "sender_label": user.first_name or user.username,
-                "is_group": message.chat.type != "private",
-            },
+            metadata=message_metadata,
+            timestamp=message.date,
         )
+
+    def _detect_summon_source(self, message: Any) -> str | None:
+        reply_to_message = getattr(message, "reply_to_message", None)
+        reply_author = getattr(reply_to_message, "from_user", None)
+        if (
+            self._bot_user_id is not None
+            and reply_author is not None
+            and getattr(reply_author, "id", None) == self._bot_user_id
+        ):
+            return "reply"
+
+        username = self._bot_username
+        if not username:
+            return None
+        mention_re = re.compile(rf"(?<!\w)@{re.escape(username)}\b", re.IGNORECASE)
+        for maybe_text in (getattr(message, "text", None), getattr(message, "caption", None)):
+            if isinstance(maybe_text, str) and mention_re.search(maybe_text):
+                return "mention"
+        return None
 
     def _start_typing(self, chat_id: str) -> None:
         """Start sending 'typing...' indicator for a chat."""
