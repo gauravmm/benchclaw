@@ -11,18 +11,17 @@ import filetype
 
 from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
 from benchclaw.bus import MessageAddress, OutboundMessage, ToolResult
-from benchclaw.channels.whatsapp.address import (
-    normalize_whatsapp_address,
-    parse_normalized_whatsapp_address,
-)
+from benchclaw.channels.whatsapp.address import WhatsAppId
 
 
 def _resolve_target_address(ctx: ToolContext, address: str | None) -> MessageAddress | None:
     """Resolve an explicit or implicit target address."""
-    target = parse_normalized_whatsapp_address(address) if address else ctx.address
+    target = MessageAddress.from_string(address) if address else ctx.address
     if target is None:
         return None
-    return normalize_whatsapp_address(target)
+    if target.channel == "whatsapp":
+        return WhatsAppId.from_address(target).as_address()
+    return target
 
 
 class ReadImageTool(Tool):

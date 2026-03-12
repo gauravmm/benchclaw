@@ -15,12 +15,10 @@ import websockets
 from loguru import logger
 from pydantic import ValidationError
 
-from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
+from benchclaw.bus import MediaMetadata, MessageBus, OutboundMessage, TypingEvent
 from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
 from benchclaw.channels.whatsapp.address import (
-    normalize_whatsapp_chat_id,
-    normalize_whatsapp_person_id,
-    outbound_whatsapp_chat_id,
+    WhatsAppId,
 )
 from benchclaw.channels.whatsapp.bridge import (
     BRIDGE_EVENT_ADAPTER,
@@ -107,7 +105,7 @@ class WhatsAppChannel(BaseChannel):
         try:
             payload = {
                 "type": "send",
-                "to": outbound_whatsapp_chat_id(msg.chat_id),
+                "to": WhatsAppId.from_raw(msg.chat_id).outbound_jid(),
                 "text": msg.content,
             }
             if msg.media:
@@ -134,7 +132,7 @@ class WhatsAppChannel(BaseChannel):
                 json.dumps(
                     {
                         "type": "typing",
-                        "to": outbound_whatsapp_chat_id(event.address.chat_id),
+                        "to": WhatsAppId.from_raw(event.address.chat_id).outbound_jid(),
                         "is_typing": event.is_typing,
                     }
                 )
@@ -166,7 +164,7 @@ class WhatsAppChannel(BaseChannel):
                 pass
 
     async def _handle_bridge_inbound(self, event: BridgeMessageEvent) -> None:
-        chat_id = normalize_whatsapp_chat_id(event.chatId)
+        chat_id = str(WhatsAppId.from_raw(event.chatId))
         sender_id = self._sender_id(chat_id)
         content = self._replace_mentions(event.content, event)
         source_ts = parse_optional_timestamp(event.timestamp)
@@ -192,27 +190,22 @@ class WhatsAppChannel(BaseChannel):
             timestamp=source_ts,
         )
 
-    @staticmethod
-    def canonical_jid(raw: str) -> str:
-        return normalize_whatsapp_person_id(raw)
-
     def _normalized_name_cache(self, payload: BridgeMessageEvent) -> dict[str, str]:
         cache = payload.nameCache or {}
         return {
-            self.canonical_jid(key): value
+            str(WhatsAppId.from_raw(key)): value
             for key, value in cache.items()
             if isinstance(key, str) and isinstance(value, str)
         }
 
     def resolve_person_name(self, person_id: str, payload: BridgeMessageEvent) -> str | None:
-        value = self._normalized_name_cache(payload).get(self.canonical_jid(person_id))
-        if not isinstance(value, str):
-            return None
-        value = value.strip()
-        return value or None
+        value = self._normalized_name_cache(payload).get(str(WhatsAppId.from_raw(person_id)))
+        if isinstance(value, str):
+            return value.strip() or None
+        return None
 
     def _bot_ids(self, payload: BridgeMessageEvent) -> set[str]:
-        return {self.canonical_jid(item) for item in payload.botJids or [] if item}
+        return {str(WhatsAppId.from_raw(item)) for item in payload.botJids or [] if item}
 
     def _replace_mentions(self, content: str, payload: BridgeMessageEvent) -> str:
         for person_id in payload.mentions or []:
@@ -229,15 +222,15 @@ class WhatsAppChannel(BaseChannel):
         bot_jids = self._bot_ids(payload)
         if not payload.isGroup or not bot_jids:
             return None
-        if payload.replyTo and self.canonical_jid(payload.replyTo) in bot_jids:
+        if payload.replyTo and str(WhatsAppId.from_raw(payload.replyTo)) in bot_jids:
             return "reply"
-        if any(self.canonical_jid(item) in bot_jids for item in payload.mentions or []):
+        if any(str(WhatsAppId.from_raw(item)) in bot_jids for item in payload.mentions or []):
             return "mention"
         return None
 
     @staticmethod
     def _sender_id(chat_id: str) -> str:
-        return normalize_whatsapp_person_id(chat_id).split("@", 1)[0]
+        return WhatsAppId.from_raw(chat_id).localpart
 
     @staticmethod
     def _mention_id(person_id: str) -> str:
@@ -291,7 +284,7 @@ class WhatsAppChannel(BaseChannel):
                 "image/webp": ".webp",
             }.get(mime_type, ".bin")
             file_path = self.media_repo.register(
-                MessageAddress(self.name, chat_id=normalize_whatsapp_chat_id(event.chatId)),
+                WhatsAppId.from_raw(event.chatId).as_address(),
                 sender_id=sender_id,
                 media_type="image",
                 ext=ext,

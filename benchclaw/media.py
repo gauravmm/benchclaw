@@ -12,11 +12,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from benchclaw.bus import MessageAddress
-from benchclaw.channels.whatsapp.address import (
-    normalize_whatsapp_address,
-    parse_normalized_whatsapp_address,
-    whatsapp_addresses_match,
-)
+from benchclaw.channels.whatsapp.address import WhatsAppId
 
 
 class MediaEntry(BaseModel):
@@ -35,9 +31,14 @@ class MediaEntry(BaseModel):
     @classmethod
     def _parse_address(cls, value: Any) -> MessageAddress | None:
         if value is None or isinstance(value, MessageAddress):
-            return normalize_whatsapp_address(value) if isinstance(value, MessageAddress) else value
+            if isinstance(value, MessageAddress) and value.channel == "whatsapp":
+                return WhatsAppId.from_address(value).as_address()
+            return value
         if isinstance(value, str):
-            return parse_normalized_whatsapp_address(value)
+            parsed = MessageAddress.from_string(value)
+            if parsed.channel == "whatsapp":
+                return WhatsAppId.from_address(parsed).as_address()
+            return parsed
         raise TypeError(f"Unsupported media address value: {value!r}")
 
     @field_serializer("address")
@@ -174,6 +175,8 @@ class MediaRepository:
     ) -> list[dict[str, Any]]:
         """Search media metadata deterministically using stored fields and captions."""
         limit = max(1, min(limit, 20))
+        if address is not None and address.channel == "whatsapp":
+            address = WhatsAppId.from_address(address).as_address()
         needle = (query or "").strip().casefold()
         lower_from = self._parse_date_bound(date_from, end=False)
         upper_to = self._parse_date_bound(date_to, end=True)
@@ -182,7 +185,7 @@ class MediaRepository:
         for record in self.iter_records():
             record_ts = datetime.fromisoformat(record["timestamp"])
             record_addr = record["address"]
-            if address is not None and not whatsapp_addresses_match(record_addr, str(address)):
+            if address is not None and record_addr != str(address):
                 continue
             if sender_id is not None and record["sender_id"] != sender_id:
                 continue

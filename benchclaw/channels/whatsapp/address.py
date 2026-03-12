@@ -2,64 +2,53 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from benchclaw.bus import MessageAddress
 
 
 def _split_jid(value: str) -> tuple[str, str | None]:
-    text = value.strip().lower()
-    local, sep, domain = text.partition("@")
+    local, sep, domain = value.strip().lower().partition("@")
     local = local.split(":", 1)[0]
     return local, domain if sep else None
 
 
-def normalize_whatsapp_chat_id(chat_id: str) -> str:
-    """Return the canonical internal WhatsApp chat ID."""
-    local, domain = _split_jid(chat_id)
-    if not local:
-        return ""
-    if domain == "g.us":
-        return f"{local}@{domain}"
-    return local
+@dataclass(frozen=True, slots=True)
+class WhatsAppId:
+    """Canonical WhatsApp identity used throughout the app."""
 
+    canonical: str
 
-def normalize_whatsapp_person_id(person_id: str) -> str:
-    """Normalize a person JID for identity comparisons and name cache lookups."""
-    local, domain = _split_jid(person_id)
-    if not local:
-        return ""
-    if domain == "g.us":
-        return f"{local}@{domain}"
-    return local
+    @classmethod
+    def from_raw(cls, value: str) -> "WhatsAppId":
+        local, domain = _split_jid(value)
+        if not local:
+            return cls("")
+        if domain == "g.us":
+            return cls(f"{local}@{domain}")
+        return cls(local)
 
+    @classmethod
+    def from_address(cls, address: MessageAddress) -> "WhatsAppId":
+        if address.channel != "whatsapp":
+            raise ValueError(f"Expected whatsapp address, got {address.channel!r}")
+        return cls.from_raw(address.chat_id)
 
-def normalize_whatsapp_address(address: MessageAddress) -> MessageAddress:
-    """Normalize a MessageAddress if it targets WhatsApp."""
-    if address.channel != "whatsapp":
-        return address
-    return MessageAddress(address.channel, normalize_whatsapp_chat_id(address.chat_id))
+    @property
+    def is_group(self) -> bool:
+        return self.canonical.endswith("@g.us")
 
+    @property
+    def localpart(self) -> str:
+        return self.canonical.split("@", 1)[0]
 
-def parse_normalized_whatsapp_address(value: str | None) -> MessageAddress | None:
-    """Parse ``channel:chat_id`` and normalize WhatsApp addresses."""
-    if not value:
-        return None
-    return normalize_whatsapp_address(MessageAddress.from_string(value))
+    def as_address(self) -> MessageAddress:
+        return MessageAddress("whatsapp", self.canonical)
 
+    def outbound_jid(self) -> str:
+        if not self.canonical or self.is_group:
+            return self.canonical
+        return f"{self.canonical}@s.whatsapp.net"
 
-def whatsapp_addresses_match(left: str | None, right: str | None) -> bool:
-    """Compare stored and requested WhatsApp addresses under canonical rules."""
-    if left is None or right is None:
-        return left == right
-    left_addr = parse_normalized_whatsapp_address(left)
-    right_addr = parse_normalized_whatsapp_address(right)
-    if left_addr and right_addr and left_addr.channel == right_addr.channel == "whatsapp":
-        return left_addr == right_addr
-    return left == right
-
-
-def outbound_whatsapp_chat_id(chat_id: str) -> str:
-    """Convert canonical internal WhatsApp chat IDs to routable bridge targets."""
-    canonical = normalize_whatsapp_chat_id(chat_id)
-    if not canonical or "@" in canonical:
-        return canonical
-    return f"{canonical}@s.whatsapp.net"
+    def __str__(self) -> str:
+        return self.canonical

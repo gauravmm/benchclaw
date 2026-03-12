@@ -3,23 +3,13 @@
 from typing import Any
 
 from benchclaw.channels.whatsapp.address import (
-    normalize_whatsapp_address,
-    normalize_whatsapp_chat_id,
-    normalize_whatsapp_person_id,
-    outbound_whatsapp_chat_id,
-    parse_normalized_whatsapp_address,
-    whatsapp_addresses_match,
+    WhatsAppId,
 )
 
 __all__ = [
     "WhatsAppChannel",
     "WhatsAppConfig",
-    "normalize_whatsapp_address",
-    "normalize_whatsapp_chat_id",
-    "normalize_whatsapp_person_id",
-    "outbound_whatsapp_chat_id",
-    "parse_normalized_whatsapp_address",
-    "whatsapp_addresses_match",
+    "WhatsAppId",
 ]
 
 
