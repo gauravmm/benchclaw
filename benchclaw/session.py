@@ -41,6 +41,18 @@ def _user_prefix(sender: str | None, sent_at: str | None) -> str | None:
     return None
 
 
+def _channel_display_name(channel: str) -> str:
+    """Return a readable channel label for prompts."""
+    known = {
+        "telegram": "Telegram",
+        "whatsapp": "WhatsApp",
+        "smtp_email": "Email",
+    }
+    if channel in known:
+        return known[channel]
+    return channel.replace("_", " ").title()
+
+
 def _build_message(
     role: str,
     content: str,
@@ -124,6 +136,23 @@ class Session:
         self.live_messages = []
         self.last_consolidated = 0
         self.updated_at = datetime.now()
+
+    def describe_current_session(self) -> str:
+        """Return a readable prompt label for the current chat when possible."""
+        channel_name = _channel_display_name(self.addr.channel)
+        last_user = next((m for m in reversed(self.messages) if m.get("role") == "user"), None)
+        if not last_user:
+            return f"{channel_name} chat {self.addr.chat_id}"
+
+        metadata = last_user.get("metadata") or {}
+        sender = str(last_user.get("sender_label") or _sender_label(metadata) or "").strip() or None
+        is_group = bool(metadata.get("is_group"))
+
+        if sender and not is_group:
+            return f"{sender} on {channel_name}"
+        if sender and is_group:
+            return f"{channel_name} group chat (recent sender: {sender})"
+        return f"{channel_name} chat {self.addr.chat_id}"
 
     @classmethod
     def load(cls, path: Path) -> "Session | None":

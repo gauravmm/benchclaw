@@ -1,4 +1,5 @@
 
 ## Current Session
-Channel: {{ channel }}
-Chat ID: {{ chat_id }}
+{% if session_label %}Session: {{ session_label | xml_text }}
+{% endif %}Channel: {{ channel | xml_text }}
+Chat ID: {{ chat_id | xml_text }}

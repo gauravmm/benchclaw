@@ -28,8 +28,9 @@ class MessageTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Deliver a text-only message to a user on a chat channel (Telegram, Discord, etc.) that is not the current conversation channel. "
-            "Use send_image for images. You MUST NOT use this if the user expects a message on the same channel as the current conversation or cron job. "
+            "Deliver a text-only proactive message to a different chat or channel. "
+            "Your normal assistant reply is already delivered to the current chat automatically, so do not use this for the current turn's reply. "
+            "Always provide an explicit channel and chat_id. Use send_image for images. "
             "Example: `{'content': 'Your report is ready!', 'channel': 'telegram', 'chat_id': '123456'}`."
         )
 
@@ -41,11 +42,11 @@ class MessageTool(Tool):
                 "content": {"type": "string", "description": "The message content to send"},
                 "channel": {
                     "type": "string",
-                    "description": "Optional: target channel (telegram, discord, etc.)",
+                    "description": "Target channel (telegram, whatsapp, smtp_email, etc.)",
                 },
-                "chat_id": {"type": "string", "description": "Optional: target chat/user ID"},
+                "chat_id": {"type": "string", "description": "Target chat/user ID"},
             },
-            "required": ["content"],
+            "required": ["content", "channel", "chat_id"],
         }
 
     async def execute(
@@ -56,12 +57,16 @@ class MessageTool(Tool):
         chat_id: str | None = None,
         **kwargs: Any,
     ) -> str:
-        # Use explicit channel/chat_id if provided, otherwise fall back to session address
-        target_channel = channel or (ctx.address.channel if ctx.address else "")
-        target_chat_id = chat_id or (ctx.address.chat_id if ctx.address else "")
-
+        target_channel = (channel or "").strip()
+        target_chat_id = (chat_id or "").strip()
         if not target_channel or not target_chat_id:
-            raise ValueError("No target channel/chat specified")
+            raise ValueError("message requires explicit channel and chat_id")
+        if ctx.address and (
+            target_channel == ctx.address.channel and target_chat_id == ctx.address.chat_id
+        ):
+            raise ValueError(
+                "message cannot target the current conversation; reply with normal assistant text instead"
+            )
 
         if not self._send_callback:
             raise RuntimeError("Message sending not configured")

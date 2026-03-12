@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import re
+import time
 from pathlib import Path
 
 import filetype
@@ -39,6 +40,8 @@ _PLAN_TAG_RE = re.compile(r"<plan>(.*?)</plan>", re.DOTALL | re.IGNORECASE)
 _IMAGE_CAPTION_RE = re.compile(
     r'<image_caption\s+path="([^"]+)">(.*?)</image_caption>', re.DOTALL | re.IGNORECASE
 )
+_LOG_REMINDER_EVERY_TURNS = 4
+_LONG_REASONING_SECONDS = 20.0
 
 
 class ToolCallTracker:
@@ -328,7 +331,10 @@ class AgentLoop:
             {
                 "role": "system",
                 "content": self.context.build_system_prompt(
-                    self.tools.values(), addr.channel, addr.chat_id
+                    self.tools.values(),
+                    addr.channel,
+                    addr.chat_id,
+                    session.describe_current_session(),
                 ),
             },
             {"role": "system", "content": summary_content},
@@ -337,6 +343,47 @@ class AgentLoop:
         session.live_messages = new_live
         session.last_consolidated = len(session.messages)
         logger.info(f"Context compacted for {addr} ({len(new_live)} messages after compaction)")
+
+    def _refresh_system_prompt(self, session: Session, addr: MessageAddress) -> None:
+        """Keep the leading system prompt aligned with the latest session metadata."""
+        prompt = self.context.build_system_prompt(
+            self.tools.values(),
+            addr.channel,
+            addr.chat_id,
+            session.describe_current_session(),
+        )
+        system_message = {"role": "system", "content": prompt}
+        if session.live_messages and session.live_messages[0].get("role") == "system":
+            session.live_messages[0] = system_message
+        else:
+            session.live_messages.insert(0, system_message)
+
+    @staticmethod
+    def _build_log_reminders(turn_number: int, event_reasons: list[str]) -> list[dict[str, str]]:
+        """Build ephemeral system reminders nudging the model to log state."""
+        reminders: list[dict[str, str]] = []
+        if turn_number % _LOG_REMINDER_EVERY_TURNS == 0:
+            reminders.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Reminder: append concise log entries as you work. "
+                        "Log notable steps, fetched values, decisions, and status changes."
+                    ),
+                }
+            )
+        if event_reasons:
+            reminders.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Reminder: a notable event just occurred ("
+                        + "; ".join(event_reasons)
+                        + "). After handling it, append a concise log entry with the result."
+                    ),
+                }
+            )
+        return reminders
 
     async def _process_llm_turn(
         self,
@@ -347,24 +394,19 @@ class AgentLoop:
         current_plan: str | None,
         pending_images: list[str] | None = None,
         media_repo: MediaRepository | None = None,
-    ) -> str | None:
+        log_reminders: list[dict[str, str]] | None = None,
+    ) -> tuple[str | None, float]:
         """
         Prepare messages, call the LLM, handle compaction, and dispatch the response.
 
-        Returns the new current_plan for the next turn (or None).
-        On LLM error, publishes an error message and returns None.
+        Returns (new_current_plan, elapsed_seconds).
+        On LLM error, publishes an error message and returns (None, 0.0).
         """
+        self._refresh_system_prompt(session, addr)
         self._dump_messages(session.live_messages)
 
         # Build the message list for this LLM call, injecting the plan if set.
         llm_messages = self._strip_old_reasoning(session.live_messages)
-        if current_plan:
-            llm_messages.append(
-                {
-                    "role": "system",
-                    "content": f"Your plan from the previous turn:\n{current_plan}",
-                }
-            )
 
         # Inject pending images ephemerally into the last message (not stored in live_messages).
         if pending_images:
@@ -374,7 +416,17 @@ class AgentLoop:
                 text = last["content"] if isinstance(last["content"], str) else ""
                 llm_messages[-1] = {**last, "content": blocks + [{"type": "text", "text": text}]}
             pending_images.clear()
+        if current_plan:
+            llm_messages.append(
+                {
+                    "role": "system",
+                    "content": f"Your plan from the previous turn:\n{current_plan}",
+                }
+            )
+        if log_reminders:
+            llm_messages.extend(log_reminders)
 
+        started_at = time.monotonic()
         try:
             response = await self.provider.chat(
                 messages=llm_messages,
@@ -388,7 +440,8 @@ class AgentLoop:
             await self.bus.publish_outbound(
                 OutboundMessage(address=addr, content=f"Sorry, I encountered an error: {e}")
             )
-            return None
+            return None, 0.0
+        elapsed = time.monotonic() - started_at
 
         # Check token usage and compact if approaching context window limit.
         total_tokens = response.usage.get("total_tokens", 0)
@@ -445,7 +498,7 @@ class AgentLoop:
             logger.info(f"Response to {addr}: {preview}")
             await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
 
-        return new_plan
+        return new_plan, elapsed
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         """
@@ -472,12 +525,15 @@ class AgentLoop:
         iteration_count = 0
         pending_system_events: list[str] = []
         pending_images: list[str] = []
+        pending_log_reasons: list[str] = []
         current_plan: str | None = None
+        llm_turn_count = 0
         session.live_messages = self.context.build_context(
             history=session.get_history(max_messages=self.config.memory_window),
             tools=self.tools,
             channel=addr.channel,
             chat_id=addr.chat_id,
+            session_label=session.describe_current_session(),
         )
 
         while True:
@@ -495,6 +551,7 @@ class AgentLoop:
                 for content in pending_system_events:
                     session.live_messages.append({"role": "system", "content": content})
                 pending_system_events.clear()
+                pending_log_reasons.append("background tool results arrived")
                 needs_llm = True
 
             # 2. System events — buffer if tools are still in flight.
@@ -503,7 +560,9 @@ class AgentLoop:
                     logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
                     pending_system_events.append(event.content)
                 else:
+                    current_plan = None
                     session.live_messages.append({"role": "system", "content": event.content})
+                    pending_log_reasons.append("a system directive arrived")
                     needs_llm = True
 
             # 3. User messages — merge into one turn, interrupt any in-flight tools.
@@ -518,6 +577,7 @@ class AgentLoop:
                 msg = self._merge_user_messages(batch.user_messages)
                 preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
                 logger.info(f"Processing message from {addr}: {preview}")
+                current_plan = None
                 session.add_message(
                     "user",
                     msg.content,
@@ -539,7 +599,10 @@ class AgentLoop:
                 continue
             iteration_count += 1
 
-            current_plan = await self._process_llm_turn(
+            llm_turn_count += 1
+            log_reminders = self._build_log_reminders(llm_turn_count, pending_log_reasons)
+            pending_log_reasons = []
+            current_plan, elapsed = await self._process_llm_turn(
                 session,
                 tracker,
                 call_ctx,
@@ -547,7 +610,10 @@ class AgentLoop:
                 current_plan,
                 pending_images=pending_images,
                 media_repo=self.media_repo,
+                log_reminders=log_reminders,
             )
+            if elapsed >= _LONG_REASONING_SECONDS:
+                pending_log_reasons.append(f"the previous model step took {elapsed:.1f}s")
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""

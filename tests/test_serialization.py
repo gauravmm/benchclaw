@@ -149,6 +149,30 @@ def test_session_history_includes_user_timestamp_prefix() -> None:
     assert history[-1]["content"].endswith(": ping")
 
 
+def test_session_describe_current_session_prefers_sender_label() -> None:
+    session = Session(addr=MessageAddress(channel="telegram", chat_id="42"))
+    session.add_message(
+        "user",
+        "hello",
+        sender_id="7|alice",
+        metadata={"sender_label": "Alice", "is_group": False},
+    )
+
+    assert session.describe_current_session() == "Alice on Telegram"
+
+
+def test_session_describe_current_session_handles_group_chats() -> None:
+    session = Session(addr=MessageAddress(channel="whatsapp", chat_id="group-1"))
+    session.add_message(
+        "user",
+        "hello",
+        sender_id="7",
+        metadata={"sender_label": "Alice", "is_group": True},
+    )
+
+    assert session.describe_current_session() == "WhatsApp group chat (recent sender: Alice)"
+
+
 # ---------------------------------------------------------------------------
 # SessionManager
 # ---------------------------------------------------------------------------

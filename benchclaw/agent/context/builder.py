@@ -18,6 +18,17 @@ if TYPE_CHECKING:
 BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md"]
 
 
+def _xml_text(value: Any) -> str:
+    """Escape text for XML-like prompt blocks without mangling ordinary quotes."""
+    text = str(value)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _xml_attr(value: Any) -> str:
+    """Escape XML attribute values."""
+    return _xml_text(value).replace('"', "&quot;").replace("'", "&apos;")
+
+
 class ContextBuilder:
     """Builds the context (system prompt + messages) for the agent."""
 
@@ -29,12 +40,15 @@ class ContextBuilder:
             loader=PackageLoader("benchclaw.agent.context", "templates"),
             keep_trailing_newline=True,
         )
+        self._jinja.filters["xml_text"] = _xml_text
+        self._jinja.filters["xml_attr"] = _xml_attr
 
     def build_system_prompt(
         self,
         tools: Iterable["Tool"] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        session_label: str | None = None,
     ) -> str:
         system = platform.system()
         bootstrap_files = [
@@ -56,6 +70,7 @@ class ContextBuilder:
             ],
             channel=channel,
             chat_id=chat_id,
+            session_label=session_label,
         )
 
     def build_context(
@@ -64,13 +79,14 @@ class ContextBuilder:
         tools: ToolRegistry | None,
         channel: str | None = None,
         chat_id: str | None = None,
+        session_label: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build the base context: system prompt followed by history. No user message appended."""
         return [
             {
                 "role": "system",
                 "content": self.build_system_prompt(
-                    tools.values() if tools else None, channel, chat_id
+                    tools.values() if tools else None, channel, chat_id, session_label
                 ),
             },
             *history,

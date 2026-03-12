@@ -220,57 +220,6 @@ class EditFileTool(Tool):
         return f"Successfully edited {path}"
 
 
-class ListDirTool(Tool):
-    """Tool to list directory contents."""
-
-    @classmethod
-    def build(cls, _config: None, _ctx: ToolContext) -> "ListDirTool":
-        return cls()
-
-    @property
-    def name(self) -> str:
-        return "list_dir"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Get a detailed listing of the files and directories in a specified path, from inside the workspace directory. "
-            "Results clearly distinguish between files and directories and are sorted alphabetically. "
-            "Use when you need to explore an unfamiliar directory or verify what files exist. "
-            "Example: `{'path': 'memory/'}`."
-        )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The directory path to list, where . is the workspace dir.",
-                }
-            },
-            "required": ["path"],
-        }
-
-    async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
-        dir_path = _resolve_path(path, ctx)
-        if not dir_path.exists():
-            raise FileNotFoundError(f"Directory not found: {path}")
-        if not dir_path.is_dir():
-            raise ValueError(f"Not a directory: {path}")
-
-        items = []
-        for item in sorted(dir_path.iterdir()):
-            prefix = "📁 " if item.is_dir() else "📄 "
-            items.append(f"{prefix}{item.name}")
-
-        if not items:
-            return f"Directory {path} is empty"
-
-        return "\n".join(items)
-
-
 class GlobTool(Tool):
     """Tool to match filesystem paths with a glob pattern."""
 
@@ -286,7 +235,7 @@ class GlobTool(Tool):
     def description(self) -> str:
         return (
             "Find files and directories that match a glob pattern, from inside the workspace directory by default. "
-            "Use this tool when you know the shape of the path but not the exact filename. "
+            "Use this tool when you know the shape of the path but not the exact filename, or when you want to list a directory by using patterns like '*' or '**/*'. "
             "Returns matching paths relative to the workspace when possible. "
             "Example: `{'pattern': 'benchclaw/**/*.py', 'path': '.'}`."
         )
@@ -439,6 +388,5 @@ class GrepTool(Tool):
 register_tool("read_file", ReadFileTool)
 register_tool("write_file", WriteFileTool)
 register_tool("edit_file", EditFileTool)
-register_tool("list_dir", ListDirTool)
 register_tool("glob", GlobTool)
 register_tool("grep", GrepTool)
