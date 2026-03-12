@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import filetype
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
@@ -51,7 +52,7 @@ class MediaRepository:
     Persistent store for media files received from channels.
 
     On-disk format: <media_dir>/<hash8>/<mmdd>/<hhmm>-<serial_2d>.<ext>  (unchanged)
-    Metadata key format in .meta.json: <hash8>/<mmdd>/<hhmm>/<serial>
+    Metadata format in .meta.json: {<hash8>: {<mmdd>: {<hhmm>: {<serial>: entry}}}}
     Workspace-relative paths (e.g. "media/a3f7b2c1/0310/1423-01.jpg") are
     used throughout so the LLM can reference them in <image_caption> tags.
     """
@@ -59,9 +60,9 @@ class MediaRepository:
     def __init__(self, media_dir: Path, max_age_days: int = 30) -> None:
         self.media_dir = media_dir
         self.max_age_days = max_age_days
-        # "hash8/mmdd/hhmm" -> {"01" -> entry}
-        # Serial = max key in each bucket + 1; no separate counter needed.
-        self._entries: dict[str, dict[str, MediaEntry]] = {}
+        # hash8 -> mmdd -> hhmm -> serial -> entry
+        # Serial = max key in each time bucket + 1; no separate counter needed.
+        self._entries: dict[str, dict[str, dict[str, dict[str, MediaEntry]]]] = {}
 
     def load(self) -> None:
         """Load metadata from .meta.json.
@@ -73,11 +74,7 @@ class MediaRepository:
         if meta_path.exists():
             try:
                 data = json.loads(meta_path.read_text(encoding="utf-8"))
-                for key, entry_dict in data.items():
-                    bucket, serial = key.rsplit("/", 1)
-                    self._entries.setdefault(bucket, {})[serial] = MediaEntry.model_validate(
-                        entry_dict
-                    )
+                self._load_nested_entries(data)
             except Exception as e:
                 logger.warning(f"Failed to load media metadata: {e}")
 
@@ -86,9 +83,16 @@ class MediaRepository:
         self.media_dir.mkdir(parents=True, exist_ok=True)
         meta_path = self.media_dir / ".meta.json"
         data = {
-            f"{bucket}/{serial}": entry.model_dump(mode="json")
-            for bucket, serials in self._entries.items()
-            for serial, entry in serials.items()
+            hash8: {
+                mmdd: {
+                    hhmm: {
+                        serial: entry.model_dump(mode="json") for serial, entry in serials.items()
+                    }
+                    for hhmm, serials in by_time.items()
+                }
+                for mmdd, by_time in by_day.items()
+            }
+            for hash8, by_day in self._entries.items()
         }
         meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -110,12 +114,14 @@ class MediaRepository:
         ts = timestamp or datetime.now()
         hhmm = ts.strftime("%H%M")
         mmdd = ts.strftime("%m%d")
-        bucket = f"{address.hash8}/{mmdd}/{hhmm}"
-        serial = f"{max(map(int, self._entries.get(bucket, {})), default=0) + 1:02d}"
+        serials = (
+            self._entries.setdefault(address.hash8, {}).setdefault(mmdd, {}).setdefault(hhmm, {})
+        )
+        serial = f"{max(map(int, serials), default=0) + 1:02d}"
         abs_path = self.media_dir / address.hash8 / mmdd / f"{hhmm}-{serial}{ext}"
         abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._entries.setdefault(bucket, {})[serial] = MediaEntry(
+        serials[serial] = MediaEntry(
             address=address,
             sender_id=sender_id,
             timestamp=ts.isoformat(timespec="seconds"),
@@ -133,35 +139,47 @@ class MediaRepository:
         workspace = self.media_dir.parent
         return str(abs_path.relative_to(workspace))
 
+    def media_file(self, path: str) -> tuple[Path, str | None]:
+        """Resolve a workspace-relative media path to (absolute_path, mime_type)."""
+        hash8, mmdd, hhmm, serial = self._path_parts(path)
+        try:
+            entry = self._entries[hash8][mmdd][hhmm][serial]
+        except (KeyError, ValueError) as exc:
+            raise KeyError(f"No media entry for {path}") from exc
+
+        abs_path = self.media_dir.parent / path
+        if not abs_path.is_file():
+            raise FileNotFoundError(f"Media file not found: {path}")
+
+        mime_type = entry.mime_type or filetype.guess_mime(str(abs_path))
+        return abs_path, mime_type
+
     def set_caption(self, path: str, caption: str) -> None:
         """Update the caption for a media entry. path is workspace-relative (e.g. 'media/...')."""
         try:
-            media, rest = path.split("/", 1)
-            assert media == self.media_dir.name
-            hash8_mmdd, filename = rest.rsplit("/", 1)
-            stem = filename.rsplit(".", 1)[0]  # "hhmm-serial"
-            hhmm, serial = stem.split("-", 1)
-            self._entries[f"{hash8_mmdd}/{hhmm}"][serial].caption = caption
-        except ValueError, AssertionError, KeyError:
+            hash8, mmdd, hhmm, serial = self._path_parts(path)
+            self._entries[hash8][mmdd][hhmm][serial].caption = caption
+        except ValueError, KeyError:
             raise KeyError(f"set_caption: no entry for {path}")
         self.save()
 
     def iter_records(self) -> Iterable[dict[str, Any]]:
         """Yield stored media records with their workspace-relative path."""
-        for bucket, serials in self._entries.items():
-            hash8, mmdd, hhmm = bucket.split("/")
-            for serial, entry in serials.items():
-                relpath = f"{self.media_dir.name}/{hash8}/{mmdd}/{hhmm}-{serial}{entry.ext}"
-                yield {
-                    "path": relpath,
-                    "address": str(entry.address) if entry.address else None,
-                    "sender_id": entry.sender_id,
-                    "timestamp": entry.timestamp,
-                    "media_type": entry.media_type,
-                    "mime_type": entry.mime_type,
-                    "original_name": entry.original_name,
-                    "caption": entry.caption,
-                }
+        for hash8, by_day in self._entries.items():
+            for mmdd, by_time in by_day.items():
+                for hhmm, serials in by_time.items():
+                    for serial, entry in serials.items():
+                        relpath = f"{self.media_dir.name}/{hash8}/{mmdd}/{hhmm}-{serial}{entry.ext}"
+                        yield {
+                            "path": relpath,
+                            "address": str(entry.address) if entry.address else None,
+                            "sender_id": entry.sender_id,
+                            "timestamp": entry.timestamp,
+                            "media_type": entry.media_type,
+                            "mime_type": entry.mime_type,
+                            "original_name": entry.original_name,
+                            "caption": entry.caption,
+                        }
 
     def search(
         self,
@@ -250,16 +268,20 @@ class MediaRepository:
         today_md = today.strftime("%m%d")
         cutoff_md = (today - timedelta(days=self.max_age_days)).strftime("%m%d")
         deleted = 0
-        for bucket in list(self._entries):
-            hash8, mmdd, hhmm = bucket.split("/")
-            # Delete if mmdd is outside the rolling [cutoff_md, today_md] window.
-            # XOR of the two boundary comparisons, flipped by the year-wrap flag, handles both cases.
-            if (mmdd < cutoff_md) ^ (mmdd > today_md) ^ (cutoff_md > today_md):
-                deleted += len(self._entries[bucket])
-                for serial, entry in self._entries.pop(bucket).items():
-                    (self.media_dir / hash8 / mmdd / f"{hhmm}-{serial}{entry.ext}").unlink(
-                        missing_ok=True
-                    )
+        for hash8, by_day in list(self._entries.items()):
+            for mmdd, by_time in list(by_day.items()):
+                # Delete if mmdd is outside the rolling [cutoff_md, today_md] window.
+                # XOR of the two boundary comparisons, flipped by the year-wrap flag, handles both cases.
+                if (mmdd < cutoff_md) ^ (mmdd > today_md) ^ (cutoff_md > today_md):
+                    for hhmm, serials in by_time.items():
+                        deleted += len(serials)
+                        for serial, entry in serials.items():
+                            (self.media_dir / hash8 / mmdd / f"{hhmm}-{serial}{entry.ext}").unlink(
+                                missing_ok=True
+                            )
+                    del by_day[mmdd]
+            if not by_day:
+                del self._entries[hash8]
 
         # Remove empty directories (deepest first)
         for d in sorted(self.media_dir.rglob("*"), reverse=True):
@@ -269,3 +291,22 @@ class MediaRepository:
         if deleted:
             self.save()
         return deleted
+
+    def _path_parts(self, path: str) -> tuple[str, str, str, str]:
+        media_dir_name, rest = path.split("/", 1)
+        if media_dir_name != self.media_dir.name:
+            raise ValueError(f"Path is outside media directory: {path}")
+        hash8_mmdd, filename = rest.rsplit("/", 1)
+        hash8, mmdd = hash8_mmdd.split("/", 1)
+        stem = filename.rsplit(".", 1)[0]
+        hhmm, serial = stem.split("-", 1)
+        return hash8, mmdd, hhmm, serial
+
+    def _load_nested_entries(self, data: dict[str, Any]) -> None:
+        for hash8, by_day in data.items():
+            for mmdd, by_time in by_day.items():
+                for hhmm, serials in by_time.items():
+                    for serial, entry_dict in serials.items():
+                        self._entries.setdefault(hash8, {}).setdefault(mmdd, {}).setdefault(
+                            hhmm, {}
+                        )[serial] = MediaEntry.model_validate(entry_dict)

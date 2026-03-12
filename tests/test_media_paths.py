@@ -127,8 +127,55 @@ def test_set_caption(tmp_path: Path):
 
     media_rel = rel[len("media/") :]  # strip "media/" prefix e.g. "hash8/mmdd/hhmm-01.jpg"
     hash8_mmdd, filename = media_rel.rsplit("/", 1)
+    hash8, mmdd = hash8_mmdd.split("/", 1)
     hhmm, serial = filename.rsplit(".", 1)[0].split("-", 1)
-    assert repo._entries[f"{hash8_mmdd}/{hhmm}"][serial].caption == "a dog sitting on grass"
+    assert repo._entries[hash8][mmdd][hhmm][serial].caption == "a dog sitting on grass"
+
+
+def test_media_file_returns_absolute_path_and_mime_type(tmp_path: Path):
+    repo = MediaRepository(tmp_path / "media")
+    repo.load()
+    ts = datetime(2026, 3, 10, 14, 23, 0)
+
+    path = repo.register(
+        _telegram("123456"),
+        sender_id="123456",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=ts,
+    )
+    path.write_bytes(b"jpeg-bytes")
+
+    resolved_path, mime_type = repo.media_file(repo.media_relpath(path))
+
+    assert resolved_path == path
+    assert mime_type == "image/jpeg"
+
+
+def test_media_file_uses_detected_mime_type_when_metadata_is_missing(tmp_path: Path):
+    repo = MediaRepository(tmp_path / "media")
+    repo.load()
+    ts = datetime(2026, 3, 10, 14, 23, 0)
+
+    path = repo.register(
+        _telegram("123456"),
+        sender_id="123456",
+        media_type="image",
+        ext=".png",
+        mime_type=None,
+        timestamp=ts,
+    )
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0"
+        b"\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    resolved_path, mime_type = repo.media_file(repo.media_relpath(path))
+
+    assert resolved_path == path
+    assert mime_type == "image/png"
 
 
 def test_serial_rebuilt_after_reload(tmp_path: Path):
@@ -223,19 +270,46 @@ def test_register_persists_address_and_metadata(tmp_path: Path):
     assert record["original_name"] == "receipt.png"
 
 
-def test_load_legacy_entry_without_address(tmp_path: Path):
+def test_save_uses_nested_path_dictionary(tmp_path: Path):
+    repo = MediaRepository(tmp_path / "media")
+    repo.load()
+    ts = datetime(2026, 3, 10, 14, 23, 0)
+
+    path = repo.register(
+        _telegram("123456"),
+        sender_id="123456",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=ts,
+    )
+    repo.set_caption(repo.media_relpath(path), "receipt image")
+
+    meta = json.loads((repo.media_dir / ".meta.json").read_text(encoding="utf-8"))
+    hash8 = path.parent.parent.name
+
+    assert meta[hash8]["0310"]["1423"]["01"]["caption"] == "receipt image"
+
+
+def test_load_nested_entry_without_address(tmp_path: Path):
     media_dir = tmp_path / "media"
     media_dir.mkdir(parents=True)
-    legacy = {
-        "hash/0310/1423/01": {
-            "sender_id": "legacy-user",
-            "timestamp": "2026-03-10T14:23:00",
-            "mime_type": "image/jpeg",
-            "ext": ".jpg",
-            "caption": "legacy image",
+    nested = {
+        "hash": {
+            "0310": {
+                "1423": {
+                    "01": {
+                        "sender_id": "legacy-user",
+                        "timestamp": "2026-03-10T14:23:00",
+                        "mime_type": "image/jpeg",
+                        "ext": ".jpg",
+                        "caption": "stored image",
+                    }
+                }
+            }
         }
     }
-    (media_dir / ".meta.json").write_text(json.dumps(legacy), encoding="utf-8")
+    (media_dir / ".meta.json").write_text(json.dumps(nested), encoding="utf-8")
 
     repo = MediaRepository(media_dir)
     repo.load()
@@ -243,7 +317,7 @@ def test_load_legacy_entry_without_address(tmp_path: Path):
 
     assert record["address"] is None
     assert record["sender_id"] == "legacy-user"
-    assert record["caption"] == "legacy image"
+    assert record["caption"] == "stored image"
 
 
 def test_search_scopes_by_address_and_caption(tmp_path: Path):
@@ -281,23 +355,29 @@ def test_search_scopes_by_address_and_caption(tmp_path: Path):
     assert [item["path"] for item in results] == [repo.media_relpath(first)]
 
 
-def test_search_includes_legacy_entries_in_global_search(tmp_path: Path):
+def test_search_includes_nested_entries_in_global_search(tmp_path: Path):
     media_dir = tmp_path / "media"
     media_dir.mkdir(parents=True)
     meta = {
-        "hash/0310/1423/01": {
-            "sender_id": "legacy-user",
-            "timestamp": "2026-03-10T14:23:00",
-            "mime_type": "image/jpeg",
-            "ext": ".jpg",
-            "caption": "legacy cat photo",
+        "hash": {
+            "0310": {
+                "1423": {
+                    "01": {
+                        "sender_id": "legacy-user",
+                        "timestamp": "2026-03-10T14:23:00",
+                        "mime_type": "image/jpeg",
+                        "ext": ".jpg",
+                        "caption": "cat photo",
+                    }
+                }
+            }
         }
     }
     (media_dir / ".meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
     repo = MediaRepository(media_dir)
     repo.load()
-    results = repo.search(query="legacy cat", limit=5)
+    results = repo.search(query="cat photo", limit=5)
 
     assert len(results) == 1
     assert results[0]["address"] is None
@@ -307,14 +387,20 @@ def test_search_normalizes_whatsapp_address_matching(tmp_path: Path):
     media_dir = tmp_path / "media"
     media_dir.mkdir(parents=True)
     meta = {
-        "hash/0310/1423/01": {
-            "address": "whatsapp:222355137806442@lid",
-            "sender_id": "legacy-user",
-            "timestamp": "2026-03-10T14:23:00",
-            "media_type": "image",
-            "mime_type": "image/jpeg",
-            "ext": ".jpg",
-            "caption": "legacy receipt photo",
+        "hash": {
+            "0310": {
+                "1423": {
+                    "01": {
+                        "address": "whatsapp:222355137806442@lid",
+                        "sender_id": "whatsapp-user",
+                        "timestamp": "2026-03-10T14:23:00",
+                        "media_type": "image",
+                        "mime_type": "image/jpeg",
+                        "ext": ".jpg",
+                        "caption": "receipt photo",
+                    }
+                }
+            }
         }
     }
     (media_dir / ".meta.json").write_text(json.dumps(meta), encoding="utf-8")

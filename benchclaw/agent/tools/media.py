@@ -60,10 +60,14 @@ class ReadImageTool(Tool):
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> ToolResult:
         if not path.startswith("media/"):
             raise ValueError("read_image is restricted to the media/ directory")
-        file_path = ctx.workspace / path
-        if not file_path.is_file():
-            raise FileNotFoundError(f"Media file not found: {path}")
-        mime = filetype.guess_mime(str(file_path)) or "image/jpeg"
+        if ctx.media_repo:
+            file_path, mime = ctx.media_repo.media_file(path)
+        else:
+            file_path = ctx.workspace / path
+            if not file_path.is_file():
+                raise FileNotFoundError(f"Media file not found: {path}")
+            mime = filetype.guess_mime(str(file_path))
+        mime = mime or "image/jpeg"
         data = base64.b64encode(file_path.read_bytes()).decode()
         return [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}]
 
@@ -122,17 +126,15 @@ class SendImageTool(Tool):
         if target is None:
             raise ValueError("No target address available")
 
-        file_path = Path(path)
-        if not file_path.is_absolute():
-            file_path = ctx.workspace / file_path
-        file_path = file_path.resolve()
-        try:
-            file_path.relative_to(ctx.workspace.resolve())
-        except ValueError as exc:
-            raise ValueError(f"Path is outside the workspace: {path}") from exc
-        if not file_path.is_file():
-            raise FileNotFoundError(f"Image not found: {path}")
-        mime = filetype.guess_mime(str(file_path))
+        if Path(path).is_absolute():
+            raise ValueError(f"Path is outside the workspace: {path}")
+        if ctx.media_repo and path.startswith("media/"):
+            file_path, mime = ctx.media_repo.media_file(path)
+        else:
+            file_path = ctx.workspace / path
+            if not file_path.is_file():
+                raise FileNotFoundError(f"Media file not found: {path}")
+            mime = filetype.guess_mime(str(file_path))
         if not mime or not mime.startswith("image/"):
             raise ValueError(f"Path is not an image: {path}")
 

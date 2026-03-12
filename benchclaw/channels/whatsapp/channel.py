@@ -109,15 +109,18 @@ class WhatsAppChannel(BaseChannel):
                 "text": msg.content,
             }
             if msg.media:
-                image_path = Path(msg.media[0])
-                if not image_path.is_absolute():
-                    base_dir = self.media_repo.media_dir.parent if self.media_repo else Path.cwd()
-                    image_path = base_dir / image_path
-                if not image_path.is_file():
-                    raise FileNotFoundError(f"WhatsApp image not found: {msg.media[0]}")
-                mime = filetype.guess_mime(str(image_path))
+                media_path = msg.media[0]
+                if self.media_repo and not Path(media_path).is_absolute():
+                    image_path, mime = self.media_repo.media_file(media_path)
+                else:
+                    image_path = Path(media_path)
+                    if not image_path.is_absolute():
+                        image_path = Path.cwd() / image_path
+                    if not image_path.is_file():
+                        raise FileNotFoundError(f"WhatsApp image not found: {media_path}")
+                    mime = filetype.guess_mime(str(image_path))
                 if not mime or not mime.startswith("image/"):
-                    raise ValueError(f"WhatsApp outbound media is not an image: {msg.media[0]}")
+                    raise ValueError(f"WhatsApp outbound media is not an image: {media_path}")
                 payload["imageBase64"] = base64.b64encode(image_path.read_bytes()).decode()
                 payload["imageMimeType"] = mime
             await self._ws.send(json.dumps(payload))

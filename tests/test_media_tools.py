@@ -180,22 +180,28 @@ async def test_search_images_normalizes_whatsapp_shorthand_address(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_search_images_matches_legacy_whatsapp_lid_record(tmp_path: Path):
+async def test_search_images_matches_nested_whatsapp_lid_record(tmp_path: Path):
     media_dir = tmp_path / "media"
     media_dir.mkdir(parents=True)
-    legacy = {
-        "hash/0310/1423/01": {
-            "address": "whatsapp:222355137806442@lid",
-            "sender_id": "alice",
-            "timestamp": "2026-03-10T14:23:00",
-            "media_type": "image",
-            "mime_type": "image/png",
-            "ext": ".png",
-            "original_name": "receipt.png",
-            "caption": "receipt",
+    nested = {
+        "hash": {
+            "0310": {
+                "1423": {
+                    "01": {
+                        "address": "whatsapp:222355137806442@lid",
+                        "sender_id": "alice",
+                        "timestamp": "2026-03-10T14:23:00",
+                        "media_type": "image",
+                        "mime_type": "image/png",
+                        "ext": ".png",
+                        "original_name": "receipt.png",
+                        "caption": "receipt",
+                    }
+                }
+            }
         }
     }
-    (media_dir / ".meta.json").write_text(json.dumps(legacy), encoding="utf-8")
+    (media_dir / ".meta.json").write_text(json.dumps(nested), encoding="utf-8")
 
     repo = MediaRepository(media_dir)
     repo.load()

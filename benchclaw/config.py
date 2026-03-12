@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from pydantic_settings import BaseSettings
 
 import benchclaw.agent.tools  # noqa: F401  # triggers register_tool_config() calls in all tool modules
-import benchclaw.channels  # noqa: F401  # triggers register_channel() calls in all channel modules
+import benchclaw.channels.builtins  # noqa: F401  # triggers register_channel() calls in all channel modules
 from benchclaw.agent.tools.base import _TOOL_CONFIG_REGISTRY
 from benchclaw.agent.tools.mcp_manager import MCPServerConfig
 from benchclaw.channels.base import _CONFIG_REGISTRY, ChannelConfig
