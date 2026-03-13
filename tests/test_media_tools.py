@@ -177,7 +177,7 @@ async def test_search_images_normalizes_whatsapp_shorthand_address(tmp_path: Pat
     )
     parsed = json.loads(result)
 
-    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442"]
+    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442@lid"]
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def test_search_images_matches_nested_whatsapp_lid_record(tmp_path: Path):
     )
     parsed = json.loads(result)
 
-    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442"]
+    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442@lid"]
 
 
 class _FakeTelegramBot:
@@ -301,7 +301,28 @@ async def test_whatsapp_send_normalizes_bare_chat_id(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_whatsapp_inbound_normalizes_direct_chat_id(tmp_path: Path):
+async def test_whatsapp_send_preserves_lid_chat_id(tmp_path: Path):
+    image = tmp_path / "media" / "out.png"
+    _write_png(image)
+    channel = WhatsAppChannel(WhatsAppConfig(), MessageBus(), media_repo=None)
+    channel._ws = _FakeWS()
+    channel._connected = True
+
+    await channel.send(
+        OutboundMessage(
+            address=MessageAddress("whatsapp", "222355137806442@lid"),
+            content="caption",
+            media=[str(image)],
+        )
+    )
+
+    [payload] = channel._ws.payloads
+    parsed = json.loads(payload)
+    assert parsed["to"] == "222355137806442@lid"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_inbound_preserves_direct_chat_id(tmp_path: Path):
     bus = MessageBus()
     channel = WhatsAppChannel(WhatsAppConfig(), bus, media_repo=None)
     payload = {
@@ -315,5 +336,5 @@ async def test_whatsapp_inbound_normalizes_direct_chat_id(tmp_path: Path):
 
     await channel._handle_bridge_message(json.dumps(payload))
 
-    msg = await bus.consume_inbound(address=MessageAddress("whatsapp", "222355137806442"))
-    assert msg.address == MessageAddress("whatsapp", "222355137806442")
+    msg = await bus.consume_inbound(address=MessageAddress("whatsapp", "222355137806442@lid"))
+    assert msg.address == MessageAddress("whatsapp", "222355137806442@lid")

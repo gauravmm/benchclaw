@@ -24,7 +24,7 @@ class WhatsAppId:
         local, domain = _split_jid(value)
         if not local:
             return cls("")
-        if domain == "g.us":
+        if domain:
             return cls(f"{local}@{domain}")
         return cls(local)
 
@@ -42,11 +42,17 @@ class WhatsAppId:
     def localpart(self) -> str:
         return self.canonical.split("@", 1)[0]
 
+    @property
+    def comparable_id(self) -> str:
+        if not self.canonical:
+            return ""
+        return self.canonical if self.is_group else self.localpart
+
     def as_address(self) -> MessageAddress:
         return MessageAddress("whatsapp", self.canonical)
 
     def outbound_jid(self) -> str:
-        if not self.canonical or self.is_group:
+        if not self.canonical or "@" in self.canonical:
             return self.canonical
         return f"{self.canonical}@s.whatsapp.net"
 

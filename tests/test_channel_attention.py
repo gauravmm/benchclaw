@@ -252,11 +252,11 @@ def test_whatsapp_bridge_event_parses_typed_ids() -> None:
         }
     )
 
-    assert event.chatId == WhatsAppId("222355137806442")
-    assert event.replyTo == WhatsAppId("12025550123")
-    assert event.mentions == [WhatsAppId("38818635882692")]
-    assert event.botJids == [WhatsAppId("38818635882692")]
-    assert event.resolve_name(WhatsAppId("38818635882692")) == "benchbot"
+    assert event.chatId == WhatsAppId("222355137806442@lid")
+    assert event.replyTo == WhatsAppId("12025550123@s.whatsapp.net")
+    assert event.mentions == [WhatsAppId("38818635882692@lid")]
+    assert event.botJids == [WhatsAppId("38818635882692@lid")]
+    assert event.resolve_name(WhatsAppId("38818635882692@lid")) == "benchbot"
 
 
 @pytest.mark.asyncio

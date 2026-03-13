@@ -86,6 +86,23 @@ class MediaRepository:
             node[parts[-1]] = {"_entry": entry.model_dump(mode="json")}
         self.meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    @staticmethod
+    def _address_matches(record_addr: str, query_addr: MessageAddress) -> bool:
+        if record_addr == str(query_addr):
+            return True
+        try:
+            parsed = MessageAddress.from_string(record_addr)
+        except ValueError:
+            return False
+        if parsed.channel != query_addr.channel:
+            return False
+        if parsed.channel != "whatsapp":
+            return parsed.chat_id == query_addr.chat_id
+        return (
+            WhatsAppId.from_address(parsed).comparable_id
+            == WhatsAppId.from_address(query_addr).comparable_id
+        )
+
     def register(
         self,
         address: MessageAddress,
@@ -220,7 +237,7 @@ class MediaRepository:
             if record.get("caption") is None:
                 continue
             record_addr = record["address"]
-            if address is not None and record_addr != str(address):
+            if address is not None and not self._address_matches(record_addr, address):
                 continue
             if sender_id is not None and record["sender_id"] != sender_id:
                 continue

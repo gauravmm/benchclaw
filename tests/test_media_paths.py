@@ -439,4 +439,4 @@ def test_search_normalizes_whatsapp_address_matching(tmp_path: Path):
     )
 
     assert len(results) == 1
-    assert results[0]["address"] == "whatsapp:222355137806442"
+    assert results[0]["address"] == "whatsapp:222355137806442@lid"
