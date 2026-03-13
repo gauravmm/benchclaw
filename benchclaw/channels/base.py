@@ -22,13 +22,6 @@ from benchclaw.channels.attention import (
 )
 from benchclaw.utils import DurationField
 
-_CONFIG_REGISTRY: dict[str, type["ChannelConfig"]] = {}
-
-
-def register_channel(name: str, cls: type["ChannelConfig"]) -> None:
-    """Register a channel config class under the given name."""
-    _CONFIG_REGISTRY[name] = cls
-
 
 class ChannelConfig(BaseModel):
     allow_from: list[str] | None = None
@@ -38,6 +31,9 @@ class ChannelConfig(BaseModel):
 
     def make_channel(self, bus: "MessageBus", media_repo: Any = None) -> "BaseChannel":
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")
+
+    def is_configured(self) -> bool:
+        return True
 
 
 class BaseChannel(AsyncContextManagerMixin):
@@ -179,7 +175,7 @@ class BaseChannel(AsyncContextManagerMixin):
             content=content,
             media=media,
             media_metadata=media_metadata,
-            metadata=metadata,
+            metadata=metadata or {},
             timestamp=timestamp,
         )
         if inbound:

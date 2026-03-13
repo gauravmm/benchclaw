@@ -4,28 +4,13 @@ from abc import abstractmethod
 from asyncio import Task
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
-
-from pydantic import BaseModel
+from typing import TYPE_CHECKING, Any
 
 from benchclaw.bus import MessageAddress, MessageBus, ToolResult
 
 if TYPE_CHECKING:
     from benchclaw.agent.tools.memory import LogStore
     from benchclaw.media import MediaRepository
-
-_TOOL_REGISTRY: dict[str, type["Tool"]] = {}
-_TOOL_CONFIG_REGISTRY: dict[str, type[BaseModel]] = {}
-
-
-def register_tool(name: str, cls: type["Tool"]) -> None:
-    """Register a tool class under the given name."""
-    _TOOL_REGISTRY[name] = cls
-
-
-def register_tool_config(name: str, cls: type[BaseModel]) -> None:
-    """Register a tool config class under the given name."""
-    _TOOL_CONFIG_REGISTRY[name] = cls
 
 
 @dataclass
@@ -45,44 +30,10 @@ class ToolContext:
     bus: MessageBus | None = None  # MessageBus; None for subagents/tests
     log_store: "LogStore | None" = None  # LogStore; set by AgentLoop before building ToolRegistry
     media_repo: "MediaRepository | None" = None
-    is_subagent: bool = False
-    subagent_manager: Any = None  # SubagentManager; None for subagents
     address: MessageAddress | None = None  # Current session address; None for background/subagents
     background_tasks: dict[str, Task] | None = None  # Live task handles; master loop only
     file_snapshots: dict[Path, FileSnapshot] = field(default_factory=dict)
-
-    @property
-    def allowed_dir(self) -> Path | None:
-        """Restrict filesystem access to workspace when running as a subagent."""
-        return self.workspace if self.is_subagent else None
-
-
-@dataclass(frozen=True)
-class InnerTagSpec:
-    """Declarative support for a private inline tag handled by a tool.
-
-    These tags are for low-friction private side effects emitted inline in the
-    model response and stripped before the user sees the final text.
-
-    Good fit for inner tags: local, deterministic, append-only side effects
-    like plans, logs, captions, maybe lightweight annotations.
-    Bad fit: anything requiring rich validation, external effects, routing, or
-    async lifecycle management. Those should remain explicit tool calls.
-    """
-
-    name: str
-    description: str
-    attributes: dict[str, str] = field(default_factory=dict)
-    body_description: str = "Tag body text."
-
-
-@dataclass(frozen=True)
-class ParsedInnerTag:
-    """One parsed private inline tag instance emitted by the model."""
-
-    name: str
-    attrs: dict[str, str]
-    body: str
+    allowed_dir: Path | None = None
 
 
 class Tool:
@@ -94,7 +45,6 @@ class Tool:
     """
 
     _task: Task | None = None
-    master_only: ClassVar[bool] = False  # True → tool excluded from subagent registries
 
     @classmethod
     def build(cls, config: Any, ctx: "ToolContext") -> "Tool":
@@ -110,11 +60,6 @@ class Tool:
     @property
     def description(self) -> str | None:
         """Skill usage instruction to inject into agent context. Its always injected, so keep it short."""
-        return None
-
-    @property
-    def inner_tag(self) -> InnerTagSpec | None:
-        """Optional private inline tag handled by this tool."""
         return None
 
     @property
@@ -136,16 +81,6 @@ class Tool:
             String result of the tool execution.
         """
         pass
-
-    async def execute_inner_tag(
-        self, ctx: "ToolContext", parsed: ParsedInnerTag
-    ) -> ToolResult | None:
-        """Handle a private inline tag emitted by the model.
-
-        Tools that expose `inner_tag` should override this. The default
-        implementation rejects use so tag support is always explicit.
-        """
-        raise NotImplementedError(f"{self.name} does not support inner tags")
 
     async def background(self, ctx: "ToolContext") -> None:
         """Optional long-running coroutine started by ToolRegistry.__aenter__. No-op by default."""

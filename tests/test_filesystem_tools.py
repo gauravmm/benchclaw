@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.agent.tools.base import _TOOL_REGISTRY, ToolContext
+from benchclaw.agent.tools.base import ToolContext
+from benchclaw.agent.tools.builtins import BUILTIN_TOOLS
 from benchclaw.agent.tools.filesystem import (
     EditFileTool,
     GlobTool,
@@ -15,7 +16,7 @@ from benchclaw.agent.tools.filesystem import (
 
 
 def test_list_dir_tool_is_not_registered() -> None:
-    assert "list_dir" not in _TOOL_REGISTRY
+    assert "list_dir" not in {name for name, _cls in BUILTIN_TOOLS}
 
 
 @pytest.mark.asyncio

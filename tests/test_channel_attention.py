@@ -101,12 +101,11 @@ def test_attention_filter_summon_replays_contiguous_history() -> None:
         content="m3",
         media=None,
         media_metadata=None,
-        metadata={"is_group": True, "_summon_source": "mention"},
+        metadata={"is_group": True, "summon": "mention"},
         timestamp=_ts(70),
     )
     assert [m.content for m in out] == ["m1", "m2", "m3"]
     assert [m.metadata.get("summon") for m in out] == [None, None, "mention"]
-    assert all("_summon_source" not in m.metadata for m in out)
 
 
 def test_attention_filter_replay_stops_at_gap() -> None:
@@ -140,7 +139,7 @@ def test_attention_filter_replay_stops_at_gap() -> None:
         content="summon",
         media=None,
         media_metadata=None,
-        metadata={"is_group": True, "_summon_source": "reply"},
+        metadata={"is_group": True, "summon": "reply"},
         timestamp=_ts(300),
     )
     assert [m.content for m in out] == ["summon"]
@@ -159,7 +158,7 @@ def test_attention_filter_attention_expires_after_long_gap() -> None:
         content="summon",
         media=None,
         media_metadata=None,
-        metadata={"is_group": True, "_summon_source": "mention"},
+        metadata={"is_group": True, "summon": "mention"},
         timestamp=_ts(0),
     )
     assert [m.content for m in first] == ["summon"]
@@ -265,7 +264,7 @@ def test_whatsapp_bridge_event_parses_typed_ids() -> None:
     ("text", "reply_id", "expected"),
     [("hello @benchbot", None, "mention"), ("hello", 999, "reply")],
 )
-async def test_telegram_mapping_sets_internal_summon_source(
+async def test_telegram_mapping_sets_public_summon(
     text: str, reply_id: int | None, expected: str
 ) -> None:
     channel = TelegramChannel(TelegramConfig(token="x"), MessageBus(), media_repo=None)
@@ -298,7 +297,7 @@ async def test_telegram_mapping_sets_internal_summon_source(
 
     await channel._on_message(update, None)  # type: ignore[arg-type]
     kwargs = mocked.await_args.kwargs
-    assert kwargs["metadata"]["_summon_source"] == expected
+    assert kwargs["metadata"]["summon"] == expected
     assert kwargs["timestamp"] == message.date
 
 

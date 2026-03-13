@@ -72,7 +72,7 @@ def test_session_save_load_roundtrip(tmp_path: Path):
     assert loaded.messages[0]["content"] == "hello"
     assert loaded.messages[0]["media"] == ["workspace/media/telegram/99/20260308_101530/abc.jpg"]
     assert loaded.messages[0]["media_metadata"][0]["media_type"] == "image"
-    assert loaded.messages[1]["tools_used"] == ["search"]
+    assert loaded.messages[1]["metadata"]["tools_used"] == ["search"]
 
 
 def test_session_load_missing_file(tmp_path: Path):
@@ -117,10 +117,10 @@ def test_session_clear(tmp_path: Path):
     session.add_message("user", "test")
     session.clear()
     assert session.messages == []
-    assert session.last_consolidated == 0
+    assert session.compacted_through == -1
 
 
-def test_session_user_live_message_includes_sender_and_timestamp() -> None:
+def test_session_history_includes_sender_and_timestamp_prefix() -> None:
     addr = MessageAddress(channel="telegram", chat_id="1")
     session = Session(addr=addr)
 
@@ -131,10 +131,10 @@ def test_session_user_live_message_includes_sender_and_timestamp() -> None:
         metadata={"sender_label": "Gaurav"},
     )
 
-    live = session.live_messages[-1]
-    assert live["role"] == "user"
-    assert live["content"].startswith("[Gaurav @")
-    assert live["content"].endswith(": hello")
+    rendered = session.get_history()[-1]
+    assert rendered["role"] == "user"
+    assert rendered["content"].startswith("[Gaurav @")
+    assert rendered["content"].endswith(": hello")
 
 
 def test_session_history_includes_user_timestamp_prefix() -> None:

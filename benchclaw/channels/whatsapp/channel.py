@@ -16,7 +16,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from benchclaw.bus import MediaMetadata, MessageBus, OutboundMessage, TypingEvent
-from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
+from benchclaw.channels.base import BaseChannel, ChannelConfig
 from benchclaw.channels.whatsapp.address import (
     WhatsAppId,
 )
@@ -43,8 +43,8 @@ class WhatsAppConfig(ChannelConfig):
     ) -> "WhatsAppChannel":
         return WhatsAppChannel(self, bus, media_repo=media_repo)
 
-
-register_channel("whatsapp", WhatsAppConfig)
+    def is_configured(self) -> bool:
+        return bool(self.bridge_url.strip())
 
 
 class WhatsAppChannel(BaseChannel):
@@ -105,7 +105,7 @@ class WhatsAppChannel(BaseChannel):
         try:
             payload = {
                 "type": "send",
-                "to": WhatsAppId.from_raw(msg.chat_id).outbound_jid(),
+                "to": WhatsAppId.from_raw(msg.address.chat_id).outbound_jid(),
                 "text": msg.content,
             }
             if msg.media:
@@ -238,7 +238,7 @@ class WhatsAppChannel(BaseChannel):
         if metadata["bot_name"] is None:
             metadata.pop("bot_name")
         if summon_source:
-            metadata["_summon_source"] = summon_source
+            metadata["summon"] = summon_source
         return metadata
 
     def _save_bridge_image(

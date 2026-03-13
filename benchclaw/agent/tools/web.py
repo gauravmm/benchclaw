@@ -11,7 +11,7 @@ import httpx
 from pydantic import BaseModel
 from readability import Document
 
-from benchclaw.agent.tools.base import Tool, ToolContext, register_tool, register_tool_config
+from benchclaw.agent.tools.base import Tool, ToolContext
 
 
 class WebSearchConfig(BaseModel):
@@ -20,8 +20,6 @@ class WebSearchConfig(BaseModel):
     api_key: str = ""
     max_results: int = 5
 
-
-register_tool_config("web_search", WebSearchConfig)
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -241,7 +239,3 @@ class WebFetchTool(Tool):
         text = re.sub(r"</(p|div|section|article)>", "\n\n", text, flags=re.I)
         text = re.sub(r"<(br|hr)\s*/?>", "\n", text, flags=re.I)
         return _normalize(_strip_tags(text))
-
-
-register_tool("web_search", WebSearchTool)
-register_tool("web_fetch", WebFetchTool)

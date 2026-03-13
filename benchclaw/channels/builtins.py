@@ -1,5 +1,12 @@
-"""Import built-in channels to trigger registration side effects."""
+"""Explicit built-in channel manifest."""
 
-import benchclaw.channels.smtp_email  # noqa: F401
-import benchclaw.channels.telegrm  # noqa: F401
-import benchclaw.channels.whatsapp.channel  # noqa: F401
+from benchclaw.channels.base import ChannelConfig
+from benchclaw.channels.smtp_email import EmailConfig
+from benchclaw.channels.telegrm import TelegramConfig
+from benchclaw.channels.whatsapp.channel import WhatsAppConfig
+
+BUILTIN_CHANNEL_CONFIGS: tuple[tuple[str, type[ChannelConfig]], ...] = (
+    ("email", EmailConfig),
+    ("telegram", TelegramConfig),
+    ("whatsapp", WhatsAppConfig),
+)

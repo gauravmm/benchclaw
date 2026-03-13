@@ -5,15 +5,17 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from loguru import logger
 from pathvalidate import sanitize_filename
 
-from benchclaw.bus import MessageAddress
+from benchclaw.bus import MediaMetadata, MessageAddress, ToolResult
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 MAX_SESSIONS = 50
+
+EventKind = Literal["user", "assistant", "tool", "system", "summary"]
 
 
 def _sender_label(metadata: dict[str, Any]) -> str | None:
@@ -22,15 +24,15 @@ def _sender_label(metadata: dict[str, Any]) -> str | None:
     return str(label) if label else None
 
 
-def _format_prefix_time(sent_at: str | None) -> str | None:
-    """Convert ISO timestamp to HH:MM for compact user prefixes."""
+def _format_prefix_time(sent_at: datetime | None) -> str | None:
+    """Convert timestamp to HH:MM for compact user prefixes."""
     with suppress(ValueError, TypeError):
         if sent_at:
-            return _parse_timestamp(sent_at).strftime("%H:%M")
+            return ensure_aware(sent_at).strftime("%H:%M")
     return None
 
 
-def _user_prefix(sender: str | None, sent_at: str | None) -> str | None:
+def _user_prefix(sender: str | None, sent_at: datetime | None) -> str | None:
     """Build a user message prefix containing sender and/or timestamp."""
     short_time = _format_prefix_time(sent_at)
     if sender and short_time:
@@ -47,30 +49,121 @@ def _channel_display_name(channel: str) -> str:
     known = {
         "telegram": "Telegram",
         "whatsapp": "WhatsApp",
-        "smtp_email": "Email",
+        "email": "Email",
     }
     if channel in known:
         return known[channel]
     return channel.replace("_", " ").title()
 
 
-def _build_message(
-    role: str,
+def _render_user_content(
     content: str,
+    *,
     media: list[str] | None = None,
     sender: str | None = None,
-    sent_at: str | None = None,
-) -> dict[str, Any]:
-    """Build an LLM API message dict, appending image path stubs for any media."""
+    sent_at: datetime | None = None,
+) -> str:
+    """Render one user event into provider-visible text."""
     if prefix := _user_prefix(sender, sent_at):
         content = f"[{prefix}]: {content}"
     if media:
         stubs = "\n".join(
-            f'[image: {p}] (you MUST emit <image_caption path="{p}">...</image_caption>)'
-            for p in media
+            (
+                f"[image: {path}] "
+                "(call annotate_media with this exact path before your final response if it has not been annotated yet)"
+            )
+            for path in media
         )
         content = f"{content}\n{stubs}" if content else stubs
-    return {"role": role, "content": content}
+    return content
+
+
+@dataclass
+class ConversationEvent:
+    """One persisted conversation event."""
+
+    kind: EventKind
+    timestamp: datetime = field(default_factory=now_aware)
+    content: str | ToolResult = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    media: list[str] = field(default_factory=list)
+    media_metadata: list[MediaMetadata] = field(default_factory=list)
+    sender_id: str | None = None
+    sender_label: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    reasoning_content: str | None = None
+
+    def __post_init__(self) -> None:
+        self.timestamp = ensure_aware(self.timestamp)
+
+    def to_record(self) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "_type": "event",
+            "kind": self.kind,
+            "timestamp": self.timestamp.isoformat(timespec="seconds"),
+            "content": self.content,
+        }
+        optional_fields = {
+            "metadata": self.metadata or None,
+            "media": self.media or None,
+            "media_metadata": self.media_metadata or None,
+            "sender_id": self.sender_id,
+            "sender_label": self.sender_label,
+            "tool_call_id": self.tool_call_id,
+            "tool_name": self.tool_name,
+            "tool_calls": self.tool_calls,
+            "reasoning_content": self.reasoning_content,
+        }
+        for key, value in optional_fields.items():
+            if value is not None:
+                record[key] = value
+        return record
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "ConversationEvent":
+        return cls(
+            kind=record["kind"],
+            timestamp=_parse_timestamp(record["timestamp"]),
+            content=record.get("content", ""),
+            metadata=dict(record.get("metadata") or {}),
+            media=list(record.get("media") or []),
+            media_metadata=list(record.get("media_metadata") or []),
+            sender_id=record.get("sender_id"),
+            sender_label=record.get("sender_label"),
+            tool_call_id=record.get("tool_call_id"),
+            tool_name=record.get("tool_name"),
+            tool_calls=record.get("tool_calls"),
+            reasoning_content=record.get("reasoning_content"),
+        )
+
+    def to_llm_message(self) -> dict[str, Any]:
+        if self.kind == "user":
+            return {
+                "role": "user",
+                "content": _render_user_content(
+                    str(self.content),
+                    media=self.media,
+                    sender=self.sender_label,
+                    sent_at=self.timestamp,
+                ),
+            }
+        if self.kind == "assistant":
+            message: dict[str, Any] = {"role": "assistant", "content": str(self.content or "")}
+            if self.tool_calls:
+                message["tool_calls"] = self.tool_calls
+            if self.reasoning_content:
+                message["reasoning_content"] = self.reasoning_content
+            return message
+        if self.kind == "tool":
+            return {
+                "role": "tool",
+                "tool_call_id": self.tool_call_id,
+                "name": self.tool_name,
+                "content": self.content,
+            }
+        return {"role": "system", "content": str(self.content)}
 
 
 @dataclass
@@ -78,80 +171,179 @@ class Session:
     """
     A conversation session.
 
-    Stores messages in JSONL format for easy reading and persistence.
-
-    Important: Messages are append-only for LLM cache efficiency.
+    Stores typed conversation events in JSONL format for persistence.
     """
 
     addr: MessageAddress
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    events: list[ConversationEvent] = field(default_factory=list)
     created_at: datetime = field(default_factory=now_aware)
     updated_at: datetime = field(default_factory=now_aware)
     metadata: dict[str, Any] = field(default_factory=dict)
-    # When this hits a threshold, log a summary and continue from that point.
-    last_consolidated: int = 0
-    # In-memory LLM context for the current run; not persisted.
-    live_messages: list[dict[str, Any]] = field(default_factory=list)
+    compacted_through: int = -1
 
     def __post_init__(self) -> None:
         self.created_at = ensure_aware(self.created_at)
         self.updated_at = ensure_aware(self.updated_at)
 
-    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
-        """Add a message to the persistent session and to live_messages."""
-        sender = _sender_label(kwargs.get("metadata") or {}) if role == "user" else None
-        timestamp = now_aware().isoformat(timespec="seconds")
-        msg = {
-            "role": role,
-            "content": content,
-            "timestamp": timestamp,
-            **kwargs,
-        }
-        if sender:
-            msg["sender_label"] = sender
-        self.messages.append(msg)
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        """Compatibility view of persisted events."""
+        return [event.to_record() for event in self.events]
+
+    def _append(self, event: ConversationEvent) -> None:
+        self.events.append(event)
         self.updated_at = now_aware()
-        self.live_messages.append(
-            _build_message(
-                role,
+
+    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
+        """Compatibility wrapper that appends a typed event."""
+        timestamp = kwargs.pop("timestamp", None)
+        if role == "user":
+            metadata = dict(kwargs.get("metadata") or {})
+            self.append_user(
                 content,
-                kwargs.get("media"),
-                sender=sender if role == "user" else None,
-                sent_at=timestamp if role == "user" else None,
+                sender_id=kwargs.get("sender_id"),
+                media=list(kwargs.get("media") or []),
+                media_metadata=list(kwargs.get("media_metadata") or []),
+                metadata=metadata,
+                timestamp=timestamp,
+            )
+            return
+        if role == "assistant":
+            metadata = dict(kwargs)
+            self.append_assistant(
+                content,
+                tool_calls=kwargs.get("tool_calls"),
+                reasoning_content=kwargs.get("reasoning_content"),
+                metadata=metadata,
+                timestamp=timestamp,
+            )
+            return
+        if role == "system":
+            self.append_system(content, metadata=dict(kwargs), timestamp=timestamp)
+            return
+        raise ValueError(f"Unsupported role: {role}")
+
+    def append_user(
+        self,
+        content: str,
+        *,
+        sender_id: str | None = None,
+        media: list[str] | None = None,
+        media_metadata: list[MediaMetadata] | None = None,
+        metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
+    ) -> None:
+        meta = dict(metadata or {})
+        self._append(
+            ConversationEvent(
+                kind="user",
+                timestamp=timestamp or now_aware(),
+                content=content,
+                metadata=meta,
+                media=list(media or []),
+                media_metadata=list(media_metadata or []),
+                sender_id=sender_id,
+                sender_label=_sender_label(meta),
             )
         )
 
+    def append_assistant(
+        self,
+        content: str,
+        *,
+        tool_calls: list[dict[str, Any]] | None = None,
+        reasoning_content: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
+    ) -> None:
+        self._append(
+            ConversationEvent(
+                kind="assistant",
+                timestamp=timestamp or now_aware(),
+                content=content,
+                metadata=dict(metadata or {}),
+                tool_calls=tool_calls,
+                reasoning_content=reasoning_content,
+            )
+        )
+
+    def append_tool_result(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        result: ToolResult,
+        *,
+        timestamp: datetime | None = None,
+    ) -> None:
+        self._append(
+            ConversationEvent(
+                kind="tool",
+                timestamp=timestamp or now_aware(),
+                content=result,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+            )
+        )
+
+    def append_system(
+        self,
+        content: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
+    ) -> None:
+        self._append(
+            ConversationEvent(
+                kind="system",
+                timestamp=timestamp or now_aware(),
+                content=content,
+                metadata=dict(metadata or {}),
+            )
+        )
+
+    def append_summary(self, content: str, *, timestamp: datetime | None = None) -> None:
+        self._append(
+            ConversationEvent(
+                kind="summary",
+                timestamp=timestamp or now_aware(),
+                content=content,
+            )
+        )
+        self.compacted_through = len(self.events) - 1
+
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
-        """Get recent messages in LLM format (role + content only)."""
-        result = []
-        for m in self.messages[-max_messages:]:
-            content = m["content"]
-            if m["role"] == "user":
-                if prefix := _user_prefix(m.get("sender_label"), m.get("timestamp")):
-                    content = f"[{prefix}]: {content}"
-                if media := m.get("media"):
-                    stubs = "\n".join(f"[image: {p}]" for p in media)
-                    content = f"{content}\n{stubs}" if content else stubs
-            result.append({"role": m["role"], "content": content})
-        return result
+        """Render the current conversation history for the provider."""
+        if self.compacted_through >= 0 and self.events:
+            history = [
+                self.events[self.compacted_through],
+                *self.events[self.compacted_through + 1 :],
+            ]
+        else:
+            history = list(self.events)
+        if max_messages > 0:
+            if self.compacted_through >= 0 and history:
+                summary, recent = history[0], history[1:]
+                recent = recent[-max_messages:]
+                history = [summary, *recent]
+            else:
+                history = history[-max_messages:]
+        return [event.to_llm_message() for event in history]
 
     def clear(self) -> None:
-        """Clear all messages and reset session to initial state."""
-        self.messages = []
-        self.live_messages = []
-        self.last_consolidated = 0
+        """Clear all events and reset the session state."""
+        self.events = []
+        self.compacted_through = -1
         self.updated_at = now_aware()
 
     def describe_current_session(self) -> str:
         """Return a readable prompt label for the current chat when possible."""
         channel_name = _channel_display_name(self.addr.channel)
-        last_user = next((m for m in reversed(self.messages) if m.get("role") == "user"), None)
+        last_user = next((event for event in reversed(self.events) if event.kind == "user"), None)
         if not last_user:
             return f"{channel_name} chat {self.addr.chat_id}"
 
-        metadata = last_user.get("metadata") or {}
-        sender = str(last_user.get("sender_label") or _sender_label(metadata) or "").strip() or None
-        is_group = bool(metadata.get("is_group"))
+        sender = str(last_user.sender_label or "").strip() or None
+        is_group = bool(last_user.metadata.get("is_group"))
 
         if sender and not is_group:
             return f"{sender} on {channel_name}"
@@ -166,11 +358,11 @@ class Session:
             return None
 
         try:
-            messages = []
+            events: list[ConversationEvent] = []
             metadata = {}
             created_at = None
             updated_at = None
-            last_consolidated = 0
+            compacted_through = -1
             addr: MessageAddress | None = None
 
             with open(path) as f:
@@ -189,11 +381,11 @@ class Session:
                         updated_at = (
                             _parse_timestamp(data["updated_at"]) if data.get("updated_at") else None
                         )
-                        last_consolidated = data.get("last_consolidated", 0)
+                        compacted_through = data.get("compacted_through", -1)
                         if data.get("address"):
                             addr = MessageAddress.from_string(data["address"])
                     else:
-                        messages.append(data)
+                        events.append(ConversationEvent.from_record(data))
 
             if addr is None:
                 logger.warning(f"No address in session file {path}, skipping")
@@ -201,11 +393,11 @@ class Session:
 
             return cls(
                 addr=addr,
-                messages=messages,
+                events=events,
                 created_at=created_at or now_aware(),
                 updated_at=updated_at or now_aware(),
                 metadata=metadata,
-                last_consolidated=last_consolidated,
+                compacted_through=compacted_through,
             )
         except Exception as e:
             logger.warning(f"Failed to load session from {path}: {e}")
@@ -220,11 +412,11 @@ class Session:
                 "created_at": self.created_at.isoformat(timespec="seconds"),
                 "updated_at": self.updated_at.isoformat(timespec="seconds"),
                 "metadata": self.metadata,
-                "last_consolidated": self.last_consolidated,
+                "compacted_through": self.compacted_through,
             }
             f.write(json.dumps(metadata_line) + "\n")
-            for msg in self.messages:
-                f.write(json.dumps(msg) + "\n")
+            for event in self.events:
+                f.write(json.dumps(event.to_record()) + "\n")
 
 
 class SessionManager:
@@ -233,7 +425,6 @@ class SessionManager:
 
     Sessions are stored as JSONL files in the sessions directory.
     Use as an async context manager: all sessions are loaded on enter and flushed on exit.
-    Individual sessions can be saved mid-session via save() for durability.
     """
 
     def __init__(self, sessions_dir: Path):
@@ -243,11 +434,9 @@ class SessionManager:
         self._cache: dict[MessageAddress, Session] = {}
 
     def _get_session_path(self, key: MessageAddress) -> Path:
-        # Strip colons before sanitizing so filenames are colon-free on all platforms.
         return self.sessions_dir / f"{sanitize_filename(str(key).replace(':', ''))}.jsonl"
 
     async def __aenter__(self) -> "SessionManager":
-        """Load all sessions from disk, enforcing the MAX_SESSIONS limit."""
         sessions: list[Session] = []
         for path in self.sessions_dir.glob("*.jsonl"):
             if (session := Session.load(path)) is not None:
@@ -263,27 +452,23 @@ class SessionManager:
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        """Write all cached sessions to disk."""
         for session in self._cache.values():
             session.save(self._get_session_path(session.addr))
 
     def _archive(self, s: Session) -> None:
-        """Move a session file to the archive directory with a timestamp suffix."""
         path = self._get_session_path(s.addr)
         archive_path = (
             self._archive_dir / f"{path.stem}_{now_aware().strftime('%Y%m%dT%H%M%S')}{path.suffix}"
         )
 
         self._archive_dir.mkdir(parents=True, exist_ok=True)
-        s.save(archive_path)  # Save the latest state to the archive
-        path.unlink(missing_ok=True)  # Remove the original file.
+        s.save(archive_path)
+        path.unlink(missing_ok=True)
 
     def save(self, session: Session) -> None:
-        """Save a single session to disk immediately."""
         session.save(self._get_session_path(session.addr))
 
     def get(self, key: MessageAddress) -> Session:
-        """Get an existing session or create a new one."""
         if key not in self._cache:
             self._cache[key] = Session(addr=key)
             if len(self._cache) > MAX_SESSIONS:
@@ -296,6 +481,5 @@ class SessionManager:
         return self._cache[key]
 
     def clear(self, key: MessageAddress) -> None:
-        """Remove a session from the in-memory cache and archive it on disk."""
         if s := self._cache.pop(key, None):
             self._archive(s)

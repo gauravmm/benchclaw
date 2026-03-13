@@ -5,7 +5,7 @@ from os import stat_result
 from pathlib import Path
 from typing import Any
 
-from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext, register_tool
+from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext
 
 
 def _resolve_path(path: str, ctx: ToolContext) -> Path:
@@ -383,10 +383,3 @@ class GrepTool(Tool):
             return f"No matches found for pattern: {pattern}"
 
         return "\n".join(results)
-
-
-register_tool("read_file", ReadFileTool)
-register_tool("write_file", WriteFileTool)
-register_tool("edit_file", EditFileTool)
-register_tool("glob", GlobTool)
-register_tool("grep", GrepTool)

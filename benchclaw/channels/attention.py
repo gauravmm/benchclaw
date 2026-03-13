@@ -8,13 +8,10 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 
-from loguru import logger
-
 from benchclaw.bus import InboundMessage, MediaMetadata, MessageAddress
 from benchclaw.utils import ensure_aware, now_aware
 
 SummonSource = Literal["mention", "reply"]
-_SUMMON_SOURCES: set[str] = {"mention", "reply"}
 
 
 class AttentionPolicy(StrEnum):
@@ -26,18 +23,6 @@ def _normalize_timestamp(ts: datetime | None) -> datetime:
     if ts is None:
         return now_aware()
     return ensure_aware(ts)
-
-
-# TODO: Instead of doing this, force the channel implementations to set "summon" in metadata and ignore any internal "_summon_source" keys.
-def _normalize_summon_source(metadata: dict[str, Any]) -> SummonSource | None:
-    metadata.pop("summon", None)
-    raw = metadata.pop("_summon_source", None)
-    if raw is None:
-        return None
-    if isinstance(raw, str) and raw in _SUMMON_SOURCES:
-        return raw  # type: ignore[return-value]
-    logger.warning(f"Ignoring unsupported summon source: {raw!r}")
-    return None
 
 
 @dataclass
@@ -84,13 +69,13 @@ class InboundAttentionFilter:
         content: str,
         media: list[str] | None,
         media_metadata: list[MediaMetadata] | None,
-        metadata: dict[str, Any]
-        | None,  # TODO: Make this non-optional and default to {} at the call site instead of here.
+        metadata: dict[str, Any],
         timestamp: datetime | None,
     ) -> list[InboundMessage]:
         ts = _normalize_timestamp(timestamp)
-        clean_metadata = dict(metadata or {})
-        summon = _normalize_summon_source(clean_metadata)
+        clean_metadata = dict(metadata)
+        raw_summon = clean_metadata.get("summon")
+        summon = raw_summon if raw_summon in ("mention", "reply") else None
         pending = _PendingMessage(
             sender_id=sender_id,
             chat_id=chat_id,

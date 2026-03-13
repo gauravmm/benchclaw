@@ -9,7 +9,7 @@ from typing import Any
 
 import filetype
 
-from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
+from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.bus import MessageAddress, OutboundMessage, ToolResult
 from benchclaw.channels.whatsapp.address import WhatsAppId
 
@@ -71,13 +71,8 @@ class ReadImageTool(Tool):
         return [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}]
 
 
-register_tool("read_image", ReadImageTool)
-
-
 class SendImageTool(Tool):
     """Send a stored workspace image to the current or another chat."""
-
-    master_only = True
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "SendImageTool":
@@ -149,9 +144,6 @@ class SendImageTool(Tool):
             OutboundMessage(address=target, content=caption, media=[path])
         )
         return f"Image sent to {target}"
-
-
-register_tool("send_image", SendImageTool)
 
 
 class SearchImagesTool(Tool):
@@ -235,4 +227,43 @@ class SearchImagesTool(Tool):
         return json.dumps(results, ensure_ascii=False)
 
 
-register_tool("search_images", SearchImagesTool)
+class AnnotateMediaTool(Tool):
+    """Persist a caption or annotation for a stored media file."""
+
+    @classmethod
+    def build(cls, _config: None, _ctx: ToolContext) -> "AnnotateMediaTool":
+        return cls()
+
+    @property
+    def name(self) -> str:
+        return "annotate_media"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Save a concise caption or annotation for a stored workspace media file. "
+            "Use this after receiving an image so future turns can search or answer follow-up questions without re-reading it."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace-relative media path to annotate.",
+                },
+                "caption": {
+                    "type": "string",
+                    "description": "Searchable caption or annotation text.",
+                },
+            },
+            "required": ["path", "caption"],
+        }
+
+    async def execute(self, ctx: ToolContext, path: str, caption: str, **_: Any) -> str:
+        if not ctx.media_repo:
+            raise RuntimeError("annotate_media requires media repository access")
+        ctx.media_repo.set_caption(path, caption)
+        return f"Saved annotation for {path}"

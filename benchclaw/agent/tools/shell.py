@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from benchclaw.agent.tools.base import Tool, ToolContext, register_tool, register_tool_config
+from benchclaw.agent.tools.base import Tool, ToolContext
 
 
 class ExecToolConfig(BaseModel):
@@ -16,9 +16,6 @@ class ExecToolConfig(BaseModel):
 
     timeout: int = 300
     restrict_to_workspace: bool = True
-
-
-register_tool_config("exec", ExecToolConfig)
 
 
 class ExecTool(Tool):
@@ -30,7 +27,7 @@ class ExecTool(Tool):
         return cls(
             config=resolved_config,
             working_dir=str(ctx.workspace),
-            restrict_to_workspace=ctx.is_subagent or resolved_config.restrict_to_workspace,
+            restrict_to_workspace=resolved_config.restrict_to_workspace,
         )
 
     def __init__(
@@ -179,6 +176,3 @@ class ExecTool(Tool):
                     raise PermissionError(
                         "Command blocked by safety guard (path outside working dir)"
                     )
-
-
-register_tool("exec", ExecTool)

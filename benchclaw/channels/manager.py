@@ -30,10 +30,9 @@ class ChannelManager:
         self._stack = AsyncExitStack()
 
         for name, chconfig in self.config.channels:
-            try:
-                self.channels[name] = chconfig.make_channel(self.bus, media_repo=media_repo)
-            except Exception as e:
-                logger.warning(f"{name} channel not available: {e}")
+            if not chconfig.is_configured():
+                continue
+            self.channels[name] = chconfig.make_channel(self.bus, media_repo=media_repo)
 
     async def __aenter__(self) -> "ChannelManager":
         await self._stack.__aenter__()

@@ -2,14 +2,12 @@
 
 from typing import Any, Awaitable, Callable
 
-from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
+from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.bus import MessageAddress, OutboundMessage
 
 
 class MessageTool(Tool):
     """Tool to send messages to users on chat channels."""
-
-    master_only = True
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "MessageTool":
@@ -81,6 +79,3 @@ class MessageTool(Tool):
             return f"Message sent to {target_channel}:{target_chat_id}"
         except Exception as e:
             raise RuntimeError(f"Error sending message: {e}") from e
-
-
-register_tool("message", MessageTool)

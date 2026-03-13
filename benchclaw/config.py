@@ -5,14 +5,16 @@ from pathlib import Path
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
-import benchclaw.agent.tools  # noqa: F401  # triggers register_tool_config() calls in all tool modules
-import benchclaw.channels.builtins  # noqa: F401  # triggers register_channel() calls in all channel modules
-from benchclaw.agent.tools.base import _TOOL_CONFIG_REGISTRY
+from benchclaw.agent.tools.builtins import TOOL_CONFIG_TYPES
 from benchclaw.agent.tools.mcp_manager import MCPServerConfig
-from benchclaw.channels.base import _CONFIG_REGISTRY, ChannelConfig
+from benchclaw.agent.tools.shell import ExecToolConfig
+from benchclaw.agent.tools.web import WebSearchConfig
+from benchclaw.channels.smtp_email import EmailConfig
+from benchclaw.channels.telegrm import TelegramConfig
+from benchclaw.channels.whatsapp.channel import WhatsAppConfig
 
 
 class AgentConfig(BaseModel):
@@ -36,7 +38,7 @@ class AgentsConfig(BaseModel):
 class ProviderConfig(BaseModel):
     """LLM provider configuration."""
 
-    name: str = "anthropic"  # Registry name: "anthropic", "openrouter", "deepseek", etc.
+    name: str = "anthropic"
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None
@@ -49,30 +51,25 @@ class GatewayConfig(BaseModel):
     port: int = 18790
 
 
-class _ToolConfigsBase(BaseModel):
-    """Base class for dynamically-built ToolsConfig."""
+class ToolsConfig(BaseModel):
+    """Static built-in tool configuration."""
 
-    pass
-
-
-ToolsConfig: type[_ToolConfigsBase] = create_model(
-    "ToolsConfig",
-    __base__=_ToolConfigsBase,
-    **{name: (cls, Field(default_factory=cls)) for name, cls in _TOOL_CONFIG_REGISTRY.items()},  # type: ignore[arg-type]
-)
+    exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
-class _ChannelConfigsBase(BaseModel):
-    def __iter__(self) -> Iterator[tuple[str, ChannelConfig]]:
+class ChannelConfigs(BaseModel):
+    """Optional built-in channel configuration."""
+
+    email: EmailConfig | None = None
+    telegram: TelegramConfig | None = None
+    whatsapp: WhatsAppConfig | None = None
+
+    def __iter__(self) -> Iterator[tuple[str, BaseModel]]:
         for name in type(self).model_fields:
-            yield name, getattr(self, name)
-
-
-ChannelConfigs: type[_ChannelConfigsBase] = create_model(
-    "ChannelConfigs",
-    __base__=_ChannelConfigsBase,
-    **{name: (cls, Field(default_factory=cls)) for name, cls in _CONFIG_REGISTRY.items()},  # type: ignore[arg-type]
-)
+            config = getattr(self, name)
+            if config is not None:
+                yield name, config
 
 
 class Config(BaseSettings):
@@ -81,8 +78,8 @@ class Config(BaseSettings):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
-    channels: ChannelConfigs = Field(default_factory=ChannelConfigs)  # pyright: ignore[reportInvalidTypeForm]
-    tools: ToolsConfig = Field(default_factory=ToolsConfig)  # pyright: ignore[reportInvalidTypeForm]
+    channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
     @property
@@ -113,7 +110,6 @@ class ConfigManager:
                 logger.warning(f"Failed to load config from {self._path}: {e}")
                 logger.warning("Using default configuration.")
         else:
-            # Don't clobber an existing config file.
             self._write_on_exit = True
 
         self.config = Config()
@@ -126,6 +122,22 @@ class ConfigManager:
                 yaml.dump(self.config.model_dump(), f, default_flow_style=False, allow_unicode=True)
 
 
-def _migrate_config(data: dict) -> dict:
+def _migrate_config(data: dict | None) -> dict:
     """Migrate old config formats to current."""
+    data = data or {}
+
+    channels = dict(data.get("channels") or {})
+    telegram = channels.get("telegram")
+    if isinstance(telegram, dict) and not telegram.get("enabled", True):
+        channels.pop("telegram", None)
+    elif isinstance(telegram, dict):
+        telegram.pop("enabled", None)
+
+    email = channels.get("email")
+    if isinstance(email, dict):
+        email.pop("consent_granted", None)
+
+    tools = dict(data.get("tools") or {})
+    data["channels"] = channels
+    data["tools"] = {name: value for name, value in tools.items() if name in TOOL_CONFIG_TYPES}
     return data

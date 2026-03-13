@@ -23,8 +23,6 @@ from benchclaw.utils import _parse_timestamp, now_aware
 class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
 
-    master_only = True
-
     @classmethod
     def build(cls, config: None, ctx: ToolContext) -> "CronTool":
         return cls(

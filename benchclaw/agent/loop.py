@@ -5,17 +5,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import re
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import filetype
 from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
-from benchclaw.agent.tools.base import ParsedInnerTag, ToolContext
+from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
@@ -32,46 +29,20 @@ from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
 from benchclaw.session import Session, SessionManager
 
-# Compact the context when token usage exceeds this fraction of the context window.
 _COMPACT_THRESHOLD = 0.8
-
 _LOG_REMINDER_EVERY_TURNS = 4
 _LONG_REASONING_SECONDS = 20.0
 
 
-@dataclass
-class InnerTags:
-    """Private model-emitted tags stripped before sending the visible reply."""
-
-    tags: dict[str, list[ParsedInnerTag]] = field(default_factory=dict)
-
-    def add_tag(self, parsed: ParsedInnerTag) -> None:
-        self.tags.setdefault(parsed.name, []).append(parsed)
-
-
-@dataclass
-class InnerTagEffects:
-    """Accumulated runtime effects from private model-emitted tags."""
-
-    plan: str | None = None
-
-
 class ToolCallTracker:
-    """
-    Per-address tracker for in-flight background tool calls.
+    """Per-address tracker for in-flight background tool calls."""
 
-    Encapsulates the in_flight dict and asyncio.Task handles so that
-    _address_loop can delegate all tool-call bookkeeping to method calls.
-    """
-
-    def __init__(self, context: ContextBuilder) -> None:
-        self._context = context
-        self._in_flight: dict[str, str] = {}  # tool_call_id -> tool_name
-        self._tasks: dict[str, asyncio.Task] = {}  # tool_call_id -> Task
+    def __init__(self) -> None:
+        self._in_flight: dict[str, str] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
 
     @property
     def tasks(self) -> dict[str, asyncio.Task]:
-        """Live dict of task handles — assigned to ToolContext.background_tasks."""
         return self._tasks
 
     @property
@@ -83,63 +54,33 @@ class ToolCallTracker:
         self._tasks[tool_call_id] = task
 
     def handle_interrupt(self, session: Session) -> None:
-        """
-        User message arrived while tools are still running.
-
-        Appends synthetic tool results and a system message, then clears
-        in_flight. Tasks keep running; their results become background notifications.
-        """
-        for tool_id, tool_name in self._in_flight.items():
-            session.live_messages.append(
-                self._context.tool_result(tool_id, tool_name, "[executing in background]")
-            )
+        if not self._in_flight:
+            return
         tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in self._in_flight.items())
-        session.live_messages.append(
-            {
-                "role": "system",
-                "content": (
-                    f"The following tools are still executing in the background: "
-                    f"{tool_list}. Their results will arrive as new messages."
-                ),
-            }
+        session.append_system(
+            "The following tools are still executing in the background: "
+            f"{tool_list}. Their results will arrive as new events."
         )
         self._in_flight.clear()
-        # _tasks intentionally kept — tasks still running; kill tool may need handles.
 
     def handle_result(self, event: ToolResultEvent, session: Session) -> bool:
-        """
-        Handle a ToolResultEvent.
-
-        Returns True  → caller should proceed to LLM call.
-        Returns False → caller should `continue` (still waiting for sibling tools).
-        """
+        self._tasks.pop(event.tool_call_id, None)
         if event.tool_call_id in self._in_flight:
             del self._in_flight[event.tool_call_id]
-            self._tasks.pop(event.tool_call_id, None)
-            session.live_messages.append(
-                self._context.tool_result(event.tool_call_id, event.tool_name, event.result)
-            )
-            return not self._in_flight  # True when last sibling returned
-        else:
-            # Interrupt happened earlier; deliver result as background notification.
-            notification = f"[Background tool '{event.tool_name}' completed]:\n{event.result}"
-            session.add_message("user", notification)
-            return True
+            session.append_tool_result(event.tool_call_id, event.tool_name, event.result)
+            return not self._in_flight
+
+        session.append_tool_result(event.tool_call_id, event.tool_name, event.result)
+        session.append_system(
+            f"Background tool '{event.tool_name}' completed. Review the result and update the user if useful."
+        )
+        return True
 
 
 class AgentLoop:
-    """
-    The agent loop is the core processing engine.
+    """Event-driven agent runtime."""
 
-    It:
-    1. Subscribes to per-address inbound queues from the bus
-    2. For each address, runs an event-driven loop that processes both user
-       messages (InboundMessage) and background tool results (ToolResultEvent)
-    3. Calls the LLM whenever there is something to process
-    4. Dispatches tool calls as background asyncio tasks; results are posted
-       back via bus.publish_inbound() when done
-    5. Sends final responses back via the bus
-    """
+    _MAX_REASONING_CHARS = 500
 
     def __init__(
         self,
@@ -159,14 +100,11 @@ class AgentLoop:
         self.context = ContextBuilder(config.workspace_path)
         self.sessions = SessionManager(config.workspace_path / "sessions")
 
-        # self.subagents = SubagentManager(config=config, provider=provider, bus=bus)
-
         master_ctx = ToolContext(
             workspace=config.workspace_path,
             bus=bus,
             log_store=LogStore(config.workspace_path),
             media_repo=media_repo,
-            # subagent_manager=self.subagents,
         )
         self.master_ctx = master_ctx
         mcp_manager = MCPManager(config.mcp_servers) if config.mcp_servers else None
@@ -178,7 +116,6 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
     ) -> None:
-        """Execute a single tool call and post a ToolResultEvent to the bus when done."""
         try:
             result = await self.tools.execute(tc.name, tc.arguments, call_ctx)
         except asyncio.CancelledError:
@@ -190,8 +127,7 @@ class AgentLoop:
             ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
         )
 
-    def _dump_messages(self, messages: list[dict]) -> None:
-        """Write the LLM input messages to the debug dump file, stripping image data."""
+    def _dump_messages(self, messages: list[dict[str, object]]) -> None:
         if not self.debug_dump_path:
             return
 
@@ -215,146 +151,39 @@ class AgentLoop:
             logger.warning(f"Failed to write debug dump: {e}")
 
     @staticmethod
-    def _build_image_blocks(paths: list[str], workspace: Path) -> list[dict]:
-        """Base64-encode image files and return image_url content blocks for the LLM."""
-        blocks = []
+    def _build_image_blocks(paths: list[str], workspace: Path) -> list[dict[str, object]]:
+        blocks: list[dict[str, object]] = []
         for path_str in paths:
-            p = workspace / path_str
-            if not p.is_file():
+            path = workspace / path_str
+            if not path.is_file():
                 logger.warning(f"Skipping non-image or missing file: {path_str}")
                 continue
-            mime = filetype.guess_mime(str(p))
+            mime = filetype.guess_mime(str(path))
             if not mime or not mime.startswith("image/"):
                 logger.warning(f"Skipping non-image or missing file: {path_str}")
                 continue
-            b64 = base64.b64encode(p.read_bytes()).decode()
+            b64 = base64.b64encode(path.read_bytes()).decode()
             blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
         return blocks
 
     @staticmethod
     def _merge_user_messages(messages: list[InboundMessage]) -> InboundMessage:
-        """Merge a batch of user messages into one.
-
-        A single message is returned as-is. Multiple messages are combined with
-        per-sender attribution, using the first message's address and metadata.
-        """
         if len(messages) == 1:
             return messages[0]
         parts = [f"[{m.sender_id}] {m.content}" for m in messages if m.content]
-        media = [path for m in messages for path in m.media]
-        media_metadata = [mm for m in messages for mm in m.media_metadata]
         first = messages[0]
         return InboundMessage(
             address=first.address,
             sender_id=first.sender_id,
             content="\n".join(parts),
             timestamp=first.timestamp,
-            media=media,
-            media_metadata=media_metadata,
+            media=[path for m in messages for path in m.media],
+            media_metadata=[item for m in messages for item in m.media_metadata],
             metadata=first.metadata,
         )
 
     @staticmethod
-    def _parse_tag_attrs(raw: str) -> dict[str, str]:
-        """Parse `key="value"` attributes from a simple XML-like tag head."""
-        return {m.group(1): m.group(2) for m in re.finditer(r'([a-zA-Z_][\w-]*)="([^"]*)"', raw)}
-
-    def _all_inner_tag_names(self) -> list[str]:
-        """Return built-in and tool-backed private tag names in stable order."""
-        names = ["plan", "image_caption"]
-        for tag_name in self.tools.get_inner_tag_tools():
-            if tag_name not in names:
-                names.append(tag_name)
-        return names
-
-    def _extract_inner_tags(self, content: str) -> tuple[str, InnerTags]:
-        """Extract private tags from response content.
-
-        Returns (visible_content, inner_tags). The visible content is sent to
-        the user, while the structured tags are handled by the runtime.
-        """
-        inner = InnerTags()
-
-        def _strip_with(pattern: re.Pattern[str], store: Callable[[re.Match[str]], None]) -> None:
-            nonlocal content
-
-            def _capture(match: re.Match[str]) -> str:
-                store(match)
-                return ""
-
-            content = pattern.sub(_capture, content)
-
-        for tag_name in self._all_inner_tag_names():
-            pattern = re.compile(
-                rf"<{re.escape(tag_name)}(\s+[^>]*)?>(.*?)</{re.escape(tag_name)}>",
-                re.DOTALL | re.IGNORECASE,
-            )
-
-            def _store_tag(match: re.Match[str], name: str = tag_name) -> None:
-                body = match.group(2).strip()
-                if not body:
-                    return
-                inner.add_tag(
-                    ParsedInnerTag(
-                        name=name,
-                        attrs=self._parse_tag_attrs(match.group(1) or ""),
-                        body=body,
-                    )
-                )
-
-            _strip_with(pattern, _store_tag)
-        return content.strip(), inner
-
-    @staticmethod
-    def _apply_plan_tag(parsed: ParsedInnerTag, effects: InnerTagEffects) -> None:
-        """Accumulate the next-turn plan from one parsed <plan> tag."""
-        effects.plan = f"{effects.plan}\n{parsed.body}" if effects.plan else parsed.body
-
-    @staticmethod
-    def _apply_image_caption_tag(
-        parsed: ParsedInnerTag, media_repo: MediaRepository | None
-    ) -> None:
-        """Persist one parsed <image_caption> tag to the media repository."""
-        path = parsed.attrs.get("path", "").strip()
-        if not path:
-            raise ValueError("<image_caption> requires a path attribute")
-        if not media_repo:
-            return
-        media_repo.set_caption(path, parsed.body)
-
-    async def _apply_inner_tag(
-        self,
-        parsed: ParsedInnerTag,
-        effects: InnerTagEffects,
-        call_ctx: ToolContext,
-        media_repo: MediaRepository | None,
-    ) -> None:
-        """Dispatch one parsed private tag to the appropriate built-in or tool handler."""
-        if parsed.name == "plan":
-            self._apply_plan_tag(parsed, effects)
-            return
-        if parsed.name == "image_caption":
-            self._apply_image_caption_tag(parsed, media_repo)
-            return
-        await self.tools.execute_inner_tag(parsed.name, parsed, call_ctx)
-
-    # Keep only this many chars of the most recent reasoning_content.
-    # Thinking models require it in the immediately preceding turn, but the
-    # full blob can be thousands of words and primes further circular reasoning.
-    _MAX_REASONING_CHARS = 500
-
-    @staticmethod
-    def _strip_old_reasoning(messages: list[dict]) -> list[dict]:
-        """
-        Return messages with reasoning_content stripped or truncated.
-
-        Thinking models (Qwen, etc.) require reasoning_content in the immediately
-        preceding assistant turn, but replaying old or verbose blobs balloons the
-        context and primes the model to continue prior circular reasoning.
-
-        - All but the last assistant message with reasoning_content: stripped.
-        - The last one: truncated to _MAX_REASONING_CHARS.
-        """
+    def _strip_old_reasoning(messages: list[dict[str, object]]) -> list[dict[str, object]]:
         last_idx = next(
             (
                 i
@@ -365,77 +194,62 @@ class AgentLoop:
         )
         if last_idx is None:
             return messages
-        result = []
-        for i, m in enumerate(messages):
-            if m.get("role") == "assistant" and "reasoning_content" in m:
+
+        result: list[dict[str, object]] = []
+        for i, message in enumerate(messages):
+            if message.get("role") == "assistant" and "reasoning_content" in message:
                 if i != last_idx:
-                    m = {k: v for k, v in m.items() if k != "reasoning_content"}
-                elif len(m["reasoning_content"]) > AgentLoop._MAX_REASONING_CHARS:
-                    m = dict(m)
-                    m["reasoning_content"] = (
-                        m["reasoning_content"][: AgentLoop._MAX_REASONING_CHARS] + " [truncated]"
+                    message = {k: v for k, v in message.items() if k != "reasoning_content"}
+                elif (
+                    isinstance(message.get("reasoning_content"), str)
+                    and len(message["reasoning_content"]) > AgentLoop._MAX_REASONING_CHARS
+                ):
+                    message = dict(message)
+                    message["reasoning_content"] = (
+                        message["reasoning_content"][: AgentLoop._MAX_REASONING_CHARS]
+                        + " [truncated]"
                     )
-            result.append(m)
+            result.append(message)
         return result
 
-    def _compact_context(self, session: Session, addr: MessageAddress) -> None:
-        """
-        Compact live_messages when the context window is filling up.
-
-        Reads recent log entries and rebuilds the context as:
-          - System prompt
-          - A summary injected as a system message with recent log entries
-          - The last memory_window messages from the persistent session history
-        """
-        log_store = self.master_ctx.log_store
-        summary_content = (
-            "[Context compacted to stay within context window limits.]\nRecent activity log:\n"
-            + (log_store.read_recent(n=20) if log_store else "[No logs available]")
-        )
-        new_live: list[dict] = [
-            {
-                "role": "system",
-                "content": self.context.build_system_prompt(
-                    self.tools.values(),
-                    addr.channel,
-                    addr.chat_id,
-                    session.describe_current_session(),
-                ),
-            },
-            {"role": "system", "content": summary_content},
-            *session.get_history(max_messages=self.config.memory_window),
-        ]
-        session.live_messages = new_live
-        session.last_consolidated = len(session.messages)
-        logger.info(f"Context compacted for {addr} ({len(new_live)} messages after compaction)")
-
-    def _refresh_system_prompt(self, session: Session, addr: MessageAddress) -> None:
-        """Keep the leading system prompt aligned with the latest session metadata."""
+    def _build_llm_messages(
+        self, session: Session, addr: MessageAddress
+    ) -> list[dict[str, object]]:
         prompt = self.context.build_system_prompt(
             self.tools.values(),
             addr.channel,
             addr.chat_id,
             session.describe_current_session(),
         )
-        system_message = {"role": "system", "content": prompt}
-        if session.live_messages and session.live_messages[0].get("role") == "system":
-            session.live_messages[0] = system_message
-        else:
-            session.live_messages.insert(0, system_message)
+        return [
+            {"role": "system", "content": prompt},
+            *session.get_history(self.config.memory_window),
+        ]
+
+    def _compact_context(self, session: Session) -> None:
+        log_store = self.master_ctx.log_store
+        summary_content = (
+            "[Context compacted to stay within context window limits.]\nRecent activity log:\n"
+            + (log_store.read_recent(n=20) if log_store else "[No logs available]")
+        )
+        session.append_summary(summary_content)
+        logger.info(
+            "Context compacted (%s events, compacted_through=%s)",
+            len(session.events),
+            session.compacted_through,
+        )
 
     @staticmethod
     def _build_log_reminders(turn_number: int, event_reasons: list[str]) -> list[dict[str, str]]:
-        """Build ephemeral system reminders nudging the model to log state."""
         reminders: list[dict[str, str]] = []
         if turn_number % _LOG_REMINDER_EVERY_TURNS == 0:
             reminders.append(
                 {
                     "role": "system",
                     "content": (
-                        "Reminder: append concise log entries as you work, either with <log> "
-                        "or the log tool. "
+                        "Reminder: append concise log entries as you work using the log tool. "
                         "Log notable steps, fetched values, decisions, and status changes. "
-                        "Do not log routine image receipt or required image captions by themselves."
+                        "Do not log routine image receipt or required media annotations by themselves."
                     ),
                 }
             )
@@ -458,46 +272,31 @@ class AgentLoop:
         tracker: ToolCallTracker,
         call_ctx: ToolContext,
         addr: MessageAddress,
-        current_plan: str | None,
         pending_images: list[str] | None = None,
-        media_repo: MediaRepository | None = None,
         log_reminders: list[dict[str, str]] | None = None,
-    ) -> tuple[str | None, float]:
-        """
-        Prepare messages, call the LLM, handle compaction, and dispatch the response.
+    ) -> float:
+        llm_messages = self._strip_old_reasoning(self._build_llm_messages(session, addr))
 
-        Returns (new_current_plan, elapsed_seconds).
-        On LLM error, publishes an error message and returns (None, 0.0).
-        """
-        self._refresh_system_prompt(session, addr)
-        self._dump_messages(session.live_messages)
-
-        # Build the message list for this LLM call, injecting the plan if set.
-        llm_messages = self._strip_old_reasoning(session.live_messages)
-
-        # Inject pending images ephemerally into the last message (not stored in live_messages).
         if pending_images:
             blocks = self._build_image_blocks(pending_images, self.workspace_path)
             if blocks and llm_messages:
                 last = llm_messages[-1]
-                text = last["content"] if isinstance(last["content"], str) else ""
-                llm_messages[-1] = {**last, "content": blocks + [{"type": "text", "text": text}]}
+                text = last.get("content", "") if isinstance(last, dict) else ""
+                if isinstance(text, str):
+                    llm_messages[-1] = {
+                        **last,
+                        "content": blocks + [{"type": "text", "text": text}],
+                    }
             pending_images.clear()
-        if current_plan:
-            llm_messages.append(
-                {
-                    "role": "system",
-                    "content": f"Your plan from the previous turn:\n{current_plan}",
-                }
-            )
         if log_reminders:
             llm_messages.extend(log_reminders)
 
+        self._dump_messages(llm_messages)
         started_at = time.monotonic()
         try:
             response = await self.provider.chat(
                 messages=llm_messages,
-                tools=self.tools.get_definitions(master=True),
+                tools=self.tools.get_definitions(),
                 model=self.config.model,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
@@ -507,30 +306,20 @@ class AgentLoop:
             await self.bus.publish_outbound(
                 OutboundMessage(address=addr, content=f"Sorry, I encountered an error: {e}")
             )
-            return None, 0.0
+            return 0.0
         elapsed = time.monotonic() - started_at
 
-        # Check token usage and compact if approaching context window limit.
         total_tokens = response.usage.get("total_tokens", 0)
         if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
             logger.info(
-                "Session compaction triggered for "
-                f"{addr}: token usage {total_tokens}/{self.config.context_window}"
+                "Session compaction triggered for %s: token usage %s/%s",
+                addr,
+                total_tokens,
+                self.config.context_window,
             )
-            self._compact_context(session, addr)
+            self._compact_context(session)
 
-        # Extract any private tags the model wrote and strip them from visible content.
-        visible_content, inner_tags = self._extract_inner_tags(response.content or "")
-        inner_effects = InnerTagEffects()
-        for tag_name, parsed_tags in inner_tags.tags.items():
-            for parsed in parsed_tags:
-                try:
-                    await self._apply_inner_tag(parsed, inner_effects, call_ctx, media_repo)
-                except Exception as e:
-                    logger.warning(f"Failed to handle inner tag <{tag_name}>: {e}")
-        if inner_effects.plan:
-            logger.debug(f"Plan captured: {inner_effects.plan[:120]}")
-
+        visible_content = response.content or ""
         if response.has_tool_calls:
             tool_call_dicts = [
                 {
@@ -540,12 +329,10 @@ class AgentLoop:
                 }
                 for tc in response.tool_calls
             ]
-            session.live_messages.append(
-                self.context.assistant_message(
-                    visible_content,
-                    tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
-                )
+            session.append_assistant(
+                visible_content,
+                tool_calls=tool_call_dicts,
+                reasoning_content=response.reasoning_content,
             )
             for tc in response.tool_calls:
                 args_str = json.dumps(tc.arguments, ensure_ascii=False)
@@ -559,29 +346,18 @@ class AgentLoop:
                 await self.bus.publish_outbound(
                     OutboundMessage(address=addr, content=visible_content)
                 )
-        else:
-            final = visible_content or "I've completed processing but have no response to give."
-            session.add_message("assistant", final)
-            preview = final[:120] + "..." if len(final) > 120 else final
-            logger.info(f"Response to {addr}: {preview}")
-            await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
+            return elapsed
 
-        return inner_effects.plan, elapsed
+        final = visible_content or "I've completed processing but have no response to give."
+        session.append_assistant(final)
+        preview = final[:120] + "..." if len(final) > 120 else final
+        logger.info(f"Response to {addr}: {preview}")
+        await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
+        return elapsed
 
     async def _address_loop(self, addr: MessageAddress) -> None:
-        """
-        Event-driven processing loop for a single address.
-
-        Reads AddressEvent (InboundMessage | ToolResultEvent | SystemEvent) from
-        bus.inbound[addr], calling the LLM after each event and dispatching
-        tool calls as background tasks via _run_tool_and_post.
-
-        ToolCallTracker manages tool call IDs and asyncio.Task handles. When a
-        user message arrives while tools are running, the tracker injects synthetic
-        results and a system note, then clears in_flight (tasks keep running).
-        """
         session = self.sessions.get(addr)
-        tracker = ToolCallTracker(self.context)
+        tracker = ToolCallTracker()
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
@@ -594,15 +370,7 @@ class AgentLoop:
         pending_system_events: list[str] = []
         pending_images: list[str] = []
         pending_log_reasons: list[str] = []
-        current_plan: str | None = None
         llm_turn_count = 0
-        session.live_messages = self.context.build_context(
-            history=session.get_history(max_messages=self.config.memory_window),
-            tools=self.tools,
-            channel=addr.channel,
-            chat_id=addr.chat_id,
-            session_label=session.describe_current_session(),
-        )
 
         while True:
             if not tracker.pending:
@@ -611,48 +379,42 @@ class AgentLoop:
             batch = await self.bus.consume_inbound_batch(address=addr)
             needs_llm = False
 
-            # 1. Tool results (in received order; cross-batch hazard impossible since
-            #    AgentLoop is unique per address and the queue is FIFO).
             for result in batch.tool_results:
                 tracker.handle_result(result, session)
             if batch.tool_results and not tracker.pending:
                 for content in pending_system_events:
-                    session.live_messages.append({"role": "system", "content": content})
+                    session.append_system(content)
                 pending_system_events.clear()
                 pending_log_reasons.append("background tool results arrived")
                 needs_llm = True
 
-            # 2. System events — buffer if tools are still in flight.
             for event in batch.system_events:
                 if tracker.pending:
                     logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
                     pending_system_events.append(event.content)
                 else:
-                    current_plan = None
-                    session.live_messages.append({"role": "system", "content": event.content})
+                    session.append_system(event.content)
                     pending_log_reasons.append("a system directive arrived")
                     needs_llm = True
 
-            # 3. User messages — merge into one turn, interrupt any in-flight tools.
             if batch.user_messages:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
                 if tracker.pending:
                     tracker.handle_interrupt(session)
                 for content in pending_system_events:
-                    session.live_messages.append({"role": "system", "content": content})
+                    session.append_system(content)
                 pending_system_events.clear()
 
                 msg = self._merge_user_messages(batch.user_messages)
                 preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
                 logger.info(f"Processing message from {addr}: {preview}")
-                current_plan = None
-                session.add_message(
-                    "user",
+                session.append_user(
                     msg.content,
                     sender_id=msg.sender_id,
                     media=msg.media,
                     media_metadata=msg.media_metadata,
                     metadata=msg.metadata,
+                    timestamp=msg.timestamp,
                 )
                 pending_images = list(msg.media)
                 iteration_count = 0
@@ -661,7 +423,6 @@ class AgentLoop:
             if not needs_llm:
                 continue
 
-            # Check if the iterations have maxed out.
             if iteration_count >= self.config.max_tool_iterations:
                 logger.warning(f"Max tool iterations reached for {addr}")
                 continue
@@ -670,21 +431,18 @@ class AgentLoop:
             llm_turn_count += 1
             log_reminders = self._build_log_reminders(llm_turn_count, pending_log_reasons)
             pending_log_reasons = []
-            current_plan, elapsed = await self._process_llm_turn(
+            elapsed = await self._process_llm_turn(
                 session,
                 tracker,
                 call_ctx,
                 addr,
-                current_plan,
                 pending_images=pending_images,
-                media_repo=self.media_repo,
                 log_reminders=log_reminders,
             )
             if elapsed >= _LONG_REASONING_SECONDS:
                 pending_log_reasons.append(f"the previous model step took {elapsed:.1f}s")
 
     async def run(self) -> None:
-        """Run the agent loop, processing messages from the bus."""
         async with self.sessions:
             async with self.tools:
                 logger.info("Agent loop started")
@@ -700,12 +458,10 @@ class AgentLoop:
 
                 dispatch_task = asyncio.create_task(_dispatch())
                 try:
-                    await asyncio.get_event_loop().create_future()  # run forever
+                    await asyncio.get_event_loop().create_future()
                 except asyncio.CancelledError:
-                    for t in [dispatch_task, *addr_tasks.values()]:
-                        t.cancel()
+                    for task in [dispatch_task, *addr_tasks.values()]:
+                        task.cancel()
                     await asyncio.gather(
-                        dispatch_task,
-                        *addr_tasks.values(),
-                        return_exceptions=True,
+                        dispatch_task, *addr_tasks.values(), return_exceptions=True
                     )

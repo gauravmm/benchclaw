@@ -57,15 +57,6 @@ class InboundMessage:
     media_metadata: list[MediaMetadata] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
 
-    # TODO: Remove these and use .address directly.
-    @property
-    def channel(self) -> str:
-        return self.address.channel
-
-    @property
-    def chat_id(self) -> str:
-        return self.address.chat_id
-
 
 @dataclass
 class OutboundMessage:
@@ -76,14 +67,6 @@ class OutboundMessage:
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def channel(self) -> str:
-        return self.address.channel
-
-    @property
-    def chat_id(self) -> str:
-        return self.address.chat_id
 
 
 @dataclass
@@ -155,7 +138,7 @@ class MessageBus:
         await bus.consume_inbound(address=addr)           # next AddressEvent for that address
         new_addrs = bus.subscribe_new_addresses()         # Queue[MessageAddress] of new addresses
 
-        await bus.publish_outbound(msg)             # enqueues to msg.channel queue
+        await bus.publish_outbound(msg)             # enqueues to msg.address.channel queue
         await bus.consume_outbound(channel="x")     # next message for channel x
     """
 

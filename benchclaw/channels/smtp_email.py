@@ -18,7 +18,7 @@ from loguru import logger
 
 from benchclaw.bus import MessageBus, OutboundMessage
 from benchclaw.channels.attention import AttentionPolicy
-from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
+from benchclaw.channels.base import BaseChannel, ChannelConfig
 
 
 class EmailConfig(ChannelConfig):
@@ -28,8 +28,6 @@ class EmailConfig(ChannelConfig):
 
     def make_channel(self, bus: MessageBus) -> "EmailChannel":
         return EmailChannel(self, bus)
-
-    consent_granted: bool = False  # Explicit owner permission to access mailbox data
 
     # IMAP (receive)
     imap_host: str = ""
@@ -55,8 +53,16 @@ class EmailConfig(ChannelConfig):
     max_body_chars: int = 12000
     subject_prefix: str = "Re: "
 
-
-register_channel("email", EmailConfig)
+    def is_configured(self) -> bool:
+        required = (
+            self.imap_host,
+            self.imap_username,
+            self.imap_password,
+            self.smtp_host,
+            self.smtp_username,
+            self.smtp_password,
+        )
+        return all(value.strip() for value in required)
 
 
 _IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -85,20 +91,11 @@ class EmailChannel(BaseChannel):
         self._MAX_PROCESSED_UIDS = 100000
 
     def status(self) -> tuple[bool, str]:
-        if not self.config.consent_granted:
-            return (False, "consent not granted")
         running = bool(self._task and not self._task.done())
         return (running, f"polling {self.config.imap_host}" if running else "stopped")
 
     async def background(self) -> None:
         """Start polling IMAP for inbound emails."""
-        if not self.config.consent_granted:
-            logger.warning(
-                "Email channel disabled: consent_granted is false. "
-                "Set channels.email.consentGranted=true after explicit user permission."
-            )
-            return
-
         if not self._validate_config():
             return
 
@@ -133,10 +130,6 @@ class EmailChannel(BaseChannel):
         """Send email via SMTP."""
         if msg.media:
             raise ValueError("Email channel does not support outbound images")
-        if not self.config.consent_granted:
-            logger.warning("Skip email send: consent_granted is false")
-            return
-
         force_send = bool((msg.metadata or {}).get("force_send"))
         if not self.config.auto_reply_enabled and not force_send:
             logger.info("Skip automatic email reply: auto_reply_enabled is false")
@@ -146,7 +139,7 @@ class EmailChannel(BaseChannel):
             logger.warning("Email channel SMTP host not configured")
             return
 
-        to_addr = msg.chat_id.strip()
+        to_addr = msg.address.chat_id.strip()
         if not to_addr:
             logger.warning("Email channel missing recipient address")
             return

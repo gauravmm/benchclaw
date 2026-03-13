@@ -14,14 +14,13 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
-from benchclaw.channels.base import BaseChannel, ChannelConfig, register_channel
+from benchclaw.channels.base import BaseChannel, ChannelConfig
 from benchclaw.media import MediaRepository
 
 
 class TelegramConfig(ChannelConfig):
     """Telegram channel configuration."""
 
-    enabled: bool = False
     token: str = ""  # Bot token from @BotFather
     proxy: str | None = (
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
@@ -32,8 +31,8 @@ class TelegramConfig(ChannelConfig):
     ) -> "TelegramChannel":
         return TelegramChannel(self, bus, media_repo=media_repo)
 
-
-register_channel("telegram", TelegramConfig)
+    def is_configured(self) -> bool:
+        return bool(self.token.strip())
 
 
 def _markdown_to_telegram_html(text: str) -> str:
@@ -206,9 +205,9 @@ class TelegramChannel(BaseChannel):
             return
 
         try:
-            chat_id = int(msg.chat_id)
+            chat_id = int(msg.address.chat_id)
         except ValueError:
-            logger.error(f"Invalid chat_id: {msg.chat_id}")
+            logger.error(f"Invalid chat_id: {msg.address.chat_id}")
             return
 
         try:
@@ -349,7 +348,7 @@ class TelegramChannel(BaseChannel):
             "is_group": message.chat.type != "private",
         }
         if summon_source:
-            message_metadata["_summon_source"] = summon_source
+            message_metadata["summon"] = summon_source
 
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
 

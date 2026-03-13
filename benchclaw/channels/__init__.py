@@ -1,5 +1,6 @@
-"""Chat channels — import this package to register all built-in channels."""
+"""Channel package exports."""
 
-from benchclaw.channels.base import _CONFIG_REGISTRY, BaseChannel, ChannelConfig, register_channel
+from benchclaw.channels.base import BaseChannel, ChannelConfig
+from benchclaw.channels.builtins import BUILTIN_CHANNEL_CONFIGS
 
-__all__ = ["BaseChannel", "ChannelConfig", "_CONFIG_REGISTRY", "register_channel"]
+__all__ = ["BUILTIN_CHANNEL_CONFIGS", "BaseChannel", "ChannelConfig"]
