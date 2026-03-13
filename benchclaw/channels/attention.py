@@ -11,6 +11,7 @@ from typing import Any, Literal
 from loguru import logger
 
 from benchclaw.bus import InboundMessage, MediaMetadata, MessageAddress
+from benchclaw.utils import ensure_aware, now_aware
 
 SummonSource = Literal["mention", "reply"]
 _SUMMON_SOURCES: set[str] = {"mention", "reply"}
@@ -21,12 +22,10 @@ class AttentionPolicy(StrEnum):
     SUMMON_GROUP = "summon_group"
 
 
-# TODO: Move this to utils
 def _normalize_timestamp(ts: datetime | None) -> datetime:
-    now = datetime.now().astimezone()
     if ts is None:
-        return now
-    return ts.astimezone() if ts.tzinfo else ts.replace(tzinfo=now.tzinfo)
+        return now_aware()
+    return ensure_aware(ts)
 
 
 # TODO: Instead of doing this, force the channel implementations to set "summon" in metadata and ignore any internal "_summon_source" keys.

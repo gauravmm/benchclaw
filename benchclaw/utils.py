@@ -5,13 +5,14 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, TypeAlias
 
 import jsonlines
 from pydantic import BeforeValidator, PlainSerializer
 from pytimeparse.timeparse import timeparse
 
-from benchclaw.bus import MessageAddress
+if TYPE_CHECKING:
+    from benchclaw.bus import MessageAddress
 
 
 class JsonlIO:
@@ -97,19 +98,36 @@ DurationField: TypeAlias = Annotated[
 ]
 
 
+def local_timezone():
+    """Return the process-local timezone object."""
+    tz = datetime.now().astimezone().tzinfo
+    assert tz is not None
+    return tz
+
+
+def now_aware() -> datetime:
+    """Return the current time as a timezone-aware datetime in local timezone."""
+    return datetime.now(local_timezone())
+
+
+def ensure_aware(value: datetime) -> datetime:
+    """Coerce a datetime to a timezone-aware value in local timezone."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=local_timezone())
+    return value.astimezone(local_timezone())
+
+
 def _encode_timestamp(dt: datetime | None) -> str | None:
-    return None if dt is None else dt.astimezone().isoformat(timespec="seconds")
+    return None if dt is None else ensure_aware(dt).isoformat(timespec="seconds")
 
 
 def _parse_timestamp(value: datetime | str | int | float) -> datetime:
     """Parse datetime, ISO string, or Unix seconds into an aware datetime in system timezone."""
     if isinstance(value, datetime):
-        return value.astimezone()
+        return ensure_aware(value)
     if isinstance(value, int | float):
-        return datetime.fromtimestamp(
-            float(value), tz=datetime.now().astimezone().tzinfo
-        ).astimezone()
-    return datetime.fromisoformat(value).astimezone()
+        return datetime.fromtimestamp(float(value), tz=local_timezone())
+    return ensure_aware(datetime.fromisoformat(value))
 
 
 def parse_optional_timestamp(value: datetime | str | int | float | None) -> datetime | None:
@@ -135,6 +153,8 @@ OptionalTimestampSerializer: TypeAlias = Annotated[
 
 def parse_optional_message_address(value: MessageAddress | dict | None) -> MessageAddress | None:
     """Parse optional MessageAddress from object/dict form."""
+    from benchclaw.bus import MessageAddress
+
     if value is None or isinstance(value, MessageAddress):
         return value
     return MessageAddress(**value)
@@ -145,7 +165,7 @@ def _encode_message_address(value: MessageAddress | None) -> dict | None:
 
 
 MessageAddressField: TypeAlias = Annotated[
-    MessageAddress | None,
+    Any,
     BeforeValidator(parse_optional_message_address),
     PlainSerializer(_encode_message_address),
 ]

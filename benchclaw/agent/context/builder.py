@@ -2,7 +2,6 @@
 
 import platform
 from collections.abc import Iterable
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +10,7 @@ from jinja2 import Environment, PackageLoader
 from benchclaw.agent.skills import SkillsLoader
 from benchclaw.agent.tools.memory import MemoryStore
 from benchclaw.agent.tools.registry import ToolRegistry
+from benchclaw.utils import now_aware
 
 if TYPE_CHECKING:
     from benchclaw.agent.tools.base import Tool
@@ -58,7 +58,7 @@ class ContextBuilder:
         ]
         all_skills = self.skills.get_all_skills()
         return self._jinja.get_template("system_prompt.j2").render(
-            now=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M (%A) %z"),
+            now=now_aware().strftime("%Y-%m-%d %H:%M (%A) %z"),
             runtime=f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}",
             workspace_path=str(self.workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,

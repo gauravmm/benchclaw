@@ -2,7 +2,7 @@
 
 import contextlib
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ from benchclaw.agent.tools.cron.typesupport import (
     CronStore,
 )
 from benchclaw.bus import MessageAddress, MessageBus, SystemEvent
-from benchclaw.utils import _parse_timestamp
+from benchclaw.utils import _parse_timestamp, now_aware
 
 
 class CronTool(Tool):
@@ -98,7 +98,7 @@ class CronTool(Tool):
         if self._bus is None:
             logger.warning(f"Cron: no bus configured, skipping job '{job.id}' ({job.id})")
             return
-        start = datetime.now().astimezone()
+        start = now_aware()
         logger.info(f"Cron: executing job '{job.id}' (message: {job.message!r})")
         try:
             addr = MessageAddress(
@@ -126,7 +126,7 @@ class CronTool(Tool):
             async with CronStore(self._store_path) as store:
                 self._store = store
                 while True:
-                    now = datetime.now().astimezone()
+                    now = now_aware()
                     due = store.pop_due(now)
                     if due:
                         logger.debug(f"Cron: {len(due)} job(s) due: {[j.id for j in due]}")
@@ -170,7 +170,7 @@ class CronTool(Tool):
                     hours=in_hr or 0,
                     days=in_days or 0,
                 )
-                at = (datetime.now().astimezone() + delta).isoformat(timespec="seconds")
+                at = (now_aware() + delta).isoformat(timespec="seconds")
             return self._add_job(ctx.address, message, every_seconds, cron_expr, at, until_iso)
         elif action == "list":
             return self._list_jobs()

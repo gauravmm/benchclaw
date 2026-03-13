@@ -2,7 +2,7 @@
 
 import bisect
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,7 @@ from benchclaw.agent.tools.base import (
     ToolContext,
     register_tool,
 )
-from benchclaw.utils import JsonlIO
+from benchclaw.utils import JsonlIO, _parse_timestamp, now_aware
 
 
 class MemoryStore:
@@ -146,7 +146,7 @@ class LogStore:
         self._date: date | None = None
 
     async def __aenter__(self) -> "LogStore":
-        self._date = datetime.now().astimezone().date()
+        self._date = now_aware().date()
         self._buffer = JsonlIO.read(self.log_file)
         return self
 
@@ -158,7 +158,7 @@ class LogStore:
         """Move entries 2+ days old to log-<date>.jsonl; keep recent in log.jsonl."""
         cutoff = new_date - timedelta(days=1)
         idx = bisect.bisect_left(
-            self._buffer, cutoff, key=lambda e: datetime.fromisoformat(e["ts"]).date()
+            self._buffer, cutoff, key=lambda e: _parse_timestamp(e["ts"]).date()
         )
         old, recent = self._buffer[:idx], self._buffer[idx:]
         if old:
@@ -170,9 +170,9 @@ class LogStore:
     def append(self, content: str) -> None:
         """Append a new entry, triggering a rollover if the date has changed."""
         assert self._date is not None, "LogStore must be used as a context manager"
-        now = datetime.now().astimezone()
+        now = now_aware()
         if self._buffer:
-            assert now >= datetime.fromisoformat(self._buffer[-1]["ts"]), (
+            assert now >= _parse_timestamp(self._buffer[-1]["ts"]), (
                 "entries must be written in order"
             )
         if now.date() != self._date:

@@ -15,6 +15,7 @@ from benchclaw.utils import (
     OptionalTimestampSerializer,
     TimestampSerializer,
     format_duration,
+    now_aware,
 )
 
 
@@ -38,7 +39,7 @@ class CronScheduleEvery(CronModel):
     """Run repeatedly with a fixed interval, anchored to a starting time."""
 
     every: DurationField = Field(default_factory=lambda: timedelta(hours=1))
-    anchor: TimestampSerializer = Field(default_factory=lambda: datetime.now().astimezone())
+    anchor: TimestampSerializer = Field(default_factory=now_aware)
     until: OptionalTimestampSerializer = None
 
     def next_run(self, dt: datetime) -> datetime | None:
@@ -102,8 +103,8 @@ class CronJob(CronModel):
     state: CronJobState = Field(default_factory=CronJobState)
     enabled: bool = True
     schedule: CronSchedule = Field(default_factory=CronScheduleEvery)
-    created_at: TimestampSerializer = Field(default_factory=lambda: datetime.now().astimezone())
-    updated_at: TimestampSerializer = Field(default_factory=lambda: datetime.now().astimezone())
+    created_at: TimestampSerializer = Field(default_factory=now_aware)
+    updated_at: TimestampSerializer = Field(default_factory=now_aware)
 
     @field_validator("schedule", mode="before")
     @classmethod
@@ -140,7 +141,7 @@ class CronStore:
     async def __aenter__(self) -> "CronStore":
         try:
             data = CronData.model_validate_json(self._path.read_text())
-            now = datetime.now().astimezone()
+            now = now_aware()
             for j in data.jobs:
                 next_run = j.schedule.next_run(now)
                 if next_run is None:
@@ -166,7 +167,7 @@ class CronStore:
         """Add or replace a job and update the queue."""
         self._store[j.id] = j
         if j.enabled:
-            next_run = j.schedule.next_run(datetime.now().astimezone())
+            next_run = j.schedule.next_run(now_aware())
             if next_run is not None:
                 self._queue[j.id] = next_run
                 return

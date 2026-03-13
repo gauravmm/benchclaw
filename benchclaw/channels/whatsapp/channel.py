@@ -29,7 +29,7 @@ from benchclaw.channels.whatsapp.bridge import (
     BridgeStatusEvent,
 )
 from benchclaw.media import MediaRepository
-from benchclaw.utils import parse_optional_timestamp
+from benchclaw.utils import now_aware, parse_optional_timestamp
 
 
 class WhatsAppConfig(ChannelConfig):
@@ -272,7 +272,7 @@ class WhatsAppChannel(BaseChannel):
                 original_name=media_metadata[0].get("original_name") if media_metadata else None,
             )
             file_path.write_bytes(base64.b64decode(event.mediaBase64))
-            saved_at = datetime.now().isoformat(timespec="seconds")
+            saved_at = now_aware().isoformat(timespec="seconds")
             if media_metadata:
                 media_metadata[0]["path"] = str(file_path)
                 media_metadata[0]["saved_at"] = saved_at

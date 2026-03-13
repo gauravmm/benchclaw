@@ -11,6 +11,7 @@ from loguru import logger
 from pathvalidate import sanitize_filename
 
 from benchclaw.bus import MessageAddress
+from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 MAX_SESSIONS = 50
 
@@ -25,7 +26,7 @@ def _format_prefix_time(sent_at: str | None) -> str | None:
     """Convert ISO timestamp to HH:MM for compact user prefixes."""
     with suppress(ValueError, TypeError):
         if sent_at:
-            return datetime.fromisoformat(sent_at).strftime("%H:%M")
+            return _parse_timestamp(sent_at).strftime("%H:%M")
     return None
 
 
@@ -84,18 +85,22 @@ class Session:
 
     addr: MessageAddress
     messages: list[dict[str, Any]] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=now_aware)
+    updated_at: datetime = field(default_factory=now_aware)
     metadata: dict[str, Any] = field(default_factory=dict)
     # When this hits a threshold, log a summary and continue from that point.
     last_consolidated: int = 0
     # In-memory LLM context for the current run; not persisted.
     live_messages: list[dict[str, Any]] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.created_at = ensure_aware(self.created_at)
+        self.updated_at = ensure_aware(self.updated_at)
+
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the persistent session and to live_messages."""
         sender = _sender_label(kwargs.get("metadata") or {}) if role == "user" else None
-        timestamp = datetime.now().isoformat(timespec="seconds")
+        timestamp = now_aware().isoformat(timespec="seconds")
         msg = {
             "role": role,
             "content": content,
@@ -105,7 +110,7 @@ class Session:
         if sender:
             msg["sender_label"] = sender
         self.messages.append(msg)
-        self.updated_at = datetime.now()
+        self.updated_at = now_aware()
         self.live_messages.append(
             _build_message(
                 role,
@@ -135,7 +140,7 @@ class Session:
         self.messages = []
         self.live_messages = []
         self.last_consolidated = 0
-        self.updated_at = datetime.now()
+        self.updated_at = now_aware()
 
     def describe_current_session(self) -> str:
         """Return a readable prompt label for the current chat when possible."""
@@ -179,14 +184,10 @@ class Session:
                     if data.get("_type") == "metadata":
                         metadata = data.get("metadata", {})
                         created_at = (
-                            datetime.fromisoformat(data["created_at"])
-                            if data.get("created_at")
-                            else None
+                            _parse_timestamp(data["created_at"]) if data.get("created_at") else None
                         )
                         updated_at = (
-                            datetime.fromisoformat(data["updated_at"])
-                            if data.get("updated_at")
-                            else None
+                            _parse_timestamp(data["updated_at"]) if data.get("updated_at") else None
                         )
                         last_consolidated = data.get("last_consolidated", 0)
                         if data.get("address"):
@@ -201,8 +202,8 @@ class Session:
             return cls(
                 addr=addr,
                 messages=messages,
-                created_at=created_at or datetime.now(),
-                updated_at=updated_at or datetime.now(),
+                created_at=created_at or now_aware(),
+                updated_at=updated_at or now_aware(),
                 metadata=metadata,
                 last_consolidated=last_consolidated,
             )
@@ -270,8 +271,7 @@ class SessionManager:
         """Move a session file to the archive directory with a timestamp suffix."""
         path = self._get_session_path(s.addr)
         archive_path = (
-            self._archive_dir
-            / f"{path.stem}_{datetime.now().strftime('%Y%m%dT%H%M%S')}{path.suffix}"
+            self._archive_dir / f"{path.stem}_{now_aware().strftime('%Y%m%dT%H%M%S')}{path.suffix}"
         )
 
         self._archive_dir.mkdir(parents=True, exist_ok=True)

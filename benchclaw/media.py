@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from benchclaw.bus import MessageAddress
 from benchclaw.channels.whatsapp.address import WhatsAppId
+from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 
 class MediaEntry(BaseModel):
@@ -99,7 +100,7 @@ class MediaRepository:
         Caller must write the file bytes to the returned path.
         """
         assert ext.startswith(".") or ext == "", "ext should include the dot, e.g. '.jpg'"
-        ts = timestamp or datetime.now()
+        ts = ensure_aware(timestamp or now_aware())
         hhmm = ts.strftime("%H%M")
         mmdd = ts.strftime("%m%d")
         hash8 = address.hash8
@@ -193,6 +194,9 @@ class MediaRepository:
         upper_to = self._parse_date_bound(date_to, end=True)
         matches: list[tuple[int, float, dict[str, Any]]] = []
 
+        # TODO: Replace this unstructured data dict with a structured data class with proper types and validation.
+        # ASSUMPTION: The repository will contain <50 entries. If that grows much larger, we'll want to build an index or use a real database instead of scanning all entries on each search.
+        # TODO: Emit a warning only once using a lru-cache helper placed in utils.
         for record in self.iter_records():
             if record.get("caption") is None:
                 continue
@@ -220,7 +224,7 @@ class MediaRepository:
     def _parse_date_bound(value: str | None, *, end: bool) -> datetime | None:
         if not value:
             return None
-        parsed = datetime.fromisoformat(value)
+        parsed = _parse_timestamp(value)
         if "T" in value:
             return parsed
         if end:
@@ -230,7 +234,7 @@ class MediaRepository:
     @staticmethod
     def _record_timestamp(record: dict[str, Any]) -> datetime | None:
         value = record.get("timestamp")
-        return datetime.fromisoformat(value) if value else None
+        return _parse_timestamp(value) if value else None
 
     @staticmethod
     def _score_record(record: dict[str, Any], needle: str) -> int:
@@ -265,14 +269,14 @@ class MediaRepository:
 
     def _purge_old(self) -> int:
         """Delete old registered media files and their metadata records."""
-        cutoff = datetime.now() - timedelta(days=self.max_age_days)
+        cutoff = now_aware() - timedelta(days=self.max_age_days)
         deleted = 0
         for relpath, entry in list(self._entries.items()):
             if not relpath.startswith("media/"):
                 continue
             if entry.timestamp is None:
                 continue
-            if datetime.fromisoformat(entry.timestamp) >= cutoff:
+            if _parse_timestamp(entry.timestamp) >= cutoff:
                 continue
             (self.workspace / relpath).unlink(missing_ok=True)
             del self._entries[relpath]
@@ -342,4 +346,6 @@ class MediaRepository:
 
     @staticmethod
     def _file_timestamp(path: Path) -> str:
-        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+        return ensure_aware(datetime.fromtimestamp(path.stat().st_mtime)).isoformat(
+            timespec="seconds"
+        )

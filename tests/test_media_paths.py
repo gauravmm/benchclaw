@@ -250,6 +250,30 @@ def test_purge_old_only_removes_old_registered_media(tmp_path: Path):
     assert "notes/receipt.png" in repo._entries
 
 
+def test_purge_old_handles_offset_aware_timestamps(tmp_path: Path):
+    repo = MediaRepository(tmp_path, max_age_days=30)
+    repo.load()
+
+    path = repo.register(
+        _wa("555"),
+        sender_id="555",
+        media_type="image",
+        ext=".jpg",
+        mime_type="image/jpeg",
+        timestamp=datetime(2025, 1, 1, 12, 0, 0),
+    )
+    path.touch()
+    rel = repo.media_relpath(path)
+    repo._entries[rel].timestamp = (
+        datetime(2025, 1, 1, 12, 0, 0).astimezone().isoformat(timespec="seconds")
+    )
+
+    deleted = repo._purge_old()
+
+    assert deleted == 1
+    assert not path.exists()
+
+
 def test_register_persists_address_and_metadata(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     repo.load()

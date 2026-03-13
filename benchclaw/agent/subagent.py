@@ -13,6 +13,7 @@ from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import InboundMessage, MessageAddress, MessageBus
 from benchclaw.providers.base import LLMProvider
+from benchclaw.utils import now_aware
 
 if TYPE_CHECKING:
     from benchclaw.config import Config
@@ -207,9 +208,8 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
     def _build_subagent_prompt(self, task: str) -> str:
         """Build a focused system prompt for the subagent."""
         import time as _time
-        from datetime import datetime
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        now = now_aware().strftime("%Y-%m-%d %H:%M (%A)")
         tz = _time.strftime("%Z") or "UTC"
 
         return f"""# Subagent

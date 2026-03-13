@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
+from benchclaw.utils import now_aware
+
 # Return type for Tool.execute() and ToolResultEvent.result.
 ToolResult = str | list[dict[str, Any]]
 
@@ -50,7 +52,7 @@ class InboundMessage:
     address: MessageAddress  # Channel + chat_id endpoint
     sender_id: str  # User identifier (the specific person within the group chat)
     content: str  # Message text
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=now_aware)
     media: list[str] = field(default_factory=list)  # Media URLs
     media_metadata: list[MediaMetadata] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data

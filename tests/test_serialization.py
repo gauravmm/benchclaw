@@ -88,7 +88,7 @@ def test_session_load_missing_address(tmp_path: Path):
 
 def test_session_load_preserves_timestamps(tmp_path: Path):
     addr = MessageAddress(channel="smtp", chat_id="user@example.com")
-    created = datetime(2024, 6, 1, 12, 0, 0)
+    created = datetime(2024, 6, 1, 12, 0, 0).astimezone()
     session = Session(addr=addr, created_at=created)
 
     path = tmp_path / "session.jsonl"
