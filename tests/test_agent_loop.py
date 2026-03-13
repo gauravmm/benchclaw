@@ -10,7 +10,7 @@ from benchclaw.agent.tools.base import ToolContext
 from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
 from benchclaw.config import Config
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw.session import Session
+from benchclaw.session import AssistantEvent, Session, SystemEvent
 
 
 class _FakeProvider(LLMProvider):
@@ -51,7 +51,7 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
             address=addr,
             background_tasks=tracker.tasks,
         )
-        elapsed = await loop._process_llm_turn(
+        await loop._process_llm_turn(
             session=session,
             tracker=tracker,
             call_ctx=call_ctx,
@@ -59,10 +59,9 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
         )
         outbound = await loop.bus.consume_outbound(channel="telegram")
 
-    assert elapsed >= 0
     assert isinstance(outbound, OutboundMessage)
     assert outbound.content == "Status update for you."
-    assert session.events[-1].kind == "assistant"
+    assert isinstance(session.events[-1], AssistantEvent)
     assert session.events[-1].content == "Status update for you."
 
 
@@ -103,7 +102,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
 
     assert isinstance(outbound, OutboundMessage)
     assert outbound.content == "Checking that now."
-    assert session.events[-1].kind == "assistant"
+    assert isinstance(session.events[-1], AssistantEvent)
     assert session.events[-1].tool_calls is not None
     assert session.events[-1].tool_calls[0]["function"]["name"] == "log"
     assert tracker.pending
@@ -117,5 +116,38 @@ def test_tool_call_tracker_interrupt_records_background_notice() -> None:
     tracker.handle_interrupt(session)
 
     assert not tracker.pending
-    assert session.events[-1].kind == "system"
+    assert isinstance(session.events[-1], SystemEvent)
     assert "still executing in the background" in str(session.events[-1].content)
+
+
+def test_build_llm_messages_keeps_only_latest_reasoning(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path, LLMResponse(content="ok"))
+    addr = MessageAddress("telegram", "123")
+    session = Session(addr)
+    session.append_user("hi")
+    session.append_assistant("first", reasoning_content="older reasoning")
+    session.append_assistant("second", reasoning_content="x" * 600)
+
+    messages = loop._build_llm_messages(session, addr, profile="provider")
+    assistant_messages = [message for message in messages if message["role"] == "assistant"]
+
+    assert "reasoning_content" not in assistant_messages[0]
+    assert assistant_messages[1]["reasoning_content"] == ("x" * 500) + " [truncated]"
+
+
+def test_build_llm_messages_redacts_image_blocks_in_debug_profile(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path, LLMResponse(content="ok"))
+    addr = MessageAddress("telegram", "123")
+    session = Session(addr)
+    session.append_tool_result(
+        "tc1",
+        "read_image",
+        [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("a" * 80)}}],
+    )
+
+    messages = loop._build_llm_messages(session, addr, profile="debug")
+    tool_message = next(message for message in messages if message["role"] == "tool")
+
+    assert tool_message["content"] == [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aaaaaaaaaaaaaaaaaa…"}}
+    ]

@@ -13,6 +13,8 @@ The optimization target is clean, maintainable code. Programmer time is expensiv
 
 Where possible, prefer structured objects with type annotations, validation, and parsers over raw dicts. This keeps the meaning of data separate from its serialized or presentation form.
 
+Prefer transform-before-erasure design: do meaningful transformations while data is still in its richest typed form, then render it into serialized or provider-specific shapes at one clear boundary.
+
 ## Output
 
 Default to a review mindset:
@@ -86,6 +88,11 @@ If the user asks for implementation after the review, turn the highest-value ite
   - typed meaning in the middle
   - encoding/serialization only at the edge
 
+- Prefer "transform before erasure":
+  - do cleanup, filtering, truncation, and policy decisions before flattening typed state into transport or debug payloads
+  - keep one canonical structured representation for as long as possible
+  - derive multiple output views from that representation instead of layering ad hoc post-processing on already-rendered data
+
 ### Larger Simplifications
 
 - Simplify API design:
@@ -140,6 +147,7 @@ Ask these while scanning:
 - Favor fewer concepts over more generic concepts.
 - Favor explicit dominant paths over symmetric but rarely used alternatives.
 - Favor moving complexity to one well-named boundary rather than spreading it across helpers.
+- Favor preserving structure until the boundary: transform typed data first, then serialize or adapt it.
 - Favor removing code before abstracting code.
 - Favor `assert` for invariants, exceptions for failures, and structured return types for evolving interfaces.
 - When backwards compatibility is not required, favor the clean break over layered migration code.

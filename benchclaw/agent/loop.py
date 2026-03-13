@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 from pathlib import Path
+from typing import Literal
 
-import filetype
 from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
@@ -27,11 +26,9 @@ from benchclaw.bus import (
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
-from benchclaw.session import Session, SessionManager
+from benchclaw.session import AssistantEvent, ConversationEvent, Session, SessionManager, UserEvent
 
 _COMPACT_THRESHOLD = 0.8
-_LOG_REMINDER_EVERY_TURNS = 4
-_LONG_REASONING_SECONDS = 20.0
 
 
 class ToolCallTracker:
@@ -131,40 +128,13 @@ class AgentLoop:
         if not self.debug_dump_path:
             return
 
-        def _strip_images(obj: object) -> object:
-            if isinstance(obj, list):
-                return [_strip_images(item) for item in obj]
-            if isinstance(obj, dict):
-                if obj.get("type") == "image_url":
-                    url = (obj.get("image_url") or {}).get("url", "")
-                    truncated = url[:40] + "…" if len(url) > 40 else url
-                    return {"type": "image_url", "image_url": {"url": truncated}}
-                return {k: _strip_images(v) for k, v in obj.items()}
-            return obj
-
         try:
             self.debug_dump_path.write_text(
-                json.dumps(_strip_images(messages), ensure_ascii=False, indent=2),
+                json.dumps(messages, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except Exception as e:
             logger.warning(f"Failed to write debug dump: {e}")
-
-    @staticmethod
-    def _build_image_blocks(paths: list[str], workspace: Path) -> list[dict[str, object]]:
-        blocks: list[dict[str, object]] = []
-        for path_str in paths:
-            path = workspace / path_str
-            if not path.is_file():
-                logger.warning(f"Skipping non-image or missing file: {path_str}")
-                continue
-            mime = filetype.guess_mime(str(path))
-            if not mime or not mime.startswith("image/"):
-                logger.warning(f"Skipping non-image or missing file: {path_str}")
-                continue
-            b64 = base64.b64encode(path.read_bytes()).decode()
-            blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-        return blocks
 
     @staticmethod
     def _merge_user_messages(messages: list[InboundMessage]) -> InboundMessage:
@@ -183,37 +153,61 @@ class AgentLoop:
         )
 
     @staticmethod
-    def _strip_old_reasoning(messages: list[dict[str, object]]) -> list[dict[str, object]]:
-        last_idx = next(
-            (
-                i
-                for i in range(len(messages) - 1, -1, -1)
-                if messages[i].get("role") == "assistant" and messages[i].get("reasoning_content")
-            ),
-            None,
-        )
-        if last_idx is None:
-            return messages
+    def _render_message_content(
+        content: object, profile: Literal["raw", "provider", "debug"]
+    ) -> object:
+        if profile != "debug":
+            return content
+        if isinstance(content, list):
+            return [AgentLoop._render_message_content(item, profile) for item in content]
+        if isinstance(content, dict):
+            if content.get("type") == "image_url":
+                url = (content.get("image_url") or {}).get("url", "")
+                truncated = url[:40] + "…" if len(url) > 40 else url
+                return {"type": "image_url", "image_url": {"url": truncated}}
+            return {
+                key: AgentLoop._render_message_content(value, profile)
+                for key, value in content.items()
+            }
+        return content
 
-        result: list[dict[str, object]] = []
-        for i, message in enumerate(messages):
-            if message.get("role") == "assistant" and "reasoning_content" in message:
-                if i != last_idx:
-                    message = {k: v for k, v in message.items() if k != "reasoning_content"}
-                elif (
-                    isinstance(message.get("reasoning_content"), str)
-                    and len(message["reasoning_content"]) > AgentLoop._MAX_REASONING_CHARS
-                ):
+    def _render_event_message(
+        self,
+        event: ConversationEvent,
+        *,
+        profile: Literal["raw", "provider", "debug"],
+        include_reasoning: bool,
+        pending_image_blocks: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        message = event.to_llm_message()
+        if isinstance(event, AssistantEvent) and "reasoning_content" in message:
+            if not include_reasoning:
+                message = {k: v for k, v in message.items() if k != "reasoning_content"}
+            else:
+                reasoning = message.get("reasoning_content")
+                if isinstance(reasoning, str) and len(reasoning) > self._MAX_REASONING_CHARS:
                     message = dict(message)
                     message["reasoning_content"] = (
-                        message["reasoning_content"][: AgentLoop._MAX_REASONING_CHARS]
-                        + " [truncated]"
+                        reasoning[: self._MAX_REASONING_CHARS] + " [truncated]"
                     )
-            result.append(message)
-        return result
+        if pending_image_blocks and isinstance(event, UserEvent):
+            text = message.get("content", "")
+            if isinstance(text, str):
+                message = dict(message)
+                message["content"] = [
+                    *pending_image_blocks,
+                    {"type": "text", "text": text},
+                ]
+        message["content"] = self._render_message_content(message.get("content", ""), profile)
+        return message
 
     def _build_llm_messages(
-        self, session: Session, addr: MessageAddress
+        self,
+        session: Session,
+        addr: MessageAddress,
+        *,
+        pending_images: list[str] | None = None,
+        profile: Literal["provider", "debug"] = "provider",
     ) -> list[dict[str, object]]:
         prompt = self.context.build_system_prompt(
             self.tools.values(),
@@ -221,10 +215,33 @@ class AgentLoop:
             addr.chat_id,
             session.describe_current_session(),
         )
-        return [
-            {"role": "system", "content": prompt},
-            *session.get_history(self.config.memory_window),
-        ]
+        history = session.get_history_events(self.config.memory_window)
+        last_reasoning_idx = next(
+            (
+                i
+                for i in range(len(history) - 1, -1, -1)
+                if isinstance(history[i], AssistantEvent) and history[i].reasoning_content
+            ),
+            None,
+        )
+        pending_image_blocks = (
+            (self.media_repo or MediaRepository(self.workspace_path)).build_image_blocks(
+                pending_images
+            )
+            if pending_images
+            else None
+        )
+        messages: list[dict[str, object]] = [{"role": "system", "content": prompt}]
+        for i, event in enumerate(history):
+            messages.append(
+                self._render_event_message(
+                    event,
+                    profile=profile,
+                    include_reasoning=i == last_reasoning_idx,
+                    pending_image_blocks=(pending_image_blocks if i == len(history) - 1 else None),
+                )
+            )
+        return messages
 
     def _compact_context(self, session: Session) -> None:
         log_store = self.master_ctx.log_store
@@ -239,33 +256,6 @@ class AgentLoop:
             session.compacted_through,
         )
 
-    @staticmethod
-    def _build_log_reminders(turn_number: int, event_reasons: list[str]) -> list[dict[str, str]]:
-        reminders: list[dict[str, str]] = []
-        if turn_number % _LOG_REMINDER_EVERY_TURNS == 0:
-            reminders.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "Reminder: append concise log entries as you work using the log tool. "
-                        "Log notable steps, fetched values, decisions, and status changes. "
-                        "Do not log routine image receipt or required media annotations by themselves."
-                    ),
-                }
-            )
-        if event_reasons:
-            reminders.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "Reminder: a notable event just occurred ("
-                        + "; ".join(event_reasons)
-                        + "). After handling it, append a concise log entry with the result."
-                    ),
-                }
-            )
-        return reminders
-
     async def _process_llm_turn(
         self,
         session: Session,
@@ -273,25 +263,23 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
         pending_images: list[str] | None = None,
-        log_reminders: list[dict[str, str]] | None = None,
-    ) -> float:
-        llm_messages = self._strip_old_reasoning(self._build_llm_messages(session, addr))
-
+    ) -> None:
+        llm_messages = self._build_llm_messages(
+            session,
+            addr,
+            pending_images=pending_images,
+            profile="provider",
+        )
+        self._dump_messages(
+            self._build_llm_messages(
+                session,
+                addr,
+                pending_images=pending_images,
+                profile="debug",
+            )
+        )
         if pending_images:
-            blocks = self._build_image_blocks(pending_images, self.workspace_path)
-            if blocks and llm_messages:
-                last = llm_messages[-1]
-                text = last.get("content", "") if isinstance(last, dict) else ""
-                if isinstance(text, str):
-                    llm_messages[-1] = {
-                        **last,
-                        "content": blocks + [{"type": "text", "text": text}],
-                    }
             pending_images.clear()
-        if log_reminders:
-            llm_messages.extend(log_reminders)
-
-        self._dump_messages(llm_messages)
         started_at = time.monotonic()
         try:
             response = await self.provider.chat(
@@ -306,8 +294,8 @@ class AgentLoop:
             await self.bus.publish_outbound(
                 OutboundMessage(address=addr, content=f"Sorry, I encountered an error: {e}")
             )
-            return 0.0
-        elapsed = time.monotonic() - started_at
+            return
+        _elapsed = time.monotonic() - started_at
 
         total_tokens = response.usage.get("total_tokens", 0)
         if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
@@ -346,14 +334,13 @@ class AgentLoop:
                 await self.bus.publish_outbound(
                     OutboundMessage(address=addr, content=visible_content)
                 )
-            return elapsed
+            return
 
         final = visible_content or "I've completed processing but have no response to give."
         session.append_assistant(final)
         preview = final[:120] + "..." if len(final) > 120 else final
         logger.info(f"Response to {addr}: {preview}")
         await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
-        return elapsed
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
@@ -369,8 +356,6 @@ class AgentLoop:
         iteration_count = 0
         pending_system_events: list[str] = []
         pending_images: list[str] = []
-        pending_log_reasons: list[str] = []
-        llm_turn_count = 0
 
         while True:
             if not tracker.pending:
@@ -385,7 +370,6 @@ class AgentLoop:
                 for content in pending_system_events:
                     session.append_system(content)
                 pending_system_events.clear()
-                pending_log_reasons.append("background tool results arrived")
                 needs_llm = True
 
             for event in batch.system_events:
@@ -394,7 +378,6 @@ class AgentLoop:
                     pending_system_events.append(event.content)
                 else:
                     session.append_system(event.content)
-                    pending_log_reasons.append("a system directive arrived")
                     needs_llm = True
 
             if batch.user_messages:
@@ -428,19 +411,13 @@ class AgentLoop:
                 continue
             iteration_count += 1
 
-            llm_turn_count += 1
-            log_reminders = self._build_log_reminders(llm_turn_count, pending_log_reasons)
-            pending_log_reasons = []
-            elapsed = await self._process_llm_turn(
+            await self._process_llm_turn(
                 session,
                 tracker,
                 call_ctx,
                 addr,
                 pending_images=pending_images,
-                log_reminders=log_reminders,
             )
-            if elapsed >= _LONG_REASONING_SECONDS:
-                pending_log_reasons.append(f"the previous model step took {elapsed:.1f}s")
 
     async def run(self) -> None:
         async with self.sessions:

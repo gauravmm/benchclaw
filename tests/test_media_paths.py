@@ -183,6 +183,34 @@ def test_resolve_file_uses_detected_mime_type_when_metadata_is_missing(tmp_path:
     assert mime_type == "image/png"
 
 
+def test_image_block_returns_provider_payload(tmp_path: Path):
+    repo = MediaRepository(tmp_path)
+    repo.load()
+    path = tmp_path / "images" / "pixel.png"
+    _write_png(path)
+
+    block = repo.image_block("images/pixel.png")
+
+    assert block["type"] == "image_url"
+    url = block["image_url"]["url"]  # type: ignore[index]
+    assert isinstance(url, str)
+    assert url.startswith("data:image/png;base64,")
+
+
+def test_build_image_blocks_skips_non_image_files(tmp_path: Path):
+    repo = MediaRepository(tmp_path)
+    repo.load()
+    _write_png(tmp_path / "images" / "pixel.png")
+    note = tmp_path / "images" / "note.txt"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("hello", encoding="utf-8")
+
+    blocks = repo.build_image_blocks(["images/pixel.png", "images/missing.png", "images/note.txt"])
+
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "image_url"
+
+
 def test_serial_rebuilt_after_reload(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     repo.load()

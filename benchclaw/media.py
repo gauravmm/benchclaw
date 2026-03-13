@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterable
 from datetime import datetime, timedelta
@@ -137,6 +138,24 @@ class MediaRepository:
         if not mime_type:
             mime_type = filetype.guess_mime(str(abs_path))
         return abs_path, mime_type
+
+    def image_block(self, path: str) -> dict[str, object]:
+        """Build a provider-ready image block for one workspace-relative file path."""
+        abs_path, mime_type = self.resolve_file(path)
+        if not mime_type or not mime_type.startswith("image/"):
+            raise ValueError(f"Path is not an image: {path}")
+        data = base64.b64encode(abs_path.read_bytes()).decode()
+        return {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{data}"}}
+
+    def build_image_blocks(self, paths: Iterable[str]) -> list[dict[str, object]]:
+        """Build provider-ready image blocks, skipping missing or non-image paths."""
+        blocks: list[dict[str, object]] = []
+        for path in paths:
+            try:
+                blocks.append(self.image_block(path))
+            except FileNotFoundError, ValueError:
+                logger.warning(f"Skipping non-image or missing file: {path}")
+        return blocks
 
     def set_caption(self, path: str, caption: str) -> None:
         """Update or create a caption for any workspace-relative file path."""

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 from typing import Any
 
-import filetype
-
 from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.bus import MessageAddress, OutboundMessage, ToolResult
 from benchclaw.channels.whatsapp.address import WhatsAppId
+from benchclaw.media import MediaRepository
 
 
 def _resolve_target_address(ctx: ToolContext, address: str | None) -> MessageAddress | None:
@@ -59,16 +57,8 @@ class ReadImageTool(Tool):
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> ToolResult:
         if Path(path).is_absolute():
             raise ValueError(f"Path is outside the workspace: {path}")
-        if ctx.media_repo:
-            file_path, mime = ctx.media_repo.resolve_file(path)
-        else:
-            file_path = ctx.workspace / path
-            if not file_path.is_file():
-                raise FileNotFoundError(f"Media file not found: {path}")
-            mime = filetype.guess_mime(str(file_path))
-        mime = mime or "image/jpeg"
-        data = base64.b64encode(file_path.read_bytes()).decode()
-        return [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}]
+        media_repo = ctx.media_repo or MediaRepository(ctx.workspace)
+        return [media_repo.image_block(path)]
 
 
 class SendImageTool(Tool):
@@ -130,13 +120,8 @@ class SendImageTool(Tool):
 
         if Path(path).is_absolute():
             raise ValueError(f"Path is outside the workspace: {path}")
-        if ctx.media_repo:
-            file_path, mime = ctx.media_repo.resolve_file(path)
-        else:
-            file_path = ctx.workspace / path
-            if not file_path.is_file():
-                raise FileNotFoundError(f"Media file not found: {path}")
-            mime = filetype.guess_mime(str(file_path))
+        media_repo = ctx.media_repo or MediaRepository(ctx.workspace)
+        _, mime = media_repo.resolve_file(path)
         if not mime or not mime.startswith("image/"):
             raise ValueError(f"Path is not an image: {path}")
 

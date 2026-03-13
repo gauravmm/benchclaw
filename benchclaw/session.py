@@ -5,7 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from loguru import logger
 from pathvalidate import sanitize_filename
@@ -79,40 +79,88 @@ def _render_user_content(
 
 
 @dataclass
-class ConversationEvent:
-    """One persisted conversation event."""
-
-    kind: EventKind
+class BaseEvent:
     timestamp: datetime = field(default_factory=now_aware)
-    content: str | ToolResult = ""
+
+    def __post_init__(self) -> None:
+        self.timestamp = ensure_aware(self.timestamp)
+
+    @property
+    def kind(self) -> EventKind:
+        raise NotImplementedError
+
+    def _record_base(self) -> dict[str, Any]:
+        return {
+            "_type": "event",
+            "kind": self.kind,
+            "timestamp": self.timestamp.isoformat(timespec="seconds"),
+        }
+
+    def to_record(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def to_llm_message(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+@dataclass
+class UserEvent(BaseEvent):
+    KIND: ClassVar[Literal["user"]] = "user"
+
+    content: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     media: list[str] = field(default_factory=list)
     media_metadata: list[MediaMetadata] = field(default_factory=list)
     sender_id: str | None = None
     sender_label: str | None = None
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    tool_calls: list[dict[str, Any]] | None = None
-    reasoning_content: str | None = None
 
-    def __post_init__(self) -> None:
-        self.timestamp = ensure_aware(self.timestamp)
+    @property
+    def kind(self) -> Literal["user"]:
+        return self.KIND
 
     def to_record(self) -> dict[str, Any]:
-        record: dict[str, Any] = {
-            "_type": "event",
-            "kind": self.kind,
-            "timestamp": self.timestamp.isoformat(timespec="seconds"),
-            "content": self.content,
-        }
+        record = {**self._record_base(), "content": self.content}
         optional_fields = {
             "metadata": self.metadata or None,
             "media": self.media or None,
             "media_metadata": self.media_metadata or None,
             "sender_id": self.sender_id,
             "sender_label": self.sender_label,
-            "tool_call_id": self.tool_call_id,
-            "tool_name": self.tool_name,
+        }
+        for key, value in optional_fields.items():
+            if value is not None:
+                record[key] = value
+        return record
+
+    def to_llm_message(self) -> dict[str, Any]:
+        return {
+            "role": "user",
+            "content": _render_user_content(
+                self.content,
+                media=self.media,
+                sender=self.sender_label,
+                sent_at=self.timestamp,
+            ),
+        }
+
+
+@dataclass
+class AssistantEvent(BaseEvent):
+    KIND: ClassVar[Literal["assistant"]] = "assistant"
+
+    content: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] | None = None
+    reasoning_content: str | None = None
+
+    @property
+    def kind(self) -> Literal["assistant"]:
+        return self.KIND
+
+    def to_record(self) -> dict[str, Any]:
+        record = {**self._record_base(), "content": self.content}
+        optional_fields = {
+            "metadata": self.metadata or None,
             "tool_calls": self.tool_calls,
             "reasoning_content": self.reasoning_content,
         }
@@ -121,49 +169,122 @@ class ConversationEvent:
                 record[key] = value
         return record
 
-    @classmethod
-    def from_record(cls, record: dict[str, Any]) -> "ConversationEvent":
-        return cls(
-            kind=record["kind"],
-            timestamp=_parse_timestamp(record["timestamp"]),
-            content=record.get("content", ""),
+    def to_llm_message(self) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": self.content}
+        if self.tool_calls:
+            message["tool_calls"] = self.tool_calls
+        if self.reasoning_content:
+            message["reasoning_content"] = self.reasoning_content
+        return message
+
+
+@dataclass
+class ToolEvent(BaseEvent):
+    KIND: ClassVar[Literal["tool"]] = "tool"
+
+    content: ToolResult = ""
+    tool_call_id: str = ""
+    tool_name: str = ""
+
+    @property
+    def kind(self) -> Literal["tool"]:
+        return self.KIND
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            **self._record_base(),
+            "content": self.content,
+            "tool_call_id": self.tool_call_id,
+            "tool_name": self.tool_name,
+        }
+
+    def to_llm_message(self) -> dict[str, Any]:
+        return {
+            "role": "tool",
+            "tool_call_id": self.tool_call_id,
+            "name": self.tool_name,
+            "content": self.content,
+        }
+
+
+@dataclass
+class SystemEvent(BaseEvent):
+    KIND: ClassVar[Literal["system"]] = "system"
+
+    content: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def kind(self) -> Literal["system"]:
+        return self.KIND
+
+    def to_record(self) -> dict[str, Any]:
+        record = {**self._record_base(), "content": self.content}
+        if self.metadata:
+            record["metadata"] = self.metadata
+        return record
+
+    def to_llm_message(self) -> dict[str, Any]:
+        return {"role": "system", "content": self.content}
+
+
+@dataclass
+class SummaryEvent(BaseEvent):
+    KIND: ClassVar[Literal["summary"]] = "summary"
+
+    content: str = ""
+
+    @property
+    def kind(self) -> Literal["summary"]:
+        return self.KIND
+
+    def to_record(self) -> dict[str, Any]:
+        return {**self._record_base(), "content": self.content}
+
+    def to_llm_message(self) -> dict[str, Any]:
+        return {"role": "system", "content": self.content}
+
+
+ConversationEvent = UserEvent | AssistantEvent | ToolEvent | SystemEvent | SummaryEvent
+
+
+def event_from_record(record: dict[str, Any]) -> ConversationEvent:
+    kind = record["kind"]
+    timestamp = _parse_timestamp(record["timestamp"])
+    if kind == "user":
+        return UserEvent(
+            timestamp=timestamp,
+            content=str(record.get("content", "")),
             metadata=dict(record.get("metadata") or {}),
             media=list(record.get("media") or []),
             media_metadata=list(record.get("media_metadata") or []),
             sender_id=record.get("sender_id"),
             sender_label=record.get("sender_label"),
-            tool_call_id=record.get("tool_call_id"),
-            tool_name=record.get("tool_name"),
+        )
+    if kind == "assistant":
+        return AssistantEvent(
+            timestamp=timestamp,
+            content=str(record.get("content", "")),
+            metadata=dict(record.get("metadata") or {}),
             tool_calls=record.get("tool_calls"),
             reasoning_content=record.get("reasoning_content"),
         )
-
-    def to_llm_message(self) -> dict[str, Any]:
-        if self.kind == "user":
-            return {
-                "role": "user",
-                "content": _render_user_content(
-                    str(self.content),
-                    media=self.media,
-                    sender=self.sender_label,
-                    sent_at=self.timestamp,
-                ),
-            }
-        if self.kind == "assistant":
-            message: dict[str, Any] = {"role": "assistant", "content": str(self.content or "")}
-            if self.tool_calls:
-                message["tool_calls"] = self.tool_calls
-            if self.reasoning_content:
-                message["reasoning_content"] = self.reasoning_content
-            return message
-        if self.kind == "tool":
-            return {
-                "role": "tool",
-                "tool_call_id": self.tool_call_id,
-                "name": self.tool_name,
-                "content": self.content,
-            }
-        return {"role": "system", "content": str(self.content)}
+    if kind == "tool":
+        return ToolEvent(
+            timestamp=timestamp,
+            content=record.get("content", ""),
+            tool_call_id=str(record["tool_call_id"]),
+            tool_name=str(record["tool_name"]),
+        )
+    if kind == "system":
+        return SystemEvent(
+            timestamp=timestamp,
+            content=str(record.get("content", "")),
+            metadata=dict(record.get("metadata") or {}),
+        )
+    if kind == "summary":
+        return SummaryEvent(timestamp=timestamp, content=str(record.get("content", "")))
+    raise ValueError(f"Unsupported event kind: {kind}")
 
 
 @dataclass
@@ -235,8 +356,7 @@ class Session:
     ) -> None:
         meta = dict(metadata or {})
         self._append(
-            ConversationEvent(
-                kind="user",
+            UserEvent(
                 timestamp=timestamp or now_aware(),
                 content=content,
                 metadata=meta,
@@ -257,8 +377,7 @@ class Session:
         timestamp: datetime | None = None,
     ) -> None:
         self._append(
-            ConversationEvent(
-                kind="assistant",
+            AssistantEvent(
                 timestamp=timestamp or now_aware(),
                 content=content,
                 metadata=dict(metadata or {}),
@@ -276,8 +395,7 @@ class Session:
         timestamp: datetime | None = None,
     ) -> None:
         self._append(
-            ConversationEvent(
-                kind="tool",
+            ToolEvent(
                 timestamp=timestamp or now_aware(),
                 content=result,
                 tool_call_id=tool_call_id,
@@ -293,8 +411,7 @@ class Session:
         timestamp: datetime | None = None,
     ) -> None:
         self._append(
-            ConversationEvent(
-                kind="system",
+            SystemEvent(
                 timestamp=timestamp or now_aware(),
                 content=content,
                 metadata=dict(metadata or {}),
@@ -302,17 +419,11 @@ class Session:
         )
 
     def append_summary(self, content: str, *, timestamp: datetime | None = None) -> None:
-        self._append(
-            ConversationEvent(
-                kind="summary",
-                timestamp=timestamp or now_aware(),
-                content=content,
-            )
-        )
+        self._append(SummaryEvent(timestamp=timestamp or now_aware(), content=content))
         self.compacted_through = len(self.events) - 1
 
-    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
-        """Render the current conversation history for the provider."""
+    def get_history_events(self, max_messages: int = 50) -> list[ConversationEvent]:
+        """Return the current typed conversation history window."""
         if self.compacted_through >= 0 and self.events:
             history = [
                 self.events[self.compacted_through],
@@ -327,7 +438,11 @@ class Session:
                 history = [summary, *recent]
             else:
                 history = history[-max_messages:]
-        return [event.to_llm_message() for event in history]
+        return history
+
+    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
+        """Render the current conversation history for the provider."""
+        return [event.to_llm_message() for event in self.get_history_events(max_messages)]
 
     def clear(self) -> None:
         """Clear all events and reset the session state."""
@@ -338,7 +453,10 @@ class Session:
     def describe_current_session(self) -> str:
         """Return a readable prompt label for the current chat when possible."""
         channel_name = _channel_display_name(self.addr.channel)
-        last_user = next((event for event in reversed(self.events) if event.kind == "user"), None)
+        last_user = next(
+            (event for event in reversed(self.events) if isinstance(event, UserEvent)),
+            None,
+        )
         if not last_user:
             return f"{channel_name} chat {self.addr.chat_id}"
 
@@ -385,7 +503,7 @@ class Session:
                         if data.get("address"):
                             addr = MessageAddress.from_string(data["address"])
                     else:
-                        events.append(ConversationEvent.from_record(data))
+                        events.append(event_from_record(data))
 
             if addr is None:
                 logger.warning(f"No address in session file {path}, skipping")

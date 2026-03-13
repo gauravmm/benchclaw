@@ -128,7 +128,7 @@ wheels = [
 [[package]]
 name = "benchclaw-ai"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "croniter" },
     { name = "dingtalk-stream" },
