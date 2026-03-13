@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from loguru import logger
 
@@ -17,6 +16,7 @@ from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import (
     InboundMessage,
+    InboundMessageBatch,
     MessageAddress,
     MessageBus,
     OutboundMessage,
@@ -28,7 +28,7 @@ from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
 from benchclaw.session import (
     AssistantEvent,
-    ConversationEvent,
+    RenderOptions,
     Session,
     SessionManager,
     SystemEvent,
@@ -37,6 +37,20 @@ from benchclaw.session import (
 )
 
 _COMPACT_THRESHOLD = 0.8
+_DEBUG_INLINE_IMAGE_URL_CHARS = 40
+
+
+@dataclass
+class _AddressState:
+    iteration_count: int = 0
+    pending_system_events: list[str] = field(default_factory=list)
+    pending_images: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _BatchApplication:
+    needs_llm: bool = False
+    start_typing: bool = False
 
 
 class ToolCallTracker:
@@ -72,17 +86,6 @@ class ToolCallTracker:
 
     def handle_result(self, event: ToolResultEvent, session: Session) -> bool:
         self._tasks.pop(event.tool_call_id, None)
-        if event.tool_call_id in self._in_flight:
-            del self._in_flight[event.tool_call_id]
-            session.append(
-                ToolEvent(
-                    content=event.result,
-                    tool_call_id=event.tool_call_id,
-                    tool_name=event.tool_name,
-                )
-            )
-            return not self._in_flight
-
         session.append(
             ToolEvent(
                 content=event.result,
@@ -90,6 +93,10 @@ class ToolCallTracker:
                 tool_name=event.tool_name,
             )
         )
+        if event.tool_call_id in self._in_flight:
+            del self._in_flight[event.tool_call_id]
+            return not self._in_flight
+
         session.append(
             SystemEvent(
                 content=f"Background tool '{event.tool_name}' completed. Review the result and update the user if useful."
@@ -106,8 +113,8 @@ class AgentLoop:
         config: Config,
         bus: MessageBus,
         provider: LLMProvider,
+        media_repo: MediaRepository,
         debug_dump_path: Path | None = None,
-        media_repo: MediaRepository | None = None,
     ):
         self.workspace_path = config.workspace_path
         self.config = config.agents.master
@@ -159,121 +166,71 @@ class AgentLoop:
             logger.warning(f"Failed to write debug dump: {e}")
 
     @staticmethod
-    def _merge_user_messages(messages: list[InboundMessage]) -> InboundMessage:
+    def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
         if len(messages) == 1:
-            return messages[0]
+            message = messages[0]
+            return UserEvent(
+                timestamp=message.timestamp,
+                content=message.content,
+                sender_id=message.sender_id,
+                media=message.media,
+                media_metadata=message.media_metadata,
+                metadata=message.metadata,
+            )
         parts = [f"[{m.sender_id}] {m.content}" for m in messages if m.content]
         first = messages[0]
-        return InboundMessage(
-            address=first.address,
+        return UserEvent(
+            timestamp=first.timestamp,
             sender_id=first.sender_id,
             content="\n".join(parts),
-            timestamp=first.timestamp,
             media=[path for m in messages for path in m.media],
             media_metadata=[item for m in messages for item in m.media_metadata],
             metadata=first.metadata,
         )
 
-    @staticmethod
-    def _render_message_content(
-        content: object, profile: Literal["raw", "provider", "debug"]
-    ) -> object:
-        if profile != "debug":
-            return content
-        if isinstance(content, list):
-            return [AgentLoop._render_message_content(item, profile) for item in content]
-        if isinstance(content, dict):
-            if content.get("type") == "image_url":
-                url = (content.get("image_url") or {}).get("url", "")
-                truncated = url[:40] + "…" if len(url) > 40 else url
-                return {"type": "image_url", "image_url": {"url": truncated}}
-            return {
-                key: AgentLoop._render_message_content(value, profile)
-                for key, value in content.items()
-            }
-        return content
-
-    def _render_event_message(
+    def _build_system_prompt(
         self,
-        event: ConversationEvent,
-        *,
-        profile: Literal["raw", "provider", "debug"],
-        include_reasoning: bool,
-        pending_image_blocks: list[dict[str, object]] | None = None,
-    ) -> dict[str, object]:
-        if isinstance(event, AssistantEvent):
-            message = event.to_llm_message(include_reasoning=include_reasoning)
-        elif isinstance(event, UserEvent):
-            message = event.to_llm_message(pending_image_blocks=pending_image_blocks or [])
-        else:
-            message = event.to_llm_message()
-        message["content"] = self._render_message_content(message.get("content", ""), profile)
-        return message
-
-    def _build_llm_messages(
-        self,
-        session: Session,
         addr: MessageAddress,
-        *,
-        pending_images: list[str] | None = None,
-        profile: Literal["provider", "debug"] = "provider",
-    ) -> list[dict[str, object]]:
-        prompt = self.context.build_system_prompt(
+        session: Session,
+    ) -> str:
+        return self.context.build_system_prompt(
             self.tools.values(),
             addr.channel,
             addr.chat_id,
             session.describe_current_session(),
         )
-        history = session.get_history_events(self.config.memory_window)
-        last_reasoning_idx = next(
-            (
-                i
-                for i, event in reversed(list(enumerate(history)))
-                if isinstance(event, AssistantEvent) and event.reasoning_content
-            ),
-            None,
-        )
-        pending_image_blocks = (
-            (self.media_repo or MediaRepository(self.workspace_path)).build_image_blocks(
-                pending_images
-            )
-            if pending_images
-            else None
-        )
-        messages: list[dict[str, object]] = [{"role": "system", "content": prompt}]
-        for i, event in enumerate(history):
-            messages.append(
-                self._render_event_message(
-                    event,
-                    profile=profile,
-                    include_reasoning=i == last_reasoning_idx,
-                    pending_image_blocks=(pending_image_blocks if i == len(history) - 1 else None),
-                )
-            )
-        return messages
 
-    async def _process_llm_turn(
+    def _render_turn_messages(
         self,
         session: Session,
-        tracker: ToolCallTracker,
-        call_ctx: ToolContext,
         addr: MessageAddress,
-        pending_images: list[str] | None = None,
-    ) -> None:
-        llm_messages = self._build_llm_messages(
-            session,
-            addr,
-            pending_images=pending_images,
-            profile="provider",
+        pending_images: list[str],
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        prompt = self._build_system_prompt(addr, session)
+        provider_messages = session.render_llm_messages(
+            prompt,
+            self.media_repo,
+            RenderOptions(pending_image_paths=list(pending_images) or None),
+            max_messages=self.config.memory_window,
         )
-        self._dump_messages(
-            self._build_llm_messages(session, addr, pending_images=pending_images, profile="debug")
+        debug_messages = session.render_llm_messages(
+            prompt,
+            self.media_repo,
+            RenderOptions(
+                pending_image_paths=list(pending_images) or None,
+                max_inline_image_url_chars=_DEBUG_INLINE_IMAGE_URL_CHARS,
+            ),
+            max_messages=self.config.memory_window,
         )
-        if pending_images:
-            pending_images.clear()
-        started_at = time.monotonic()
+        return provider_messages, debug_messages
+
+    async def _call_provider(
+        self,
+        addr: MessageAddress,
+        llm_messages: list[dict[str, object]],
+    ):
         try:
-            response = await self.provider.chat(
+            return await self.provider.chat(
                 messages=llm_messages,
                 tools=self.tools.get_definitions(),
                 model=self.config.model,
@@ -285,24 +242,35 @@ class AgentLoop:
             await self.bus.publish_outbound(
                 OutboundMessage(address=addr, content=f"Sorry, I encountered an error: {e}")
             )
+            return None
+
+    def _maybe_compact_session(
+        self, session: Session, addr: MessageAddress, total_tokens: int
+    ) -> None:
+        if total_tokens <= self.config.context_window * _COMPACT_THRESHOLD:
             return
-        _elapsed = time.monotonic() - started_at
+        logger.info(
+            "Session compaction triggered for %s: token usage %s/%s",
+            addr,
+            total_tokens,
+            self.config.context_window,
+        )
+        session.compact(self.master_ctx.log_store)
+        logger.info(
+            "Context compacted (%s events, compacted_through=%s)",
+            len(session.events),
+            session.compacted_through,
+        )
 
-        total_tokens = response.usage.get("total_tokens", 0)
-        if total_tokens > self.config.context_window * _COMPACT_THRESHOLD:
-            logger.info(
-                "Session compaction triggered for %s: token usage %s/%s",
-                addr,
-                total_tokens,
-                self.config.context_window,
-            )
-            session.compact(self.master_ctx.log_store)
-            logger.info(
-                "Context compacted (%s events, compacted_through=%s)",
-                len(session.events),
-                session.compacted_through,
-            )
-
+    async def _apply_llm_response(
+        self,
+        response,
+        session: Session,
+        tracker: ToolCallTracker,
+        call_ctx: ToolContext,
+        addr: MessageAddress,
+    ) -> None:
+        self._maybe_compact_session(session, addr, response.usage.get("total_tokens", 0))
         visible_content = response.content or ""
         if response.has_tool_calls:
             tool_call_dicts = [
@@ -340,6 +308,76 @@ class AgentLoop:
         logger.info(f"Response to {addr}: {preview}")
         await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
 
+    @staticmethod
+    def _flush_pending_system_events(session: Session, state: _AddressState) -> None:
+        for content in state.pending_system_events:
+            session.append(SystemEvent(content=content))
+        state.pending_system_events.clear()
+
+    def _apply_batch(
+        self,
+        batch: InboundMessageBatch,
+        session: Session,
+        tracker: ToolCallTracker,
+        addr: MessageAddress,
+        state: _AddressState,
+    ) -> _BatchApplication:
+        needs_llm = False
+        start_typing = False
+
+        for result in batch.tool_results:
+            tracker.handle_result(result, session)
+        if batch.tool_results and not tracker.pending:
+            self._flush_pending_system_events(session, state)
+            needs_llm = True
+
+        for event in batch.system_events:
+            if tracker.pending:
+                logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
+                state.pending_system_events.append(event.content)
+            else:
+                session.append(SystemEvent(content=event.content))
+                needs_llm = True
+
+        if batch.user_messages:
+            start_typing = True
+            if tracker.pending:
+                tracker.handle_interrupt(session)
+            self._flush_pending_system_events(session, state)
+
+            user_event = self._collapse_user_messages(batch.user_messages)
+            preview = (
+                user_event.content[:80] + "..."
+                if len(user_event.content) > 80
+                else user_event.content
+            )
+            logger.info(f"Processing message from {addr}: {preview}")
+            session.append(user_event)
+            state.pending_images = list(user_event.media)
+            state.iteration_count = 0
+            needs_llm = True
+
+        return _BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
+
+    async def _process_llm_turn(
+        self,
+        session: Session,
+        tracker: ToolCallTracker,
+        call_ctx: ToolContext,
+        addr: MessageAddress,
+        pending_images: list[str] | None = None,
+    ) -> None:
+        if pending_images is None:
+            pending_images = []
+        llm_messages, debug_messages = self._render_turn_messages(session, addr, pending_images)
+        self._dump_messages(debug_messages)
+        if pending_images:
+            pending_images.clear()
+        response = await self._call_provider(addr, llm_messages)
+        if response is None:
+            return
+        await self._apply_llm_response(response, session, tracker, call_ctx, addr)
+
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
         tracker = ToolCallTracker()
@@ -351,72 +389,30 @@ class AgentLoop:
             address=addr,
             background_tasks=tracker.tasks,
         )
-        iteration_count = 0
-        pending_system_events: list[str] = []
-        pending_images: list[str] = []
+        state = _AddressState()
 
         while True:
             if not tracker.pending:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=False))
 
             batch = await self.bus.consume_inbound_batch(address=addr)
-            needs_llm = False
-
-            for result in batch.tool_results:
-                tracker.handle_result(result, session)
-            if batch.tool_results and not tracker.pending:
-                for content in pending_system_events:
-                    session.append(SystemEvent(content=content))
-                pending_system_events.clear()
-                needs_llm = True
-
-            for event in batch.system_events:
-                if tracker.pending:
-                    logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
-                    pending_system_events.append(event.content)
-                else:
-                    session.append(SystemEvent(content=event.content))
-                    needs_llm = True
-
-            if batch.user_messages:
+            batch_result = self._apply_batch(batch, session, tracker, addr, state)
+            if batch_result.start_typing:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
-                if tracker.pending:
-                    tracker.handle_interrupt(session)
-                for content in pending_system_events:
-                    session.append(SystemEvent(content=content))
-                pending_system_events.clear()
-
-                msg = self._merge_user_messages(batch.user_messages)
-                preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
-                logger.info(f"Processing message from {addr}: {preview}")
-                session.append(
-                    UserEvent(
-                        timestamp=msg.timestamp,
-                        content=msg.content,
-                        sender_id=msg.sender_id,
-                        media=msg.media,
-                        media_metadata=msg.media_metadata,
-                        metadata=msg.metadata,
-                    )
-                )
-                pending_images = list(msg.media)
-                iteration_count = 0
-                needs_llm = True
-
-            if not needs_llm:
+            if not batch_result.needs_llm:
                 continue
 
-            if iteration_count >= self.config.max_tool_iterations:
+            if state.iteration_count >= self.config.max_tool_iterations:
                 logger.warning(f"Max tool iterations reached for {addr}")
                 continue
-            iteration_count += 1
+            state.iteration_count += 1
 
             await self._process_llm_turn(
                 session,
                 tracker,
                 call_ctx,
                 addr,
-                pending_images=pending_images,
+                pending_images=state.pending_images,
             )
 
     async def run(self) -> None:

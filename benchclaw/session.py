@@ -5,7 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal, TypedDict, Unpack
+from typing import Any, ClassVar, Literal, Protocol, TypedDict, Unpack
 
 from loguru import logger
 from pathvalidate import sanitize_filename
@@ -18,6 +18,17 @@ MAX_SESSIONS = 50
 _MAX_REASONING_CHARS = 500
 
 EventKind = Literal["user", "assistant", "tool", "system", "summary"]
+
+
+@dataclass(frozen=True)
+class RenderOptions:
+    include_reasoning: bool = True
+    pending_image_paths: list[str] | None = None
+    max_inline_image_url_chars: int | None = None
+
+
+class MediaRenderer(Protocol):
+    def build_image_blocks(self, paths: list[str]) -> list[dict[str, object]]: ...
 
 
 def _sender_label(metadata: dict[str, Any]) -> str | None:
@@ -77,6 +88,20 @@ def _render_user_content(
             for path in media
         )
         content = f"{content}\n{stubs}" if content else stubs
+    return content
+
+
+def _truncate_inline_images(content: object, max_chars: int | None) -> object:
+    if max_chars is None:
+        return content
+    if isinstance(content, list):
+        return [_truncate_inline_images(item, max_chars) for item in content]
+    if isinstance(content, dict):
+        if content.get("type") == "image_url":
+            url = (content.get("image_url") or {}).get("url", "")
+            truncated = url[:max_chars] + "…" if len(url) > max_chars else url
+            return {"type": "image_url", "image_url": {"url": truncated}}
+        return {key: _truncate_inline_images(value, max_chars) for key, value in content.items()}
     return content
 
 
@@ -349,6 +374,82 @@ class Session:
         )
         self.compacted_through = len(self.events) - 1
 
+    @staticmethod
+    def _render_event_message(
+        event: ConversationEvent,
+        *,
+        options: RenderOptions,
+        pending_image_blocks: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        if isinstance(event, AssistantEvent):
+            message = event.to_llm_message(include_reasoning=options.include_reasoning)
+        elif isinstance(event, UserEvent):
+            message = event.to_llm_message(pending_image_blocks=pending_image_blocks or [])
+        else:
+            message = event.to_llm_message()
+        message["content"] = _truncate_inline_images(
+            message.get("content", ""),
+            options.max_inline_image_url_chars,
+        )
+        return message
+
+    @staticmethod
+    def _find_last_reasoning_index(history: list[ConversationEvent]) -> int | None:
+        for i, event in reversed(list(enumerate(history))):
+            if isinstance(event, AssistantEvent) and event.reasoning_content:
+                return i
+        return None
+
+    def _build_pending_image_blocks(
+        self,
+        media_repo: MediaRenderer | None,
+        options: RenderOptions,
+    ) -> list[dict[str, object]] | None:
+        if not options.pending_image_paths:
+            return None
+        if media_repo is None:
+            return None
+        return media_repo.build_image_blocks(options.pending_image_paths)
+
+    def _render_history(
+        self,
+        history: list[ConversationEvent],
+        *,
+        media_repo: MediaRenderer | None = None,
+        options: RenderOptions | None = None,
+    ) -> list[dict[str, object]]:
+        options = options or RenderOptions()
+        last_reasoning_idx = self._find_last_reasoning_index(history)
+        pending_image_blocks = self._build_pending_image_blocks(media_repo, options)
+        messages: list[dict[str, object]] = []
+        for i, event in enumerate(history):
+            messages.append(
+                self._render_event_message(
+                    event,
+                    options=RenderOptions(
+                        include_reasoning=options.include_reasoning and i == last_reasoning_idx,
+                        pending_image_paths=None,
+                        max_inline_image_url_chars=options.max_inline_image_url_chars,
+                    ),
+                    pending_image_blocks=pending_image_blocks if i == len(history) - 1 else None,
+                )
+            )
+        return messages
+
+    def render_llm_messages(
+        self,
+        system_prompt: str,
+        media_repo: MediaRenderer | None,
+        options: RenderOptions | None = None,
+        *,
+        max_messages: int = 50,
+    ) -> list[dict[str, object]]:
+        history = self.get_history_events(max_messages)
+        return [
+            {"role": "system", "content": system_prompt},
+            *self._render_history(history, media_repo=media_repo, options=options),
+        ]
+
     def get_history_events(self, max_messages: int = 50) -> list[ConversationEvent]:
         """Return the current typed conversation history window."""
         if self.compacted_through >= 0 and self.events:
@@ -369,7 +470,7 @@ class Session:
 
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """Render the current conversation history for the provider."""
-        return [event.to_llm_message() for event in self.get_history_events(max_messages)]
+        return self._render_history(self.get_history_events(max_messages))
 
     def clear(self) -> None:
         """Clear all events and reset the session state."""

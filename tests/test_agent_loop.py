@@ -7,10 +7,18 @@ import pytest
 
 from benchclaw.agent.loop import AgentLoop, ToolCallTracker
 from benchclaw.agent.tools.base import ToolContext
-from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
+from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMessage
 from benchclaw.config import Config
+from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw.session import AssistantEvent, Session, SystemEvent, ToolEvent, UserEvent
+from benchclaw.session import (
+    AssistantEvent,
+    RenderOptions,
+    Session,
+    SystemEvent,
+    ToolEvent,
+    UserEvent,
+)
 
 
 class _FakeProvider(LLMProvider):
@@ -31,7 +39,12 @@ class _FakeProvider(LLMProvider):
 def _make_loop(tmp_path: Path, response: LLMResponse) -> AgentLoop:
     config = Config()
     config.agents.master.workspace = str(tmp_path)
-    return AgentLoop(config=config, bus=MessageBus(), provider=_FakeProvider(response))
+    return AgentLoop(
+        config=config,
+        bus=MessageBus(),
+        provider=_FakeProvider(response),
+        media_repo=MediaRepository(tmp_path),
+    )
 
 
 @pytest.mark.asyncio
@@ -121,14 +134,17 @@ def test_tool_call_tracker_interrupt_records_background_notice() -> None:
 
 
 def test_build_llm_messages_keeps_only_latest_reasoning(tmp_path: Path) -> None:
-    loop = _make_loop(tmp_path, LLMResponse(content="ok"))
     addr = MessageAddress("telegram", "123")
     session = Session(addr)
     session.append(UserEvent(content="hi"))
     session.append(AssistantEvent(content="first", reasoning_content="older reasoning"))
     session.append(AssistantEvent(content="second", reasoning_content="x" * 600))
 
-    messages = loop._build_llm_messages(session, addr, profile="provider")
+    messages = session.render_llm_messages(
+        "system prompt",
+        MediaRepository(tmp_path),
+        RenderOptions(),
+    )
     assistant_messages = [message for message in messages if message["role"] == "assistant"]
 
     assert "reasoning_content" not in assistant_messages[0]
@@ -136,7 +152,6 @@ def test_build_llm_messages_keeps_only_latest_reasoning(tmp_path: Path) -> None:
 
 
 def test_build_llm_messages_redacts_image_blocks_in_debug_profile(tmp_path: Path) -> None:
-    loop = _make_loop(tmp_path, LLMResponse(content="ok"))
     addr = MessageAddress("telegram", "123")
     session = Session(addr)
     session.append(
@@ -149,9 +164,67 @@ def test_build_llm_messages_redacts_image_blocks_in_debug_profile(tmp_path: Path
         )
     )
 
-    messages = loop._build_llm_messages(session, addr, profile="debug")
+    messages = session.render_llm_messages(
+        "system prompt",
+        MediaRepository(tmp_path),
+        RenderOptions(max_inline_image_url_chars=40),
+    )
     tool_message = next(message for message in messages if message["role"] == "tool")
 
     assert tool_message["content"] == [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,aaaaaaaaaaaaaaaaaa…"}}
     ]
+
+
+def test_render_llm_messages_keeps_full_image_blocks_for_provider(tmp_path: Path) -> None:
+    addr = MessageAddress("telegram", "123")
+    session = Session(addr)
+    session.append(
+        ToolEvent(
+            content=[
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("a" * 80)}}
+            ],
+            tool_call_id="tc1",
+            tool_name="read_image",
+        )
+    )
+
+    messages = session.render_llm_messages(
+        "system prompt", MediaRepository(tmp_path), RenderOptions()
+    )
+    tool_message = next(message for message in messages if message["role"] == "tool")
+
+    assert tool_message["content"] == [
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + ("a" * 80)},
+        }
+    ]
+
+
+def test_collapse_user_messages_returns_one_user_event() -> None:
+    addr = MessageAddress("telegram", "123")
+    messages = [
+        InboundMessage(
+            address=addr,
+            sender_id="alice",
+            content="first",
+            media=["a.png"],
+            media_metadata=[],
+            metadata={"sender_label": "Alice"},
+        ),
+        InboundMessage(
+            address=addr,
+            sender_id="bob",
+            content="second",
+            media=["b.png"],
+            media_metadata=[],
+            metadata={"sender_label": "Bob"},
+        ),
+    ]
+
+    event = AgentLoop._collapse_user_messages(messages)
+
+    assert isinstance(event, UserEvent)
+    assert event.content == "[alice] first\n[bob] second"
+    assert event.media == ["a.png", "b.png"]
