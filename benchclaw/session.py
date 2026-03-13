@@ -20,18 +20,6 @@ _MAX_REASONING_CHARS = 500
 EventKind = Literal["user", "assistant", "tool", "system", "summary"]
 
 
-class EventRenderKwargs(TypedDict, total=False):
-    pass
-
-
-class UserRenderKwargs(TypedDict, total=False):
-    pending_image_blocks: list[dict[str, object]]
-
-
-class AssistantRenderKwargs(TypedDict, total=False):
-    include_reasoning: bool
-
-
 def _sender_label(metadata: dict[str, Any]) -> str | None:
     """Return a channel-provided display label for a sender, if present."""
     label = metadata.get("sender_label")
@@ -128,6 +116,14 @@ class UserEvent(BaseEvent):
     sender_id: str | None = None
     sender_label: str | None = None
 
+    class RenderKwargs(TypedDict, total=False):
+        pending_image_blocks: list[dict[str, object]]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.sender_label is None:
+            self.sender_label = _sender_label(self.metadata)
+
     @property
     def kind(self) -> Literal["user"]:
         return self.KIND
@@ -146,7 +142,7 @@ class UserEvent(BaseEvent):
                 record[key] = value
         return record
 
-    def to_llm_message(self, **kwargs: Unpack[UserRenderKwargs]) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Unpack[RenderKwargs]) -> dict[str, Any]:
         text = _render_user_content(
             self.content,
             media=self.media,
@@ -174,6 +170,9 @@ class AssistantEvent(BaseEvent):
     tool_calls: list[dict[str, Any]] | None = None
     reasoning_content: str | None = None
 
+    class RenderKwargs(TypedDict, total=False):
+        include_reasoning: bool
+
     @property
     def kind(self) -> Literal["assistant"]:
         return self.KIND
@@ -190,7 +189,7 @@ class AssistantEvent(BaseEvent):
                 record[key] = value
         return record
 
-    def to_llm_message(self, **kwargs: Unpack[AssistantRenderKwargs]) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Unpack[RenderKwargs]) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": self.content}
         include_reasoning = kwargs.get("include_reasoning", True)
         if self.tool_calls:
@@ -223,7 +222,7 @@ class ToolEvent(BaseEvent):
             "tool_name": self.tool_name,
         }
 
-    def to_llm_message(self, **kwargs: Unpack[EventRenderKwargs]) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
         return {
             "role": "tool",
             "tool_call_id": self.tool_call_id,
@@ -249,7 +248,7 @@ class SystemEvent(BaseEvent):
             record["metadata"] = self.metadata
         return record
 
-    def to_llm_message(self, **kwargs: Unpack[EventRenderKwargs]) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
         return {"role": "system", "content": self.content}
 
 
@@ -266,7 +265,7 @@ class SummaryEvent(BaseEvent):
     def to_record(self) -> dict[str, Any]:
         return {**self._record_base(), "content": self.content}
 
-    def to_llm_message(self, **kwargs: Unpack[EventRenderKwargs]) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
         return {"role": "system", "content": self.content}
 
 
@@ -336,123 +335,19 @@ class Session:
         """Compatibility view of persisted events."""
         return [event.to_record() for event in self.events]
 
-    def _append(self, event: ConversationEvent) -> None:
+    def append(self, event: ConversationEvent) -> None:
         self.events.append(event)
         self.updated_at = now_aware()
 
-    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
-        """Compatibility wrapper that appends a typed event."""
-        timestamp = kwargs.pop("timestamp", None)
-        if role == "user":
-            metadata = dict(kwargs.get("metadata") or {})
-            self.append_user(
-                content,
-                sender_id=kwargs.get("sender_id"),
-                media=list(kwargs.get("media") or []),
-                media_metadata=list(kwargs.get("media_metadata") or []),
-                metadata=metadata,
-                timestamp=timestamp,
-            )
-            return
-        if role == "assistant":
-            metadata = dict(kwargs)
-            self.append_assistant(
-                content,
-                tool_calls=kwargs.get("tool_calls"),
-                reasoning_content=kwargs.get("reasoning_content"),
-                metadata=metadata,
-                timestamp=timestamp,
-            )
-            return
-        if role == "system":
-            self.append_system(content, metadata=dict(kwargs), timestamp=timestamp)
-            return
-        raise ValueError(f"Unsupported role: {role}")
-
-    def append_user(
-        self,
-        content: str,
-        *,
-        sender_id: str | None = None,
-        media: list[str] | None = None,
-        media_metadata: list[MediaMetadata] | None = None,
-        metadata: dict[str, Any] | None = None,
-        timestamp: datetime | None = None,
-    ) -> None:
-        meta = dict(metadata or {})
-        self._append(
-            UserEvent(
-                timestamp=timestamp or now_aware(),
-                content=content,
-                metadata=meta,
-                media=list(media or []),
-                media_metadata=list(media_metadata or []),
-                sender_id=sender_id,
-                sender_label=_sender_label(meta),
-            )
-        )
-
-    def append_assistant(
-        self,
-        content: str,
-        *,
-        tool_calls: list[dict[str, Any]] | None = None,
-        reasoning_content: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        timestamp: datetime | None = None,
-    ) -> None:
-        self._append(
-            AssistantEvent(
-                timestamp=timestamp or now_aware(),
-                content=content,
-                metadata=dict(metadata or {}),
-                tool_calls=tool_calls,
-                reasoning_content=reasoning_content,
-            )
-        )
-
-    def append_tool_result(
-        self,
-        tool_call_id: str,
-        tool_name: str,
-        result: ToolResult,
-        *,
-        timestamp: datetime | None = None,
-    ) -> None:
-        self._append(
-            ToolEvent(
-                timestamp=timestamp or now_aware(),
-                content=result,
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-            )
-        )
-
-    def append_system(
-        self,
-        content: str,
-        *,
-        metadata: dict[str, Any] | None = None,
-        timestamp: datetime | None = None,
-    ) -> None:
-        self._append(
-            SystemEvent(
-                timestamp=timestamp or now_aware(),
-                content=content,
-                metadata=dict(metadata or {}),
-            )
-        )
-
-    def append_summary(self, content: str, *, timestamp: datetime | None = None) -> None:
-        self._append(SummaryEvent(timestamp=timestamp or now_aware(), content=content))
-        self.compacted_through = len(self.events) - 1
-
     def compact(self, log_store: LogStore | None, *, log_limit: int = 20) -> None:
         recent_activity = log_store.read_recent(n=log_limit) if log_store else "[No logs available]"
-        self.append_summary(
-            "[Context compacted to stay within context window limits.]\nRecent activity log:\n"
-            + recent_activity
+        self.append(
+            SummaryEvent(
+                content="[Context compacted to stay within context window limits.]\nRecent activity log:\n"
+                + recent_activity
+            )
         )
+        self.compacted_through = len(self.events) - 1
 
     def get_history_events(self, max_messages: int = 50) -> list[ConversationEvent]:
         """Return the current typed conversation history window."""

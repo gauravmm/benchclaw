@@ -10,7 +10,7 @@ from benchclaw.agent.tools.base import ToolContext
 from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
 from benchclaw.config import Config
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from benchclaw.session import AssistantEvent, Session, SystemEvent
+from benchclaw.session import AssistantEvent, Session, SystemEvent, ToolEvent, UserEvent
 
 
 class _FakeProvider(LLMProvider):
@@ -39,7 +39,7 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path, LLMResponse(content="Status update for you."))
     addr = MessageAddress("telegram", "123")
     session = Session(addr)
-    session.append_user("What is the order status?")
+    session.append(UserEvent(content="What is the order status?"))
     tracker = ToolCallTracker()
 
     async with loop.tools:
@@ -80,7 +80,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
     )
     addr = MessageAddress("telegram", "123")
     session = Session(addr)
-    session.append_user("Do the thing")
+    session.append(UserEvent(content="Do the thing"))
     tracker = ToolCallTracker()
 
     async with loop.tools:
@@ -124,9 +124,9 @@ def test_build_llm_messages_keeps_only_latest_reasoning(tmp_path: Path) -> None:
     loop = _make_loop(tmp_path, LLMResponse(content="ok"))
     addr = MessageAddress("telegram", "123")
     session = Session(addr)
-    session.append_user("hi")
-    session.append_assistant("first", reasoning_content="older reasoning")
-    session.append_assistant("second", reasoning_content="x" * 600)
+    session.append(UserEvent(content="hi"))
+    session.append(AssistantEvent(content="first", reasoning_content="older reasoning"))
+    session.append(AssistantEvent(content="second", reasoning_content="x" * 600))
 
     messages = loop._build_llm_messages(session, addr, profile="provider")
     assistant_messages = [message for message in messages if message["role"] == "assistant"]
@@ -139,10 +139,14 @@ def test_build_llm_messages_redacts_image_blocks_in_debug_profile(tmp_path: Path
     loop = _make_loop(tmp_path, LLMResponse(content="ok"))
     addr = MessageAddress("telegram", "123")
     session = Session(addr)
-    session.append_tool_result(
-        "tc1",
-        "read_image",
-        [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("a" * 80)}}],
+    session.append(
+        ToolEvent(
+            content=[
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("a" * 80)}}
+            ],
+            tool_call_id="tc1",
+            tool_name="read_image",
+        )
     )
 
     messages = loop._build_llm_messages(session, addr, profile="debug")

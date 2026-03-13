@@ -5,8 +5,16 @@ from pathlib import Path
 
 import pytest
 
+from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MessageAddress
-from benchclaw.session import MAX_SESSIONS, Session, SessionManager, SummaryEvent
+from benchclaw.session import (
+    MAX_SESSIONS,
+    AssistantEvent,
+    Session,
+    SessionManager,
+    SummaryEvent,
+    UserEvent,
+)
 
 # ---------------------------------------------------------------------------
 # MessageAddress
@@ -44,23 +52,24 @@ def test_message_address_from_string_colon_in_chat_id():
 def test_session_save_load_roundtrip(tmp_path: Path):
     addr = MessageAddress(channel="telegram", chat_id="99")
     session = Session(addr=addr)
-    session.add_message(
-        "user",
-        "hello",
-        media=["workspace/media/telegram/99/20260308_101530/abc.jpg"],
-        media_metadata=[
-            {
-                "path": "workspace/media/telegram/99/20260308_101530/abc.jpg",
-                "media_type": "image",
-                "mime_type": "image/jpeg",
-                "size_bytes": 12345,
-                "saved_at": "2026-03-08T10:15:30",
-                "source_channel": "telegram",
-                "original_name": None,
-            }
-        ],
+    session.append(
+        UserEvent(
+            content="hello",
+            media=["workspace/media/telegram/99/20260308_101530/abc.jpg"],
+            media_metadata=[
+                {
+                    "path": "workspace/media/telegram/99/20260308_101530/abc.jpg",
+                    "media_type": "image",
+                    "mime_type": "image/jpeg",
+                    "size_bytes": 12345,
+                    "saved_at": "2026-03-08T10:15:30",
+                    "source_channel": "telegram",
+                    "original_name": None,
+                }
+            ],
+        )
     )
-    session.add_message("assistant", "hi there", tools_used=["search"])
+    session.append(AssistantEvent(content="hi there", metadata={"tools_used": ["search"]}))
 
     path = tmp_path / "session.jsonl"
     session.save(path)
@@ -114,21 +123,19 @@ def test_session_load_preserves_metadata(tmp_path: Path):
 def test_session_clear(tmp_path: Path):
     addr = MessageAddress(channel="telegram", chat_id="1")
     session = Session(addr=addr)
-    session.add_message("user", "test")
+    session.append(UserEvent(content="test"))
     session.clear()
     assert session.messages == []
     assert session.compacted_through == -1
 
 
-def test_session_compact_uses_log_store() -> None:
-    class _LogStore:
-        def read_recent(self, n: int = 20) -> str:
-            assert n == 20
-            return "recent log entry"
+@pytest.mark.asyncio
+async def test_session_compact_uses_log_store(tmp_path: Path) -> None:
+    async with LogStore(tmp_path) as log_store:
+        log_store.append("recent log entry")
+        session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
 
-    session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
-
-    session.compact(_LogStore())
+        session.compact(log_store)
 
     assert isinstance(session.events[-1], SummaryEvent)
     assert "recent log entry" in session.events[-1].content
@@ -139,11 +146,12 @@ def test_session_history_includes_sender_and_timestamp_prefix() -> None:
     addr = MessageAddress(channel="telegram", chat_id="1")
     session = Session(addr=addr)
 
-    session.add_message(
-        "user",
-        "hello",
-        sender_id="12345|gaurav",
-        metadata={"sender_label": "Gaurav"},
+    session.append(
+        UserEvent(
+            content="hello",
+            sender_id="12345|gaurav",
+            metadata={"sender_label": "Gaurav"},
+        )
     )
 
     rendered = session.get_history()[-1]
@@ -156,7 +164,9 @@ def test_session_history_includes_user_timestamp_prefix() -> None:
     addr = MessageAddress(channel="telegram", chat_id="2")
     session = Session(addr=addr)
 
-    session.add_message("user", "ping", sender_id="7|alice", metadata={"sender_label": "alice"})
+    session.append(
+        UserEvent(content="ping", sender_id="7|alice", metadata={"sender_label": "alice"})
+    )
 
     history = session.get_history()
     assert history[-1]["role"] == "user"
@@ -166,11 +176,12 @@ def test_session_history_includes_user_timestamp_prefix() -> None:
 
 def test_session_describe_current_session_prefers_sender_label() -> None:
     session = Session(addr=MessageAddress(channel="telegram", chat_id="42"))
-    session.add_message(
-        "user",
-        "hello",
-        sender_id="7|alice",
-        metadata={"sender_label": "Alice", "is_group": False},
+    session.append(
+        UserEvent(
+            content="hello",
+            sender_id="7|alice",
+            metadata={"sender_label": "Alice", "is_group": False},
+        )
     )
 
     assert session.describe_current_session() == "Alice on Telegram"
@@ -178,11 +189,12 @@ def test_session_describe_current_session_prefers_sender_label() -> None:
 
 def test_session_describe_current_session_handles_group_chats() -> None:
     session = Session(addr=MessageAddress(channel="whatsapp", chat_id="group-1"))
-    session.add_message(
-        "user",
-        "hello",
-        sender_id="7",
-        metadata={"sender_label": "Alice", "is_group": True},
+    session.append(
+        UserEvent(
+            content="hello",
+            sender_id="7",
+            metadata={"sender_label": "Alice", "is_group": True},
+        )
     )
 
     assert session.describe_current_session() == "WhatsApp group chat (recent sender: Alice)"
@@ -208,7 +220,7 @@ async def test_session_manager_persists_on_exit(tmp_path: Path):
 
     async with SessionManager(tmp_path) as sm:
         s = sm.get(addr)
-        s.add_message("user", "persisted")
+        s.append(UserEvent(content="persisted"))
 
     # Re-enter and check the session was saved
     async with SessionManager(tmp_path) as sm2:
@@ -223,7 +235,7 @@ async def test_session_manager_save_midway(tmp_path: Path):
 
     async with SessionManager(tmp_path) as sm:
         s = sm.get(addr)
-        s.add_message("user", "mid")
+        s.append(UserEvent(content="mid"))
         sm.save(s)
 
     path = tmp_path / "telegram2.jsonl"
@@ -239,7 +251,7 @@ async def test_session_manager_clear_archives(tmp_path: Path):
 
     async with SessionManager(tmp_path) as sm:
         s = sm.get(addr)
-        s.add_message("user", "to be archived")
+        s.append(UserEvent(content="to be archived"))
         sm.save(s)
         sm.clear(addr)
 

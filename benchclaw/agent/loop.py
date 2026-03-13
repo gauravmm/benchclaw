@@ -26,7 +26,15 @@ from benchclaw.bus import (
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, ToolCallRequest
-from benchclaw.session import AssistantEvent, ConversationEvent, Session, SessionManager, UserEvent
+from benchclaw.session import (
+    AssistantEvent,
+    ConversationEvent,
+    Session,
+    SessionManager,
+    SystemEvent,
+    ToolEvent,
+    UserEvent,
+)
 
 _COMPACT_THRESHOLD = 0.8
 
@@ -54,9 +62,11 @@ class ToolCallTracker:
         if not self._in_flight:
             return
         tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in self._in_flight.items())
-        session.append_system(
-            "The following tools are still executing in the background: "
-            f"{tool_list}. Their results will arrive as new events."
+        session.append(
+            SystemEvent(
+                content="The following tools are still executing in the background: "
+                f"{tool_list}. Their results will arrive as new events."
+            )
         )
         self._in_flight.clear()
 
@@ -64,12 +74,26 @@ class ToolCallTracker:
         self._tasks.pop(event.tool_call_id, None)
         if event.tool_call_id in self._in_flight:
             del self._in_flight[event.tool_call_id]
-            session.append_tool_result(event.tool_call_id, event.tool_name, event.result)
+            session.append(
+                ToolEvent(
+                    content=event.result,
+                    tool_call_id=event.tool_call_id,
+                    tool_name=event.tool_name,
+                )
+            )
             return not self._in_flight
 
-        session.append_tool_result(event.tool_call_id, event.tool_name, event.result)
-        session.append_system(
-            f"Background tool '{event.tool_name}' completed. Review the result and update the user if useful."
+        session.append(
+            ToolEvent(
+                content=event.result,
+                tool_call_id=event.tool_call_id,
+                tool_name=event.tool_name,
+            )
+        )
+        session.append(
+            SystemEvent(
+                content=f"Background tool '{event.tool_name}' completed. Review the result and update the user if useful."
+            )
         )
         return True
 
@@ -289,10 +313,12 @@ class AgentLoop:
                 }
                 for tc in response.tool_calls
             ]
-            session.append_assistant(
-                visible_content,
-                tool_calls=tool_call_dicts,
-                reasoning_content=response.reasoning_content,
+            session.append(
+                AssistantEvent(
+                    content=visible_content,
+                    tool_calls=tool_call_dicts,
+                    reasoning_content=response.reasoning_content,
+                )
             )
             for tc in response.tool_calls:
                 args_str = json.dumps(tc.arguments, ensure_ascii=False)
@@ -309,7 +335,7 @@ class AgentLoop:
             return
 
         final = visible_content or "I've completed processing but have no response to give."
-        session.append_assistant(final)
+        session.append(AssistantEvent(content=final))
         preview = final[:120] + "..." if len(final) > 120 else final
         logger.info(f"Response to {addr}: {preview}")
         await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
@@ -340,7 +366,7 @@ class AgentLoop:
                 tracker.handle_result(result, session)
             if batch.tool_results and not tracker.pending:
                 for content in pending_system_events:
-                    session.append_system(content)
+                    session.append(SystemEvent(content=content))
                 pending_system_events.clear()
                 needs_llm = True
 
@@ -349,7 +375,7 @@ class AgentLoop:
                     logger.debug(f"SystemEvent buffered (tools in flight): {event.content[:60]}")
                     pending_system_events.append(event.content)
                 else:
-                    session.append_system(event.content)
+                    session.append(SystemEvent(content=event.content))
                     needs_llm = True
 
             if batch.user_messages:
@@ -357,19 +383,21 @@ class AgentLoop:
                 if tracker.pending:
                     tracker.handle_interrupt(session)
                 for content in pending_system_events:
-                    session.append_system(content)
+                    session.append(SystemEvent(content=content))
                 pending_system_events.clear()
 
                 msg = self._merge_user_messages(batch.user_messages)
                 preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
                 logger.info(f"Processing message from {addr}: {preview}")
-                session.append_user(
-                    msg.content,
-                    sender_id=msg.sender_id,
-                    media=msg.media,
-                    media_metadata=msg.media_metadata,
-                    metadata=msg.metadata,
-                    timestamp=msg.timestamp,
+                session.append(
+                    UserEvent(
+                        timestamp=msg.timestamp,
+                        content=msg.content,
+                        sender_id=msg.sender_id,
+                        media=msg.media,
+                        media_metadata=msg.media_metadata,
+                        metadata=msg.metadata,
+                    )
                 )
                 pending_images = list(msg.media)
                 iteration_count = 0

@@ -15,6 +15,8 @@ Where possible, prefer structured objects with type annotations, validation, and
 
 Prefer transform-before-erasure design: do meaningful transformations while data is still in its richest typed form, then render it into serialized or provider-specific shapes at one clear boundary.
 
+Prefer preserving meaningful type distinctions. Maintain type safety when different types encode real invariants or valid-state constraints, and only collapse them when the differences are purely decorative.
+
 ## Output
 
 Default to a review mindset:
@@ -88,6 +90,11 @@ If the user asks for implementation after the review, turn the highest-value ite
   - typed meaning in the middle
   - encoding/serialization only at the edge
 
+- Preserve type safety when it carries real meaning:
+  - keep separate types when they prevent invalid states or encode distinct invariants
+  - prefer discriminated unions or specific classes over omnibus records when fields are not actually valid for every case
+  - only merge types when the distinctions are cosmetic, redundant, or otherwise purely decorative
+
 - Prefer "transform before erasure":
   - do cleanup, filtering, truncation, and policy decisions before flattening typed state into transport or debug payloads
   - keep one canonical structured representation for as long as possible
@@ -148,6 +155,7 @@ Ask these while scanning:
 - Favor explicit dominant paths over symmetric but rarely used alternatives.
 - Favor moving complexity to one well-named boundary rather than spreading it across helpers.
 - Favor preserving structure until the boundary: transform typed data first, then serialize or adapt it.
+- Favor maintaining type safety unless the type distinctions are purely decorative.
 - Favor removing code before abstracting code.
 - Favor `assert` for invariants, exceptions for failures, and structured return types for evolving interfaces.
 - When backwards compatibility is not required, favor the clean break over layered migration code.
