@@ -15,7 +15,7 @@ from benchclaw.utils import now_aware
 if TYPE_CHECKING:
     from benchclaw.agent.tools.base import Tool
 
-BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md"]
+BOOTSTRAP_FILES = ["AGENTS.md"]
 
 
 def _xml_text(value: Any) -> str:
@@ -57,12 +57,14 @@ class ContextBuilder:
             if (self.workspace / f).exists()
         ]
         all_skills = self.skills.get_all_skills()
+        memory_tags = self.memory.get_available_tags()
         return self._jinja.get_template("system_prompt.j2").render(
             now=now_aware().strftime("%Y-%m-%d %H:%M (%A) %z"),
             runtime=f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}",
             workspace_path=str(self.workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,
             memory=self.memory.get_memory_context() or "",
+            memory_tags=memory_tags,
             skills=all_skills,
             tools=[
                 {
