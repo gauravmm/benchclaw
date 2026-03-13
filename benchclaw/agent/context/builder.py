@@ -65,7 +65,21 @@ class ContextBuilder:
             memory=self.memory.get_memory_context() or "",
             skills=all_skills,
             tools=[
-                {"name": t.name, "description": t.description, "parameters": t.parameters}
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                    "inner_tag": (
+                        {
+                            "name": inner_tag.name,
+                            "description": inner_tag.description,
+                            "attributes": inner_tag.attributes,
+                            "body_description": inner_tag.body_description,
+                        }
+                        if (inner_tag := getattr(t, "inner_tag", None))
+                        else None
+                    ),
+                }
                 for t in (tools or [])
             ],
             channel=channel,

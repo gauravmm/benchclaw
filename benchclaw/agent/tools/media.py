@@ -92,7 +92,9 @@ class SendImageTool(Tool):
         return (
             "Send one stored workspace image to the current chat by default, or to another chat "
             "when you provide an explicit address like 'telegram:12345'. "
-            "Use this instead of the message tool for image delivery."
+            "Use this instead of the message tool for image delivery. "
+            "When sending an image, put the user-visible text in the image caption/body rather than also saying in plain text that you sent it. "
+            "Strongly prefer omitting `address` when sending to the current chat."
         )
 
     @property
@@ -106,11 +108,17 @@ class SendImageTool(Tool):
                 },
                 "caption": {
                     "type": "string",
-                    "description": "Optional caption/body to send with the image.",
+                    "description": (
+                        "Optional caption/body to send with the image. "
+                        "Put all required user-visible text here when applicable, instead of sending a separate plain-text acknowledgement."
+                    ),
                 },
                 "address": {
                     "type": "string",
-                    "description": "Optional target address as channel:chat_id. Defaults to the current chat.",
+                    "description": (
+                        "Optional target address as channel:chat_id. Defaults to the current chat; "
+                        "omit this when sending to the current chat."
+                    ),
                 },
             },
             "required": ["path"],

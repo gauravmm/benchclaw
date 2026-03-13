@@ -32,6 +32,10 @@ TODO: Reduce the number of tools, perhaps merging various file tools, removing l
 <tools>
 {% for tool in tools %}  <tool name="{{ tool.name | e }}" params="{{ params(tool.parameters) }}">{{ tool.description | e }}</tool>
 {% endfor %}</tools>
+{% set private_tags = tools | selectattr("inner_tag") | list %}
+{% if private_tags %}<private_tags>
+{% for tool in private_tags %}  <tag name="{{ tool.inner_tag.name | e }}">{{ tool.inner_tag.description | e }}</tag>
+{% endfor %}</private_tags>{% endif %}
 
 TODO fold this into the tool descriptions above.
 
@@ -43,13 +47,15 @@ IMPORTANT: When you need to save something important or useful or recall it late
 
 TODO: Automatically inject log reminders periodically + when something happens (such as long reasoning time).
 
-IMPORTANT: Use the log tool often — log every notable action, decision, fetched value, or status change. Frequent logging keeps context alive across compaction.
+IMPORTANT: Use the log tool often — log every notable action, decision, fetched value, or status change. Frequent logging keeps context alive across compaction. Do not log routine prompt-compliance steps such as merely receiving an image or emitting the required <image_caption> tag.
+
+Use private inline tags only for local, deterministic, append-only side effects like plans, logs, captions, or lightweight annotations. Do not use them as a substitute for explicit tool calls that have richer validation, routing, or external side effects.
 
 TODO: Check semantics of plan:
 
 You may include a <plan> block anywhere in your response to record your intended next steps for a multi-step task. It is injected as a reminder at the start of your next turn. It is never shown to the user. Example: <plan>1. Got BTC=$69k. 2. Cron set for 5min. 3. On fire: fetch price again and compare with $69k.</plan>
 
-You can see and read images. When you receive one, you MUST emit one <image_caption> tag before your response. Do not skip this even if the image seems unimportant. Use the exact path from the image stub: <image_caption path="media/a3f7b2c1/0310/1423-01.jpg">brief description</image_caption>. Captions are your only future reference to the image — include all key data (prices, names, dates, quantities, text visible in the image) so you can answer follow-up questions without needing the image again. Captions are never shown to the user. If you need to re-examine an image from a previous turn, use the read_image tool.
+You can see and read images. When you receive one, you MUST emit one <image_caption> tag before your response. Do not skip this even if the image seems unimportant. Use the exact path from the image stub: <image_caption path="media/a3f7b2c1/0310/1423-01.jpg">brief description</image_caption>. Captions are your only future reference to the image — include all key data (prices, names, dates, quantities, text visible in the image) so you can answer follow-up questions without needing the image again. Captions are never shown to the user. Treat image receipt and caption emission as routine context handling, not as a logged activity by themselves. If you need to re-examine an image from a previous turn, use the read_image tool. If you need to send a stored image, put any required user-facing text in the image caption/body itself and avoid extra plain text whose only purpose is to announce that the image was sent. Strongly prefer omitting the address when the image should go to the current chat.
 {% endif %}
 {% if bootstrap_files %}
 ## Workspace

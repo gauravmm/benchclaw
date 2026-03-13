@@ -7,6 +7,7 @@ from typing import Any, Self
 
 from benchclaw.agent.tools.base import (
     _TOOL_REGISTRY,
+    ParsedInnerTag,
     Tool,
     ToolContext,
 )
@@ -25,6 +26,7 @@ class ToolRegistry:
 
     def __init__(self, tools_config: Any, ctx: ToolContext, mcp_manager: MCPManager | None = None):
         self._tools: dict[str, Tool] = {}
+        self._inner_tag_tools: dict[str, Tool] = {}
         self._master_ctx = ctx
         self._mcp_manager = mcp_manager
         self._running = False
@@ -35,6 +37,14 @@ class ToolRegistry:
                 continue  # skip master-only tools in subagent context
             tool = tool_cls.build(getattr(tools_config, name, None), ctx)
             self._tools[tool.name] = tool
+            if spec := tool.inner_tag:
+                if spec.name in self._inner_tag_tools:
+                    other = self._inner_tag_tools[spec.name]
+                    raise RuntimeError(
+                        f"Duplicate inner tag '{spec.name}' for tools "
+                        f"'{other.name}' and '{tool.name}'"
+                    )
+                self._inner_tag_tools[spec.name] = tool
 
     async def __aenter__(self) -> Self:
         if self._running:
@@ -80,6 +90,10 @@ class ToolRegistry:
             defs.extend(self._mcp_manager.get_definitions())
         return defs
 
+    def get_inner_tag_tools(self) -> dict[str, Tool]:
+        """Return tools keyed by their private inline tag name."""
+        return dict(self._inner_tag_tools)
+
     async def execute(self, name: str, params: dict[str, Any], ctx: ToolContext) -> str:
         """Execute a tool by name with given parameters and call context."""
         if self._mcp_manager and name in self._mcp_manager:
@@ -97,6 +111,15 @@ class ToolRegistry:
             return await tool.execute(ctx, **params)
         except Exception as e:
             return f"Error executing {name}: {str(e)}"
+
+    async def execute_inner_tag(
+        self, tag_name: str, parsed: ParsedInnerTag, ctx: ToolContext
+    ) -> str | list[dict[str, Any]] | None:
+        """Dispatch one parsed private tag to the owning tool."""
+        tool = self._inner_tag_tools.get(tag_name)
+        if not tool:
+            raise ValueError(f"No tool registered for inner tag '{tag_name}'")
+        return await tool.execute_inner_tag(ctx, parsed)
 
     def __len__(self) -> int:
         return len(self._tools)

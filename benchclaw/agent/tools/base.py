@@ -57,6 +57,34 @@ class ToolContext:
         return self.workspace if self.is_subagent else None
 
 
+@dataclass(frozen=True)
+class InnerTagSpec:
+    """Declarative support for a private inline tag handled by a tool.
+
+    These tags are for low-friction private side effects emitted inline in the
+    model response and stripped before the user sees the final text.
+
+    Good fit for inner tags: local, deterministic, append-only side effects
+    like plans, logs, captions, maybe lightweight annotations.
+    Bad fit: anything requiring rich validation, external effects, routing, or
+    async lifecycle management. Those should remain explicit tool calls.
+    """
+
+    name: str
+    description: str
+    attributes: dict[str, str] = field(default_factory=dict)
+    body_description: str = "Tag body text."
+
+
+@dataclass(frozen=True)
+class ParsedInnerTag:
+    """One parsed private inline tag instance emitted by the model."""
+
+    name: str
+    attrs: dict[str, str]
+    body: str
+
+
 class Tool:
     """
     Abstract base class for agent tools.
@@ -85,6 +113,11 @@ class Tool:
         return None
 
     @property
+    def inner_tag(self) -> InnerTagSpec | None:
+        """Optional private inline tag handled by this tool."""
+        return None
+
+    @property
     @abstractmethod
     def parameters(self) -> dict[str, Any]:
         """JSON Schema for tool parameters."""
@@ -103,6 +136,16 @@ class Tool:
             String result of the tool execution.
         """
         pass
+
+    async def execute_inner_tag(
+        self, ctx: "ToolContext", parsed: ParsedInnerTag
+    ) -> ToolResult | None:
+        """Handle a private inline tag emitted by the model.
+
+        Tools that expose `inner_tag` should override this. The default
+        implementation rejects use so tag support is always explicit.
+        """
+        raise NotImplementedError(f"{self.name} does not support inner tags")
 
     async def background(self, ctx: "ToolContext") -> None:
         """Optional long-running coroutine started by ToolRegistry.__aenter__. No-op by default."""

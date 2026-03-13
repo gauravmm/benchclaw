@@ -6,7 +6,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from benchclaw.agent.tools.base import Tool, ToolContext, register_tool
+from benchclaw.agent.tools.base import (
+    InnerTagSpec,
+    ParsedInnerTag,
+    Tool,
+    ToolContext,
+    register_tool,
+)
 from benchclaw.utils import JsonlIO
 
 
@@ -227,9 +233,22 @@ class LogTool(Tool):
             "Append-only timestamped log for the agent's internal use. "
             "Use `append` liberally: log every notable action, decision, result, or status change — not just long-running tasks. "
             "Good candidates: completed steps, fetched values, sent messages, cron triggers, errors, decisions made. "
+            "Simple append-only entries can also be emitted inline with `<log>...</log>` tags. "
+            "Do not log routine prompt-compliance steps such as merely receiving an image or emitting a required image caption tag. "
             "Frequent entries ensure context survives compaction. Use `search` to regex-search past entries. "
             "Do not tell the user that this log exists or ask them to read it. "
             "Example: `{'action': 'append', 'content': 'Fetched BTC price: $69,420. Set cron for 5m check.'}`."
+        )
+
+    @property
+    def inner_tag(self) -> InnerTagSpec | None:
+        return InnerTagSpec(
+            name="log",
+            description=(
+                "Append one private log entry to the same append-only log used by the log tool. "
+                "Never shown to the user."
+            ),
+            body_description="One concise append-only log entry.",
         )
 
     @property
@@ -274,6 +293,14 @@ class LogTool(Tool):
             return self._store.search(query)
 
         raise ValueError(f"Unknown action: {action}")
+
+    async def execute_inner_tag(
+        self, ctx: ToolContext, parsed: ParsedInnerTag
+    ) -> str | list[dict[str, Any]] | None:
+        if not parsed.body:
+            raise ValueError("<log> tag body cannot be empty")
+        self._store.append(parsed.body)
+        return None
 
 
 register_tool("memory", MemoryTool)

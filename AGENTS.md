@@ -111,3 +111,8 @@ python -m benchclaw.channels.whatsapp [ws://localhost:3001] [chat_id]  # test Wh
 ```
 
 Config file: `config/config.yaml` (created automatically on first run with defaults).
+
+## Cautions
+
+- When inspecting `debug_dump.txt`, only read the final few lines or the selected region. Do not read the whole file because it burns context quickly.
+- If the system prompt is needed, read `benchclaw/agent/context/templates/system_prompt.j2`.

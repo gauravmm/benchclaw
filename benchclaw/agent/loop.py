@@ -7,13 +7,15 @@ import base64
 import json
 import re
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import filetype
 from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
-from benchclaw.agent.tools.base import ToolContext
+from benchclaw.agent.tools.base import ParsedInnerTag, ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
@@ -33,15 +35,25 @@ from benchclaw.session import Session, SessionManager
 # Compact the context when token usage exceeds this fraction of the context window.
 _COMPACT_THRESHOLD = 0.8
 
-# Regex for extracting model-authored plan tags from response content.
-_PLAN_TAG_RE = re.compile(r"<plan>(.*?)</plan>", re.DOTALL | re.IGNORECASE)
-
-# Regex for extracting image caption tags emitted by the model.
-_IMAGE_CAPTION_RE = re.compile(
-    r'<image_caption\s+path="([^"]+)">(.*?)</image_caption>', re.DOTALL | re.IGNORECASE
-)
 _LOG_REMINDER_EVERY_TURNS = 4
 _LONG_REASONING_SECONDS = 20.0
+
+
+@dataclass
+class InnerTags:
+    """Private model-emitted tags stripped before sending the visible reply."""
+
+    tags: dict[str, list[ParsedInnerTag]] = field(default_factory=dict)
+
+    def add_tag(self, parsed: ParsedInnerTag) -> None:
+        self.tags.setdefault(parsed.name, []).append(parsed)
+
+
+@dataclass
+class InnerTagEffects:
+    """Accumulated runtime effects from private model-emitted tags."""
+
+    plan: str | None = None
 
 
 class ToolCallTracker:
@@ -203,21 +215,6 @@ class AgentLoop:
             logger.warning(f"Failed to write debug dump: {e}")
 
     @staticmethod
-    def _extract_plan(content: str) -> tuple[str, str | None]:
-        """Extract <plan>...</plan> tags from response content.
-
-        Returns (content_without_tags, plan_text_or_none). The plan text is
-        not shown to the user; it is injected as a system message at the top
-        of the next LLM call so the model can guide its own future steps.
-        """
-        matches = _PLAN_TAG_RE.findall(content)
-        if not matches:
-            return content, None
-        plan = "\n".join(m.strip() for m in matches)
-        cleaned = _PLAN_TAG_RE.sub("", content).strip()
-        return cleaned, plan
-
-    @staticmethod
     def _build_image_blocks(paths: list[str], workspace: Path) -> list[dict]:
         """Base64-encode image files and return image_url content blocks for the LLM."""
         blocks = []
@@ -258,20 +255,88 @@ class AgentLoop:
         )
 
     @staticmethod
-    def _extract_image_captions(content: str) -> tuple[str, dict[str, str]]:
-        """Extract <image_caption path="...">...</image_caption> tags from response content.
+    def _parse_tag_attrs(raw: str) -> dict[str, str]:
+        """Parse `key="value"` attributes from a simple XML-like tag head."""
+        return {m.group(1): m.group(2) for m in re.finditer(r'([a-zA-Z_][\w-]*)="([^"]*)"', raw)}
 
-        Returns (cleaned_content, {path: caption}). The path is workspace-relative
-        (e.g. "media/a3f7b2c1/0310/1423-01.jpg") as emitted by the model.
+    def _all_inner_tag_names(self) -> list[str]:
+        """Return built-in and tool-backed private tag names in stable order."""
+        names = ["plan", "image_caption"]
+        for tag_name in self.tools.get_inner_tag_tools():
+            if tag_name not in names:
+                names.append(tag_name)
+        return names
+
+    def _extract_inner_tags(self, content: str) -> tuple[str, InnerTags]:
+        """Extract private tags from response content.
+
+        Returns (visible_content, inner_tags). The visible content is sent to
+        the user, while the structured tags are handled by the runtime.
         """
-        captions: dict[str, str] = {}
+        inner = InnerTags()
 
-        def _store(m: re.Match) -> str:
-            captions[m.group(1)] = m.group(2).strip()
-            return ""
+        def _strip_with(pattern: re.Pattern[str], store: Callable[[re.Match[str]], None]) -> None:
+            nonlocal content
 
-        cleaned = _IMAGE_CAPTION_RE.sub(_store, content).strip()
-        return cleaned, captions
+            def _capture(match: re.Match[str]) -> str:
+                store(match)
+                return ""
+
+            content = pattern.sub(_capture, content)
+
+        for tag_name in self._all_inner_tag_names():
+            pattern = re.compile(
+                rf"<{re.escape(tag_name)}(\s+[^>]*)?>(.*?)</{re.escape(tag_name)}>",
+                re.DOTALL | re.IGNORECASE,
+            )
+
+            def _store_tag(match: re.Match[str], name: str = tag_name) -> None:
+                body = match.group(2).strip()
+                if not body:
+                    return
+                inner.add_tag(
+                    ParsedInnerTag(
+                        name=name,
+                        attrs=self._parse_tag_attrs(match.group(1) or ""),
+                        body=body,
+                    )
+                )
+
+            _strip_with(pattern, _store_tag)
+        return content.strip(), inner
+
+    @staticmethod
+    def _apply_plan_tag(parsed: ParsedInnerTag, effects: InnerTagEffects) -> None:
+        """Accumulate the next-turn plan from one parsed <plan> tag."""
+        effects.plan = f"{effects.plan}\n{parsed.body}" if effects.plan else parsed.body
+
+    @staticmethod
+    def _apply_image_caption_tag(
+        parsed: ParsedInnerTag, media_repo: MediaRepository | None
+    ) -> None:
+        """Persist one parsed <image_caption> tag to the media repository."""
+        path = parsed.attrs.get("path", "").strip()
+        if not path:
+            raise ValueError("<image_caption> requires a path attribute")
+        if not media_repo:
+            return
+        media_repo.set_caption(path, parsed.body)
+
+    async def _apply_inner_tag(
+        self,
+        parsed: ParsedInnerTag,
+        effects: InnerTagEffects,
+        call_ctx: ToolContext,
+        media_repo: MediaRepository | None,
+    ) -> None:
+        """Dispatch one parsed private tag to the appropriate built-in or tool handler."""
+        if parsed.name == "plan":
+            self._apply_plan_tag(parsed, effects)
+            return
+        if parsed.name == "image_caption":
+            self._apply_image_caption_tag(parsed, media_repo)
+            return
+        await self.tools.execute_inner_tag(parsed.name, parsed, call_ctx)
 
     # Keep only this many chars of the most recent reasoning_content.
     # Thinking models require it in the immediately preceding turn, but the
@@ -367,8 +432,10 @@ class AgentLoop:
                 {
                     "role": "system",
                     "content": (
-                        "Reminder: append concise log entries as you work. "
-                        "Log notable steps, fetched values, decisions, and status changes."
+                        "Reminder: append concise log entries as you work, either with <log> "
+                        "or the log tool. "
+                        "Log notable steps, fetched values, decisions, and status changes. "
+                        "Do not log routine image receipt or required image captions by themselves."
                     ),
                 }
             )
@@ -452,16 +519,17 @@ class AgentLoop:
             )
             self._compact_context(session, addr)
 
-        # Extract any <plan> the model wrote and strip it from visible content.
-        visible_content, new_plan = self._extract_plan(response.content or "")
-        if new_plan:
-            logger.debug(f"Plan captured: {new_plan[:120]}")
-
-        # Extract any <image_caption> tags and store them in the media repo.
-        visible_content, captions = self._extract_image_captions(visible_content)
-        if captions and media_repo:
-            for path_from_tag, caption in captions.items():
-                media_repo.set_caption(path_from_tag, caption)
+        # Extract any private tags the model wrote and strip them from visible content.
+        visible_content, inner_tags = self._extract_inner_tags(response.content or "")
+        inner_effects = InnerTagEffects()
+        for tag_name, parsed_tags in inner_tags.tags.items():
+            for parsed in parsed_tags:
+                try:
+                    await self._apply_inner_tag(parsed, inner_effects, call_ctx, media_repo)
+                except Exception as e:
+                    logger.warning(f"Failed to handle inner tag <{tag_name}>: {e}")
+        if inner_effects.plan:
+            logger.debug(f"Plan captured: {inner_effects.plan[:120]}")
 
         if response.has_tool_calls:
             tool_call_dicts = [
@@ -498,7 +566,7 @@ class AgentLoop:
             logger.info(f"Response to {addr}: {preview}")
             await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
 
-        return new_plan, elapsed
+        return inner_effects.plan, elapsed
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         """
