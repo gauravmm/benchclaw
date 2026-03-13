@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from benchclaw.bus import MessageAddress
-from benchclaw.session import MAX_SESSIONS, Session, SessionManager
+from benchclaw.session import MAX_SESSIONS, Session, SessionManager, SummaryEvent
 
 # ---------------------------------------------------------------------------
 # MessageAddress
@@ -118,6 +118,21 @@ def test_session_clear(tmp_path: Path):
     session.clear()
     assert session.messages == []
     assert session.compacted_through == -1
+
+
+def test_session_compact_uses_log_store() -> None:
+    class _LogStore:
+        def read_recent(self, n: int = 20) -> str:
+            assert n == 20
+            return "recent log entry"
+
+    session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
+
+    session.compact(_LogStore())
+
+    assert isinstance(session.events[-1], SummaryEvent)
+    assert "recent log entry" in session.events[-1].content
+    assert session.compacted_through == 0
 
 
 def test_session_history_includes_sender_and_timestamp_prefix() -> None:

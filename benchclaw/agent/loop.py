@@ -77,8 +77,6 @@ class ToolCallTracker:
 class AgentLoop:
     """Event-driven agent runtime."""
 
-    _MAX_REASONING_CHARS = 500
-
     def __init__(
         self,
         config: Config,
@@ -179,25 +177,12 @@ class AgentLoop:
         include_reasoning: bool,
         pending_image_blocks: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
-        message = event.to_llm_message()
-        if isinstance(event, AssistantEvent) and "reasoning_content" in message:
-            if not include_reasoning:
-                message = {k: v for k, v in message.items() if k != "reasoning_content"}
-            else:
-                reasoning = message.get("reasoning_content")
-                if isinstance(reasoning, str) and len(reasoning) > self._MAX_REASONING_CHARS:
-                    message = dict(message)
-                    message["reasoning_content"] = (
-                        reasoning[: self._MAX_REASONING_CHARS] + " [truncated]"
-                    )
-        if pending_image_blocks and isinstance(event, UserEvent):
-            text = message.get("content", "")
-            if isinstance(text, str):
-                message = dict(message)
-                message["content"] = [
-                    *pending_image_blocks,
-                    {"type": "text", "text": text},
-                ]
+        if isinstance(event, AssistantEvent):
+            message = event.to_llm_message(include_reasoning=include_reasoning)
+        elif isinstance(event, UserEvent):
+            message = event.to_llm_message(pending_image_blocks=pending_image_blocks or [])
+        else:
+            message = event.to_llm_message()
         message["content"] = self._render_message_content(message.get("content", ""), profile)
         return message
 
@@ -219,8 +204,8 @@ class AgentLoop:
         last_reasoning_idx = next(
             (
                 i
-                for i in range(len(history) - 1, -1, -1)
-                if isinstance(history[i], AssistantEvent) and history[i].reasoning_content
+                for i, event in reversed(list(enumerate(history)))
+                if isinstance(event, AssistantEvent) and event.reasoning_content
             ),
             None,
         )
@@ -243,19 +228,6 @@ class AgentLoop:
             )
         return messages
 
-    def _compact_context(self, session: Session) -> None:
-        log_store = self.master_ctx.log_store
-        summary_content = (
-            "[Context compacted to stay within context window limits.]\nRecent activity log:\n"
-            + (log_store.read_recent(n=20) if log_store else "[No logs available]")
-        )
-        session.append_summary(summary_content)
-        logger.info(
-            "Context compacted (%s events, compacted_through=%s)",
-            len(session.events),
-            session.compacted_through,
-        )
-
     async def _process_llm_turn(
         self,
         session: Session,
@@ -271,12 +243,7 @@ class AgentLoop:
             profile="provider",
         )
         self._dump_messages(
-            self._build_llm_messages(
-                session,
-                addr,
-                pending_images=pending_images,
-                profile="debug",
-            )
+            self._build_llm_messages(session, addr, pending_images=pending_images, profile="debug")
         )
         if pending_images:
             pending_images.clear()
@@ -305,7 +272,12 @@ class AgentLoop:
                 total_tokens,
                 self.config.context_window,
             )
-            self._compact_context(session)
+            session.compact(self.master_ctx.log_store)
+            logger.info(
+                "Context compacted (%s events, compacted_through=%s)",
+                len(session.events),
+                session.compacted_through,
+            )
 
         visible_content = response.content or ""
         if response.has_tool_calls:

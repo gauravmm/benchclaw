@@ -5,17 +5,31 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, TypedDict, Unpack
 
 from loguru import logger
 from pathvalidate import sanitize_filename
 
+from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MediaMetadata, MessageAddress, ToolResult
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 MAX_SESSIONS = 50
+_MAX_REASONING_CHARS = 500
 
 EventKind = Literal["user", "assistant", "tool", "system", "summary"]
+
+
+class EventRenderKwargs(TypedDict, total=False):
+    pass
+
+
+class UserRenderKwargs(TypedDict, total=False):
+    pending_image_blocks: list[dict[str, object]]
+
+
+class AssistantRenderKwargs(TypedDict, total=False):
+    include_reasoning: bool
 
 
 def _sender_label(metadata: dict[str, Any]) -> str | None:
@@ -99,7 +113,7 @@ class BaseEvent:
     def to_record(self) -> dict[str, Any]:
         raise NotImplementedError
 
-    def to_llm_message(self) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
         raise NotImplementedError
 
 
@@ -132,15 +146,22 @@ class UserEvent(BaseEvent):
                 record[key] = value
         return record
 
-    def to_llm_message(self) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Unpack[UserRenderKwargs]) -> dict[str, Any]:
+        text = _render_user_content(
+            self.content,
+            media=self.media,
+            sender=self.sender_label,
+            sent_at=self.timestamp,
+        )
+        pending_image_blocks = kwargs.get("pending_image_blocks")
+        content: str | list[dict[str, object]]
+        if pending_image_blocks:
+            content = [*pending_image_blocks, {"type": "text", "text": text}]
+        else:
+            content = text
         return {
             "role": "user",
-            "content": _render_user_content(
-                self.content,
-                media=self.media,
-                sender=self.sender_label,
-                sent_at=self.timestamp,
-            ),
+            "content": content,
         }
 
 
@@ -169,12 +190,16 @@ class AssistantEvent(BaseEvent):
                 record[key] = value
         return record
 
-    def to_llm_message(self) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Unpack[AssistantRenderKwargs]) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": self.content}
+        include_reasoning = kwargs.get("include_reasoning", True)
         if self.tool_calls:
             message["tool_calls"] = self.tool_calls
-        if self.reasoning_content:
-            message["reasoning_content"] = self.reasoning_content
+        if include_reasoning and self.reasoning_content:
+            reasoning_content = self.reasoning_content
+            if len(reasoning_content) > _MAX_REASONING_CHARS:
+                reasoning_content = reasoning_content[:_MAX_REASONING_CHARS] + " [truncated]"
+            message["reasoning_content"] = reasoning_content
         return message
 
 
@@ -198,7 +223,7 @@ class ToolEvent(BaseEvent):
             "tool_name": self.tool_name,
         }
 
-    def to_llm_message(self) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Unpack[EventRenderKwargs]) -> dict[str, Any]:
         return {
             "role": "tool",
             "tool_call_id": self.tool_call_id,
@@ -224,7 +249,7 @@ class SystemEvent(BaseEvent):
             record["metadata"] = self.metadata
         return record
 
-    def to_llm_message(self) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Unpack[EventRenderKwargs]) -> dict[str, Any]:
         return {"role": "system", "content": self.content}
 
 
@@ -241,7 +266,7 @@ class SummaryEvent(BaseEvent):
     def to_record(self) -> dict[str, Any]:
         return {**self._record_base(), "content": self.content}
 
-    def to_llm_message(self) -> dict[str, Any]:
+    def to_llm_message(self, **kwargs: Unpack[EventRenderKwargs]) -> dict[str, Any]:
         return {"role": "system", "content": self.content}
 
 
@@ -421,6 +446,13 @@ class Session:
     def append_summary(self, content: str, *, timestamp: datetime | None = None) -> None:
         self._append(SummaryEvent(timestamp=timestamp or now_aware(), content=content))
         self.compacted_through = len(self.events) - 1
+
+    def compact(self, log_store: LogStore | None, *, log_limit: int = 20) -> None:
+        recent_activity = log_store.read_recent(n=log_limit) if log_store else "[No logs available]"
+        self.append_summary(
+            "[Context compacted to stay within context window limits.]\nRecent activity log:\n"
+            + recent_activity
+        )
 
     def get_history_events(self, max_messages: int = 50) -> list[ConversationEvent]:
         """Return the current typed conversation history window."""
