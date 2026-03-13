@@ -111,7 +111,7 @@ class WhatsAppChannel(BaseChannel):
             if msg.media:
                 media_path = msg.media[0]
                 if self.media_repo and not Path(media_path).is_absolute():
-                    image_path, mime = self.media_repo.media_file(media_path)
+                    image_path, mime = self.media_repo.resolve_file(media_path)
                 else:
                     image_path = Path(media_path)
                     if not image_path.is_absolute():

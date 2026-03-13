@@ -1,4 +1,4 @@
-"""Structured media repository for incoming channel media."""
+"""Structured media repository for workspace files and captions."""
 
 from __future__ import annotations
 
@@ -20,11 +20,10 @@ class MediaEntry(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     address: MessageAddress | None = None
-    sender_id: str
-    timestamp: str  # ISO
+    sender_id: str | None = None
+    timestamp: str | None = None  # ISO
     media_type: str = "file"
-    mime_type: str | None
-    ext: str  # file extension including dot, e.g. ".jpg"
+    mime_type: str | None = None
     original_name: str | None = None
     caption: str | None = None
 
@@ -49,52 +48,41 @@ class MediaEntry(BaseModel):
 
 class MediaRepository:
     """
-    Persistent store for media files received from channels.
+    Persistent store for inbound media records and captions for workspace files.
 
-    On-disk format: <media_dir>/<hash8>/<mmdd>/<hhmm>-<serial_2d>.<ext>  (unchanged)
-    Metadata format in .meta.json: {<hash8>: {<mmdd>: {<hhmm>: {<serial>: entry}}}}
-    Workspace-relative paths (e.g. "media/a3f7b2c1/0310/1423-01.jpg") are
-    used throughout so the LLM can reference them in <image_caption> tags.
+    Registered inbound media still lives under `workspace/media/...`.
+    Metadata lives at `workspace/.media.json` and is keyed by workspace-relative path.
     """
 
-    def __init__(self, media_dir: Path, max_age_days: int = 30) -> None:
-        self.media_dir = media_dir
+    def __init__(self, workspace: Path, max_age_days: int = 30) -> None:
+        self.workspace = workspace
+        self.media_dir = workspace / "media"
+        self.meta_path = workspace / ".media.json"
         self.max_age_days = max_age_days
-        # hash8 -> mmdd -> hhmm -> serial -> entry
-        # Serial = max key in each time bucket + 1; no separate counter needed.
-        self._entries: dict[str, dict[str, dict[str, dict[str, MediaEntry]]]] = {}
+        self._entries: dict[str, MediaEntry] = {}
 
     def load(self) -> None:
-        """Load metadata from .meta.json.
-
-        Invariant: every registered file has a .meta.json entry, so the metadata
-        is the sole source of truth — no disk scan needed.
-        """
-        meta_path = self.media_dir / ".meta.json"
-        if meta_path.exists():
-            try:
-                data = json.loads(meta_path.read_text(encoding="utf-8"))
-                self._load_nested_entries(data)
-            except Exception as e:
-                logger.warning(f"Failed to load media metadata: {e}")
+        """Load metadata from the workspace root metadata file."""
+        if not self.meta_path.exists():
+            return
+        try:
+            data = json.loads(self.meta_path.read_text(encoding="utf-8"))
+            self._entries.clear()
+            self._load_entries(data)
+        except Exception as e:
+            logger.warning(f"Failed to load media metadata: {e}")
 
     def save(self) -> None:
-        """Write metadata to .meta.json."""
-        self.media_dir.mkdir(parents=True, exist_ok=True)
-        meta_path = self.media_dir / ".meta.json"
-        data = {
-            hash8: {
-                mmdd: {
-                    hhmm: {
-                        serial: entry.model_dump(mode="json") for serial, entry in serials.items()
-                    }
-                    for hhmm, serials in by_time.items()
-                }
-                for mmdd, by_time in by_day.items()
-            }
-            for hash8, by_day in self._entries.items()
-        }
-        meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        """Write metadata to the workspace root metadata file."""
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        data: dict[str, Any] = {}
+        for relpath, entry in sorted(self._entries.items()):
+            node = data
+            parts = Path(relpath).parts
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = {"_entry": entry.model_dump(mode="json")}
+        self.meta_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def register(
         self,
@@ -107,27 +95,25 @@ class MediaRepository:
         original_name: str | None = None,
     ) -> Path:
         """
-        Allocate a new media file path, record the entry, save metadata, and return the abs path.
+        Allocate a new inbound media path, record the entry, save metadata, and return the abs path.
         Caller must write the file bytes to the returned path.
         """
         assert ext.startswith(".") or ext == "", "ext should include the dot, e.g. '.jpg'"
         ts = timestamp or datetime.now()
         hhmm = ts.strftime("%H%M")
         mmdd = ts.strftime("%m%d")
-        serials = (
-            self._entries.setdefault(address.hash8, {}).setdefault(mmdd, {}).setdefault(hhmm, {})
-        )
-        serial = f"{max(map(int, serials), default=0) + 1:02d}"
-        abs_path = self.media_dir / address.hash8 / mmdd / f"{hhmm}-{serial}{ext}"
+        hash8 = address.hash8
+        serial = self._next_serial(hash8, mmdd, hhmm)
+        relpath = Path("media") / hash8 / mmdd / f"{hhmm}-{serial}{ext}"
+        abs_path = self.workspace / relpath
         abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        serials[serial] = MediaEntry(
+        self._entries[str(relpath)] = MediaEntry(
             address=address,
             sender_id=sender_id,
             timestamp=ts.isoformat(timespec="seconds"),
             media_type=media_type,
             mime_type=mime_type,
-            ext=ext,
             original_name=original_name,
             caption=None,
         )
@@ -135,51 +121,58 @@ class MediaRepository:
         return abs_path
 
     def media_relpath(self, abs_path: Path) -> str:
-        """Return workspace-relative path: 'media/<hash8>/<mmdd>/<hhmm>-<serial>.<ext>'"""
-        workspace = self.media_dir.parent
-        return str(abs_path.relative_to(workspace))
+        """Return a workspace-relative path."""
+        return str(abs_path.relative_to(self.workspace))
 
-    def media_file(self, path: str) -> tuple[Path, str | None]:
-        """Resolve a workspace-relative media path to (absolute_path, mime_type)."""
-        hash8, mmdd, hhmm, serial = self._path_parts(path)
-        try:
-            entry = self._entries[hash8][mmdd][hhmm][serial]
-        except (KeyError, ValueError) as exc:
-            raise KeyError(f"No media entry for {path}") from exc
-
-        abs_path = self.media_dir.parent / path
+    def resolve_file(self, path: str) -> tuple[Path, str | None]:
+        """Resolve a workspace-relative path to (absolute_path, mime_type)."""
+        relpath = self._normalize_relpath(path)
+        abs_path = self.workspace / relpath
         if not abs_path.is_file():
-            raise FileNotFoundError(f"Media file not found: {path}")
+            raise FileNotFoundError(f"Media file not found: {relpath}")
 
-        mime_type = entry.mime_type or filetype.guess_mime(str(abs_path))
+        entry = self._entries.get(relpath)
+        mime_type = entry.mime_type if entry else None
+        if not mime_type:
+            mime_type = filetype.guess_mime(str(abs_path))
         return abs_path, mime_type
 
     def set_caption(self, path: str, caption: str) -> None:
-        """Update the caption for a media entry. path is workspace-relative (e.g. 'media/...')."""
-        try:
-            hash8, mmdd, hhmm, serial = self._path_parts(path)
-            self._entries[hash8][mmdd][hhmm][serial].caption = caption
-        except ValueError, KeyError:
-            raise KeyError(f"set_caption: no entry for {path}")
+        """Update or create a caption for any workspace-relative file path."""
+        relpath = self._normalize_relpath(path)
+        abs_path, mime_type = self.resolve_file(relpath)
+        entry = self._entries.get(relpath)
+        if entry is None:
+            entry = MediaEntry(
+                timestamp=self._file_timestamp(abs_path),
+                media_type=self._infer_media_type(mime_type),
+                mime_type=mime_type,
+                original_name=abs_path.name,
+            )
+            self._entries[relpath] = entry
+        else:
+            if entry.timestamp is None:
+                entry.timestamp = self._file_timestamp(abs_path)
+            if not entry.mime_type:
+                entry.mime_type = mime_type
+            if not entry.original_name:
+                entry.original_name = abs_path.name
+        entry.caption = caption
         self.save()
 
     def iter_records(self) -> Iterable[dict[str, Any]]:
-        """Yield stored media records with their workspace-relative path."""
-        for hash8, by_day in self._entries.items():
-            for mmdd, by_time in by_day.items():
-                for hhmm, serials in by_time.items():
-                    for serial, entry in serials.items():
-                        relpath = f"{self.media_dir.name}/{hash8}/{mmdd}/{hhmm}-{serial}{entry.ext}"
-                        yield {
-                            "path": relpath,
-                            "address": str(entry.address) if entry.address else None,
-                            "sender_id": entry.sender_id,
-                            "timestamp": entry.timestamp,
-                            "media_type": entry.media_type,
-                            "mime_type": entry.mime_type,
-                            "original_name": entry.original_name,
-                            "caption": entry.caption,
-                        }
+        """Yield stored metadata records keyed by workspace-relative path."""
+        for relpath, entry in sorted(self._entries.items()):
+            yield {
+                "path": relpath,
+                "address": str(entry.address) if entry.address else None,
+                "sender_id": entry.sender_id,
+                "timestamp": entry.timestamp,
+                "media_type": entry.media_type,
+                "mime_type": entry.mime_type,
+                "original_name": entry.original_name,
+                "caption": entry.caption,
+            }
 
     def search(
         self,
@@ -191,33 +184,36 @@ class MediaRepository:
         date_to: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search media metadata deterministically using stored fields and captions."""
+        """Search saved file metadata and captions across the whole workspace."""
         limit = max(1, min(limit, 20))
         if address is not None and address.channel == "whatsapp":
             address = WhatsAppId.from_address(address).as_address()
         needle = (query or "").strip().casefold()
         lower_from = self._parse_date_bound(date_from, end=False)
         upper_to = self._parse_date_bound(date_to, end=True)
-        matches: list[tuple[int, datetime, dict[str, Any]]] = []
+        matches: list[tuple[int, float, dict[str, Any]]] = []
 
         for record in self.iter_records():
-            record_ts = datetime.fromisoformat(record["timestamp"])
+            if record.get("caption") is None:
+                continue
             record_addr = record["address"]
             if address is not None and record_addr != str(address):
                 continue
             if sender_id is not None and record["sender_id"] != sender_id:
                 continue
-            if lower_from is not None and record_ts < lower_from:
+            record_ts = self._record_timestamp(record)
+            if lower_from is not None and (record_ts is None or record_ts < lower_from):
                 continue
-            if upper_to is not None and record_ts > upper_to:
+            if upper_to is not None and (record_ts is None or record_ts > upper_to):
                 continue
 
             score = self._score_record(record, needle)
             if needle and score < 0:
                 continue
-            matches.append((score, record_ts, record))
+            ts_key = record_ts.timestamp() if record_ts else float("-inf")
+            matches.append((score, ts_key, record))
 
-        matches.sort(key=lambda item: (-item[0], -item[1].timestamp(), item[2]["path"]))
+        matches.sort(key=lambda item: (-item[0], -item[1], item[2]["path"]))
         return [record for _, _, record in matches[:limit]]
 
     @staticmethod
@@ -230,6 +226,11 @@ class MediaRepository:
         if end:
             return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
         return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    @staticmethod
+    def _record_timestamp(record: dict[str, Any]) -> datetime | None:
+        value = record.get("timestamp")
+        return datetime.fromisoformat(value) if value else None
 
     @staticmethod
     def _score_record(record: dict[str, Any], needle: str) -> int:
@@ -260,30 +261,23 @@ class MediaRepository:
         return self
 
     async def __aexit__(self, *_: object) -> None:
-        pass  # save() is called after every mutation
+        pass
 
     def _purge_old(self) -> int:
-        """Delete files older than max_age_days. Removes empty dirs. Returns count deleted."""
-        today = datetime.now().date()
-        today_md = today.strftime("%m%d")
-        cutoff_md = (today - timedelta(days=self.max_age_days)).strftime("%m%d")
+        """Delete old registered media files and their metadata records."""
+        cutoff = datetime.now() - timedelta(days=self.max_age_days)
         deleted = 0
-        for hash8, by_day in list(self._entries.items()):
-            for mmdd, by_time in list(by_day.items()):
-                # Delete if mmdd is outside the rolling [cutoff_md, today_md] window.
-                # XOR of the two boundary comparisons, flipped by the year-wrap flag, handles both cases.
-                if (mmdd < cutoff_md) ^ (mmdd > today_md) ^ (cutoff_md > today_md):
-                    for hhmm, serials in by_time.items():
-                        deleted += len(serials)
-                        for serial, entry in serials.items():
-                            (self.media_dir / hash8 / mmdd / f"{hhmm}-{serial}{entry.ext}").unlink(
-                                missing_ok=True
-                            )
-                    del by_day[mmdd]
-            if not by_day:
-                del self._entries[hash8]
+        for relpath, entry in list(self._entries.items()):
+            if not relpath.startswith("media/"):
+                continue
+            if entry.timestamp is None:
+                continue
+            if datetime.fromisoformat(entry.timestamp) >= cutoff:
+                continue
+            (self.workspace / relpath).unlink(missing_ok=True)
+            del self._entries[relpath]
+            deleted += 1
 
-        # Remove empty directories (deepest first)
         for d in sorted(self.media_dir.rglob("*"), reverse=True):
             if d.is_dir() and not any(d.iterdir()):
                 d.rmdir()
@@ -292,21 +286,60 @@ class MediaRepository:
             self.save()
         return deleted
 
-    def _path_parts(self, path: str) -> tuple[str, str, str, str]:
-        media_dir_name, rest = path.split("/", 1)
-        if media_dir_name != self.media_dir.name:
-            raise ValueError(f"Path is outside media directory: {path}")
-        hash8_mmdd, filename = rest.rsplit("/", 1)
-        hash8, mmdd = hash8_mmdd.split("/", 1)
-        stem = filename.rsplit(".", 1)[0]
-        hhmm, serial = stem.split("-", 1)
-        return hash8, mmdd, hhmm, serial
+    def _normalize_relpath(self, path: str) -> str:
+        rel = Path(path)
+        if rel.is_absolute():
+            raise ValueError(f"Path is outside the workspace: {path}")
+        parts = []
+        for part in rel.parts:
+            if part in ("", "."):
+                continue
+            if part == "..":
+                raise ValueError(f"Path is outside the workspace: {path}")
+            parts.append(part)
+        if not parts:
+            raise ValueError(f"Invalid workspace-relative path: {path}")
+        return str(Path(*parts))
 
-    def _load_nested_entries(self, data: dict[str, Any]) -> None:
-        for hash8, by_day in data.items():
-            for mmdd, by_time in by_day.items():
-                for hhmm, serials in by_time.items():
-                    for serial, entry_dict in serials.items():
-                        self._entries.setdefault(hash8, {}).setdefault(mmdd, {}).setdefault(
-                            hhmm, {}
-                        )[serial] = MediaEntry.model_validate(entry_dict)
+    def _next_serial(self, hash8: str, mmdd: str, hhmm: str) -> str:
+        parent = Path("media") / hash8 / mmdd
+        max_serial = 0
+        for relpath in self._entries:
+            path = Path(relpath)
+            if path.parent != parent or not path.stem.startswith(f"{hhmm}-"):
+                continue
+            _, serial = path.stem.split("-", 1)
+            max_serial = max(max_serial, int(serial))
+        media_bucket = self.media_dir / hash8 / mmdd
+        if media_bucket.exists():
+            for file_path in media_bucket.glob(f"{hhmm}-*"):
+                stem = file_path.stem
+                if "-" not in stem:
+                    continue
+                _, serial = stem.split("-", 1)
+                if serial.isdigit():
+                    max_serial = max(max_serial, int(serial))
+        return f"{max_serial + 1:02d}"
+
+    def _load_entries(self, node: dict[str, Any], prefix: tuple[str, ...] = ()) -> None:
+        for name, value in node.items():
+            if not isinstance(value, dict):
+                raise TypeError(f"Invalid metadata node at {'/'.join(prefix + (name,))}")
+            if "_entry" in value:
+                relpath = str(Path(*prefix, name))
+                self._entries[relpath] = MediaEntry.model_validate(value["_entry"])
+                continue
+            self._load_entries(value, prefix + (name,))
+
+    @staticmethod
+    def _infer_media_type(mime_type: str | None) -> str:
+        if not mime_type:
+            return "file"
+        prefix = mime_type.split("/", 1)[0]
+        if prefix in {"image", "audio", "video"}:
+            return prefix
+        return "file"
+
+    @staticmethod
+    def _file_timestamp(path: Path) -> str:
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")

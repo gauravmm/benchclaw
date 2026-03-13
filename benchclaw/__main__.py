@@ -25,7 +25,7 @@ def run(args) -> None:
         provider = LiteLLMProvider(config.provider)
 
         async def run():
-            async with MediaRepository(config.workspace_path / "media") as media_repo:
+            async with MediaRepository(config.workspace_path) as media_repo:
                 channels = ChannelManager(config, bus, media_repo=media_repo)
                 agent = AgentLoop(
                     config=config,

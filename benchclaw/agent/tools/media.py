@@ -38,10 +38,9 @@ class ReadImageTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Load a previously received image by its media path so you can inspect it again. "
-            "Use the exact path from the image stub or a prior caption "
-            "(e.g. 'media/a3f7b2c1/0310/1423-01.jpg'). "
-            "Only call this when you need to re-examine an image to answer a follow-up question."
+            "Load a workspace image by its relative path so you can inspect it again. "
+            "Use the exact stored path, for example 'media/a3f7b2c1/0310/1423-01.jpg' or 'images/receipt.png'. "
+            "Only call this when you need to examine an image to answer a follow-up question."
         )
 
     @property
@@ -51,17 +50,17 @@ class ReadImageTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Workspace-relative path to the media file (e.g. 'media/a3f7b2c1/0310/1423-01.jpg').",
+                    "description": "Workspace-relative path to the image file.",
                 }
             },
             "required": ["path"],
         }
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> ToolResult:
-        if not path.startswith("media/"):
-            raise ValueError("read_image is restricted to the media/ directory")
+        if Path(path).is_absolute():
+            raise ValueError(f"Path is outside the workspace: {path}")
         if ctx.media_repo:
-            file_path, mime = ctx.media_repo.media_file(path)
+            file_path, mime = ctx.media_repo.resolve_file(path)
         else:
             file_path = ctx.workspace / path
             if not file_path.is_file():
@@ -103,7 +102,7 @@ class SendImageTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Workspace-relative image path, usually under media/.",
+                    "description": "Workspace-relative image path.",
                 },
                 "caption": {
                     "type": "string",
@@ -128,8 +127,8 @@ class SendImageTool(Tool):
 
         if Path(path).is_absolute():
             raise ValueError(f"Path is outside the workspace: {path}")
-        if ctx.media_repo and path.startswith("media/"):
-            file_path, mime = ctx.media_repo.media_file(path)
+        if ctx.media_repo:
+            file_path, mime = ctx.media_repo.resolve_file(path)
         else:
             file_path = ctx.workspace / path
             if not file_path.is_file():
@@ -161,7 +160,7 @@ class SearchImagesTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search saved images using stored metadata and model-authored captions. "
+            "Search captioned workspace images using stored metadata and model-authored captions. "
             "Use this when you remember an image but not its exact media path."
         )
 
@@ -176,7 +175,7 @@ class SearchImagesTool(Tool):
                 },
                 "address": {
                     "type": "string",
-                    "description": "Optional address filter as channel:chat_id. Defaults to the current chat.",
+                    "description": "Optional address filter as channel:chat_id.",
                 },
                 "sender_id": {
                     "type": "string",
@@ -213,7 +212,9 @@ class SearchImagesTool(Tool):
     ) -> str:
         if not ctx.media_repo:
             raise RuntimeError("search_images requires media repository access")
-        resolved_address = _resolve_target_address(ctx, address)
+        resolved_address = MessageAddress.from_string(address) if address else None
+        if resolved_address and resolved_address.channel == "whatsapp":
+            resolved_address = WhatsAppId.from_address(resolved_address).as_address()
 
         results = ctx.media_repo.search(
             query=query or None,

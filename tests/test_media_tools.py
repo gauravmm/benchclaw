@@ -82,8 +82,8 @@ async def test_send_image_rejects_non_image(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_search_images_defaults_to_current_address(tmp_path: Path):
-    repo = MediaRepository(tmp_path / "media")
+async def test_search_images_defaults_to_global_caption_search(tmp_path: Path):
+    repo = MediaRepository(tmp_path)
     repo.load()
     path = repo.register(
         MessageAddress("telegram", "chat-1"),
@@ -96,6 +96,9 @@ async def test_search_images_defaults_to_current_address(tmp_path: Path):
     )
     _write_png(path)
     repo.set_caption(repo.media_relpath(path), "receipt from grocery store")
+    generic = tmp_path / "images" / "diagram.png"
+    _write_png(generic)
+    repo.set_caption("images/diagram.png", "architecture diagram")
 
     ctx = ToolContext(
         workspace=tmp_path,
@@ -105,14 +108,12 @@ async def test_search_images_defaults_to_current_address(tmp_path: Path):
     result = await SearchImagesTool().execute(ctx)
     parsed = json.loads(result)
 
-    assert len(parsed) == 1
-    assert parsed[0]["address"] == "telegram:chat-1"
-    assert parsed[0]["path"] == repo.media_relpath(path)
+    assert {item["path"] for item in parsed} == {repo.media_relpath(path), "images/diagram.png"}
 
 
 @pytest.mark.asyncio
 async def test_search_images_filters_explicit_address(tmp_path: Path):
-    repo = MediaRepository(tmp_path / "media")
+    repo = MediaRepository(tmp_path)
     repo.load()
     first = repo.register(
         MessageAddress("telegram", "chat-1"),
@@ -150,7 +151,7 @@ async def test_search_images_filters_explicit_address(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_search_images_normalizes_whatsapp_shorthand_address(tmp_path: Path):
-    repo = MediaRepository(tmp_path / "media")
+    repo = MediaRepository(tmp_path)
     repo.load()
     path = repo.register(
         MessageAddress("whatsapp", "222355137806442@lid"),
@@ -181,29 +182,24 @@ async def test_search_images_normalizes_whatsapp_shorthand_address(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_search_images_matches_nested_whatsapp_lid_record(tmp_path: Path):
-    media_dir = tmp_path / "media"
-    media_dir.mkdir(parents=True)
     nested = {
-        "hash": {
-            "0310": {
-                "1423": {
-                    "01": {
-                        "address": "whatsapp:222355137806442@lid",
-                        "sender_id": "alice",
-                        "timestamp": "2026-03-10T14:23:00",
-                        "media_type": "image",
-                        "mime_type": "image/png",
-                        "ext": ".png",
-                        "original_name": "receipt.png",
-                        "caption": "receipt",
-                    }
+        "images": {
+            "receipt.png": {
+                "_entry": {
+                    "address": "whatsapp:222355137806442@lid",
+                    "sender_id": "alice",
+                    "timestamp": "2026-03-10T14:23:00",
+                    "media_type": "image",
+                    "mime_type": "image/png",
+                    "original_name": "receipt.png",
+                    "caption": "receipt",
                 }
             }
         }
     }
-    (media_dir / ".meta.json").write_text(json.dumps(nested), encoding="utf-8")
+    (tmp_path / ".media.json").write_text(json.dumps(nested), encoding="utf-8")
 
-    repo = MediaRepository(media_dir)
+    repo = MediaRepository(tmp_path)
     repo.load()
     ctx = ToolContext(workspace=tmp_path, media_repo=repo)
     result = await SearchImagesTool().execute(

@@ -213,13 +213,15 @@ class TelegramChannel(BaseChannel):
 
         try:
             if msg.media:
-                image_path = Path(msg.media[0])
-                if not image_path.is_absolute():
-                    base_dir = self.media_repo.media_dir.parent if self.media_repo else Path.cwd()
-                    image_path = base_dir / image_path
-                if not image_path.is_file():
-                    raise FileNotFoundError(f"Telegram image not found: {msg.media[0]}")
-                mime = filetype.guess_mime(str(image_path))
+                if self.media_repo and not Path(msg.media[0]).is_absolute():
+                    image_path, mime = self.media_repo.resolve_file(msg.media[0])
+                else:
+                    image_path = Path(msg.media[0])
+                    if not image_path.is_absolute():
+                        image_path = Path.cwd() / image_path
+                    if not image_path.is_file():
+                        raise FileNotFoundError(f"Telegram image not found: {msg.media[0]}")
+                    mime = filetype.guess_mime(str(image_path))
                 if not mime or not mime.startswith("image/"):
                     raise ValueError(f"Telegram outbound media is not an image: {msg.media[0]}")
                 caption = _markdown_to_telegram_html(msg.content) if msg.content else None
