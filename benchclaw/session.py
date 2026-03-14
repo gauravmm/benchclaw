@@ -274,7 +274,7 @@ class SystemEvent(BaseEvent):
         return record
 
     def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
-        return {"role": "system", "content": self.content}
+        return {"role": "user", "content": f"<system_event>{self.content}</system_event>"}
 
 
 @dataclass
@@ -291,7 +291,7 @@ class SummaryEvent(BaseEvent):
         return {**self._record_base(), "content": self.content}
 
     def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
-        return {"role": "system", "content": self.content}
+        return {"role": "user", "content": self.content}
 
 
 ConversationEvent = UserEvent | AssistantEvent | ToolEvent | SystemEvent | SummaryEvent

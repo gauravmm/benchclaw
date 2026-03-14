@@ -188,42 +188,6 @@ class AgentLoop:
             metadata=first.metadata,
         )
 
-    def _build_system_prompt(
-        self,
-        addr: MessageAddress,
-        session: Session,
-    ) -> str:
-        return self.context.build_system_prompt(
-            self.tools.values(),
-            addr.channel,
-            addr.chat_id,
-            session.describe_current_session(),
-        )
-
-    def _render_turn_messages(
-        self,
-        session: Session,
-        addr: MessageAddress,
-        pending_images: list[str],
-    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        prompt = self._build_system_prompt(addr, session)
-        provider_messages = session.render_llm_messages(
-            prompt,
-            self.media_repo,
-            RenderOptions(pending_image_paths=list(pending_images) or None),
-            max_messages=self.config.memory_window,
-        )
-        debug_messages = session.render_llm_messages(
-            prompt,
-            self.media_repo,
-            RenderOptions(
-                pending_image_paths=list(pending_images) or None,
-                max_inline_image_url_chars=_DEBUG_INLINE_IMAGE_URL_CHARS,
-            ),
-            max_messages=self.config.memory_window,
-        )
-        return provider_messages, debug_messages
-
     async def _call_provider(
         self,
         addr: MessageAddress,
@@ -369,8 +333,26 @@ class AgentLoop:
     ) -> None:
         if pending_images is None:
             pending_images = []
-        llm_messages, debug_messages = self._render_turn_messages(session, addr, pending_images)
-        self._dump_messages(debug_messages)
+        prompt = self.context.build_system_prompt(
+            self.tools.values(), addr.channel, addr.chat_id, session.describe_current_session()
+        )
+        llm_messages = session.render_llm_messages(
+            prompt,
+            self.media_repo,
+            RenderOptions(pending_image_paths=pending_images),
+            max_messages=self.config.memory_window,
+        )
+        self._dump_messages(
+            session.render_llm_messages(
+                prompt,
+                self.media_repo,
+                RenderOptions(
+                    pending_image_paths=pending_images,
+                    max_inline_image_url_chars=_DEBUG_INLINE_IMAGE_URL_CHARS,
+                ),
+                max_messages=self.config.memory_window,
+            )
+        )
         if pending_images:
             pending_images.clear()
         response = await self._call_provider(addr, llm_messages)
