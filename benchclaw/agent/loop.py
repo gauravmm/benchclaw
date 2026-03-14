@@ -25,7 +25,7 @@ from benchclaw.bus import (
 )
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
-from benchclaw.providers.base import LLMProvider, ToolCallRequest
+from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from benchclaw.session import (
     AssistantEvent,
     RenderOptions,
@@ -228,14 +228,14 @@ class AgentLoop:
 
     async def _apply_llm_response(
         self,
-        response,
+        response: LLMResponse,
         session: Session,
         tracker: ToolCallTracker,
         call_ctx: ToolContext,
         addr: MessageAddress,
     ) -> None:
         self._maybe_compact_session(session, addr, response.usage.get("total_tokens", 0))
-        visible_content = response.content or ""
+        content = response.content or ""
         if response.has_tool_calls:
             tool_call_dicts = [
                 {
@@ -247,7 +247,7 @@ class AgentLoop:
             ]
             session.append(
                 AssistantEvent(
-                    content=visible_content,
+                    content=content,
                     tool_calls=tool_call_dicts,
                     reasoning_content=response.reasoning_content,
                 )
@@ -260,17 +260,14 @@ class AgentLoop:
                     name=f"tool-{tc.id[:8]}",
                 )
                 tracker.add(tc.id, tc.name, task)
-            if visible_content:
-                await self.bus.publish_outbound(
-                    OutboundMessage(address=addr, content=visible_content)
-                )
+            if content:
+                await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
             return
 
-        final = visible_content or "I've completed processing but have no response to give."
-        session.append(AssistantEvent(content=final))
-        preview = final[:120] + "..." if len(final) > 120 else final
+        session.append(AssistantEvent(content=content))
+        preview = content[:120] + "..." if len(content) > 120 else content
         logger.info(f"Response to {addr}: {preview}")
-        await self.bus.publish_outbound(OutboundMessage(address=addr, content=final))
+        await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
 
     @staticmethod
     def _flush_pending_system_events(session: Session, state: _AddressState) -> None:

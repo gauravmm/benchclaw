@@ -39,7 +39,7 @@ class SkillsLoader:
 
             skills[skill_dir.name] = SkillInfo(
                 name=skill_dir.name,
-                path=skill_file,
+                path=skill_file.relative_to(self.workspace),
                 content=content,
                 body=body,
                 metadata=metadata,

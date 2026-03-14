@@ -80,7 +80,13 @@ class MCPManager:
     async def __aexit__(self, *exc_info: Any) -> None:
         for state in self._servers.values():
             if state.exit_stack is not None:
-                await state.exit_stack.__aexit__(*exc_info)
+                try:
+                    await state.exit_stack.__aexit__(*exc_info)
+                except Exception as e:
+                    # A reconnect in an address_loop task may have replaced the
+                    # exit_stack with one entered in a different task; anyio
+                    # cancel scopes are task-local so the exit fails here.
+                    logger.debug(f"MCP: could not clean up '{state.config.name}' on exit: {e}")
                 state.exit_stack = None
                 state.session = None
         self._tool_map.clear()
@@ -128,7 +134,15 @@ class MCPManager:
         self._rebuild_tool_index()
 
         if old_stack is not None:
-            await old_stack.__aexit__(None, None, None)
+            try:
+                await old_stack.__aexit__(None, None, None)
+            except Exception as e:
+                # HTTP transports use anyio cancel scopes that are task-local;
+                # reconnects happen in a different task so cleanup may fail.
+                # The old connection is already broken, so this is safe to ignore.
+                logger.debug(
+                    f"MCP: could not clean up old connection for '{state.config.name}': {e}"
+                )
 
         logger.info(f"MCP: connected to '{state.config.name}', {len(state.tools)} tools")
 
