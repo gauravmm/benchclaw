@@ -1,7 +1,6 @@
 """File system tools: read, write, edit, and search."""
 
 import re
-from os import stat_result
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +8,7 @@ from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext
 
 
 def _resolve_path(path: str, ctx: ToolContext) -> Path:
-    """Resolve path and optionally enforce directory restriction."""
+    """Resolve path and enforce directory restriction."""
     resolved = Path(path) if path.startswith("/") else ctx.workspace / path
     resolved = resolved.expanduser().resolve()
 
@@ -27,14 +26,12 @@ def _display_path(path: Path, ctx: ToolContext) -> str:
         return str(path)
 
 
-def _make_snapshot(path: Path, file_stat: stat_result) -> FileSnapshot:
-    """Build a cached snapshot from stat metadata."""
-    return FileSnapshot(path=path, size=file_stat.st_size, mtime_ns=file_stat.st_mtime_ns)
-
-
 def _record_snapshot(ctx: ToolContext, path: Path) -> None:
     """Record the current metadata for a file in the session cache."""
-    ctx.file_snapshots[path] = _make_snapshot(path, path.stat())
+    file_stat = path.stat()
+    ctx.file_snapshots[path] = FileSnapshot(
+        path=path, size=file_stat.st_size, mtime_ns=file_stat.st_mtime_ns
+    )
 
 
 def _require_fresh_snapshot(ctx: ToolContext, path: Path) -> None:
