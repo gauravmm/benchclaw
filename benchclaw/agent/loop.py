@@ -264,12 +264,12 @@ class AgentLoop:
                 await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
             return
 
-        if content:
-            session.append(AssistantEvent(content=content))
-            preview = content[:120] + "..." if len(content) > 120 else content
-            logger.info(f"Response to {addr}: {preview}")
-        else:
-            logger.info(f"Empty response from LLM for {addr}")
+        if not content:
+            logger.info(f"Empty response from LLM for {addr}, not sending")
+            return
+        session.append(AssistantEvent(content=content))
+        preview = content[:120] + "..." if len(content) > 120 else content
+        logger.info(f"Response to {addr}: {preview}")
         await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
 
     @staticmethod
