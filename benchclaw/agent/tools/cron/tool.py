@@ -16,7 +16,7 @@ from benchclaw.agent.tools.cron.typesupport import (
     CronScheduleEvery,
     CronStore,
 )
-from benchclaw.bus import MessageAddress, MessageBus, SystemEvent
+from benchclaw.bus import MessageAddress, MessageBus, SystemMessageEvent
 from benchclaw.utils import _parse_timestamp, now_aware
 
 
@@ -103,7 +103,7 @@ class CronTool(Tool):
                 channel=job.deliver_to.channel if job.deliver_to else "cli",
                 chat_id=job.deliver_to.chat_id if job.deliver_to else "cron",
             )
-            await self._bus.publish_inbound(addr, SystemEvent(content=job.message))
+            await self._bus.publish_inbound(addr, SystemMessageEvent(content=job.message))
             job.state.last_status = "ok"
             job.state.last_error = None
             logger.info(f"Cron: job '{job.id}' completed")

@@ -11,7 +11,7 @@ from benchclaw.agent.tools.cron.typesupport import (
     CronScheduleEvery,
     CronStore,
 )
-from benchclaw.bus import MessageAddress, MessageBus, SystemEvent
+from benchclaw.bus import MessageAddress, MessageBus, SystemMessageEvent
 
 
 def _address() -> MessageAddress:
@@ -119,7 +119,7 @@ async def test_execute_job_records_timestamp_state(tmp_path) -> None:
 
         event = await bus.consume_inbound(address=address)
 
-        assert isinstance(event, SystemEvent)
+        assert isinstance(event, SystemMessageEvent)
         assert event.content == "tick"
         assert job.state.last_status == "ok"
         assert job.state.last_error is None

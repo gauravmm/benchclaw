@@ -20,6 +20,7 @@ from benchclaw.bus import (
     MessageAddress,
     MessageBus,
     OutboundMessage,
+    SystemMessageEvent,
     ToolResultEvent,
     TypingEvent,
 )
@@ -266,8 +267,13 @@ class AgentLoop:
 
         if not content:
             logger.warning(
-                f"LLM returned empty response (no text, no tool calls) for {addr} — "
-                "conversation will stall until user sends another message"
+                f"LLM returned empty response (no text, no tool calls) for {addr} — injecting nudge"
+            )
+            await self.bus.publish_inbound(
+                addr,
+                SystemMessageEvent(
+                    content="You did not provide a text response. Please respond to the user now."
+                ),
             )
             return
         session.append(AssistantEvent(content=content))

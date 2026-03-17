@@ -79,7 +79,7 @@ class ToolResultEvent:
 
 
 @dataclass
-class SystemEvent:
+class SystemMessageEvent:
     """An internal system prompt injected into the agent's conversation without user involvement."""
 
     content: str
@@ -102,7 +102,7 @@ class AttentionEvent:
 
 
 # All events that flow through bus.inbound[addr]
-AddressEvent = InboundMessage | ToolResultEvent | SystemEvent
+AddressEvent = InboundMessage | ToolResultEvent | SystemMessageEvent
 # All events that flow through bus.outbound[channel]
 OutboundEvent = OutboundMessage | TypingEvent | AttentionEvent
 
@@ -112,7 +112,7 @@ class InboundMessageBatch:
     """A drained batch of inbound events, sorted by type."""
 
     tool_results: list[ToolResultEvent] = field(default_factory=list)
-    system_events: list[SystemEvent] = field(default_factory=list)
+    system_events: list[SystemMessageEvent] = field(default_factory=list)
     user_messages: list[InboundMessage] = field(default_factory=list)
 
     def __bool__(self) -> bool:
@@ -193,7 +193,7 @@ class MessageBus:
             match event:
                 case ToolResultEvent():
                     batch.tool_results.append(event)
-                case SystemEvent():
+                case SystemMessageEvent():
                     batch.system_events.append(event)
                 case InboundMessage():
                     batch.user_messages.append(event)

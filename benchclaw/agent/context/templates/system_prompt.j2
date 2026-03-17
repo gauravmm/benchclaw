@@ -15,7 +15,7 @@ If a skill matches the request, read its `SKILL.md` before proceeding.
 {% if skills %}<skills>
 {% for name, skill in skills.items() %}  <skill>
     <name>{{ name | xml_text }}</name>
-    <description>{{ (skill.metadata.get('description') or name) | xml_text }}</description>
+    <description>{{ (skill.metadata.get('description') or name) | xml_text }} You MUST read {{ skill.path }} before using this skill.</description>
     <location>{{ skill.path }}</location>
   </skill>
 {% endfor %}</skills>{% endif %}
