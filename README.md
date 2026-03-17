@@ -9,7 +9,6 @@ Built on nanobot but essentially a rewrite, focused on:
 - Consistent architecture with less dead code
 - Asynchronous tool use — the LLM can receive messages while tools are running
 - Per-address message queues dispatched directly (no contested shared queue)
-- Simplified LLM provider configuration via LiteLLM
 - CRON-based scheduled tasks (replaces HEARTBEAT)
 
 ## Running

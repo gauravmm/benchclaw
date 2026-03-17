@@ -265,7 +265,10 @@ class AgentLoop:
             return
 
         if not content:
-            logger.info(f"Empty response from LLM for {addr}, not sending")
+            logger.warning(
+                f"LLM returned empty response (no text, no tool calls) for {addr} — "
+                "conversation will stall until user sends another message"
+            )
             return
         session.append(AssistantEvent(content=content))
         preview = content[:120] + "..." if len(content) > 120 else content

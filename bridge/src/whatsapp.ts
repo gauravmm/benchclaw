@@ -175,7 +175,7 @@ export class WhatsAppClient {
           nameCache: Object.keys(nameCache).length ? nameCache : undefined,
           mentions: mentions.length ? mentions : undefined,
           content,
-          timestamp: msg.messageTimestamp as number,
+          timestamp: msg.messageTimestamp == null ? 0 : Number(String(msg.messageTimestamp)),
           isGroup,
           mediaMetadata,
           replyTo: context.replyTo,
