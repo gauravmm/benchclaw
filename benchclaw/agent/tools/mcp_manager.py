@@ -40,9 +40,9 @@ class MCPServerConfig(BaseModel):
 class _MCPLiveConnection:
     """Single-use MCP session and discovered tool set."""
 
-    def __init__(self, manager: "MCPManager", config: MCPServerConfig) -> None:
-        self._manager = manager
-        self.config = config
+    def __init__(self, server: "_MCPServerSlot") -> None:
+        self._server = server
+        self.config = server.config
         self._exit_stack: AsyncExitStack | None = None
         self.session: ClientSession | None = None
         self.tools: list[Any] = []
@@ -51,7 +51,7 @@ class _MCPLiveConnection:
         exit_stack = AsyncExitStack()
         await exit_stack.__aenter__()
         try:
-            session = await self._manager._open_session(self.config, exit_stack)
+            session = await self._server._open_session(exit_stack)
             tools_response = await session.list_tools()
         except Exception:
             await exit_stack.__aexit__(None, None, None)
@@ -130,10 +130,30 @@ class _MCPServerSlot:
             self.connection = None
             self._manager._rebuild_tool_index()
 
+    async def _open_session(self, exit_stack: AsyncExitStack) -> ClientSession:
+        """Open a transport + ClientSession and return the initialized session."""
+        if self.config.transport == "stdio":
+            params = StdioServerParameters(
+                command=self.config.command,  # type: ignore[arg-type]
+                args=self.config.args,
+                env=self.config.env or None,
+            )
+            transport = await exit_stack.enter_async_context(stdio_client(params))
+            read, write = transport
+        else:
+            transport = await exit_stack.enter_async_context(
+                streamable_http_client(self.config.url)  # type: ignore[arg-type]
+            )
+            read, write, *_ = transport
+
+        session = await exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
+
     async def _start_task(self) -> None:
         """Start a fresh task-owned MCP connection and wait for it to initialize."""
         startup_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        connection = _MCPLiveConnection(self._manager, self.config)
+        connection = _MCPLiveConnection(self)
         task = asyncio.create_task(
             connection.run_until_cancelled(
                 startup_future,
@@ -239,6 +259,12 @@ class MCPManager:
 
     def __init__(self, server_configs: list[MCPServerConfig]) -> None:
         self._server_configs = server_configs
+        server_names = [cfg.name for cfg in server_configs]
+        duplicate_names = sorted({name for name in server_names if server_names.count(name) > 1})
+        if duplicate_names:
+            duplicates = ", ".join(duplicate_names)
+            raise ValueError(f"Duplicate MCP server names are not allowed: {duplicates}")
+
         self._servers = {cfg.name: _MCPServerSlot(self, cfg) for cfg in server_configs}
         # public_name -> (server_name, original_tool_name_on_server)
         self._tool_map: dict[str, tuple[str, str]] = {}
@@ -260,56 +286,24 @@ class MCPManager:
         self._tool_map.clear()
         self._definitions.clear()
 
-    async def _open_session(
-        self, cfg: MCPServerConfig, exit_stack: AsyncExitStack
-    ) -> ClientSession:
-        """Open a transport + ClientSession and return the initialized session."""
-        if cfg.transport == "stdio":
-            params = StdioServerParameters(
-                command=cfg.command,  # type: ignore[arg-type]
-                args=cfg.args,
-                env=cfg.env or None,
-            )
-            transport = await exit_stack.enter_async_context(stdio_client(params))
-            read, write = transport
-        else:
-            transport = await exit_stack.enter_async_context(
-                streamable_http_client(cfg.url)  # type: ignore[arg-type]
-            )
-            read, write, *_ = transport
-
-        session = await exit_stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session
-
     def _rebuild_tool_index(self) -> None:
         """Rebuild public tool names from the currently known server tool lists."""
         self._tool_map.clear()
         self._definitions.clear()
 
-        server_tools: list[tuple[str, Any]] = []
-        raw_name_counts: dict[str, int] = {}
-
         for server_name, state in self._servers.items():
             for tool in state.tools:
-                server_tools.append((server_name, tool))
-                raw_name_counts[tool.name] = raw_name_counts.get(tool.name, 0) + 1
-
-        for server_name, tool in server_tools:
-            if raw_name_counts[tool.name] > 1:
                 public_name = f"{server_name}__{tool.name}"
-            else:
-                public_name = tool.name
 
-            self._tool_map[public_name] = (server_name, tool.name)
-            self._definitions[public_name] = {
-                "type": "function",
-                "function": {
-                    "name": public_name,
-                    "description": tool.description or "",
-                    "parameters": tool.inputSchema,
-                },
-            }
+                self._tool_map[public_name] = (server_name, tool.name)
+                self._definitions[public_name] = {
+                    "type": "function",
+                    "function": {
+                        "name": public_name,
+                        "description": tool.description or "",
+                        "parameters": tool.inputSchema,
+                    },
+                }
 
     def get_definitions(self) -> list[dict[str, Any]]:
         """Return OpenAI-format tool schemas for all MCP tools."""

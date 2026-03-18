@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from mcp.types import TextContent
 
-from benchclaw.agent.tools.mcp_manager import MCPManager, MCPServerConfig
+from benchclaw.agent.tools.mcp_manager import MCPManager, MCPServerConfig, _MCPServerSlot
 
 
 class _FakeTool:
@@ -72,18 +72,18 @@ async def test_mcp_manager_retries_initial_connect(monkeypatch: pytest.MonkeyPat
 
     attempts = 0
 
-    async def fake_open_session(self, cfg: MCPServerConfig, exit_stack):
+    async def fake_open_session(self, exit_stack):
         nonlocal attempts
         attempts += 1
         if attempts < 3:
             raise RuntimeError("temporary connect failure")
         return _FakeSession(tool_name="echo", text="ok")
 
-    monkeypatch.setattr(MCPManager, "_open_session", fake_open_session)
+    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
 
     async with manager:
-        assert "echo" in manager
-        assert manager.get_definitions()[0]["function"]["name"] == "echo"
+        assert "demo__echo" in manager
+        assert manager.get_definitions()[0]["function"]["name"] == "demo__echo"
 
     assert attempts == 3
 
@@ -103,13 +103,13 @@ async def test_mcp_manager_reconnects_and_retries_tool_call(
         ]
     )
 
-    async def fake_open_session(self, cfg: MCPServerConfig, exit_stack):
+    async def fake_open_session(self, exit_stack):
         return next(sessions)
 
-    monkeypatch.setattr(MCPManager, "_open_session", fake_open_session)
+    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
 
     async with manager:
-        result = await manager.execute("echo", {"value": "payload"})
+        result = await manager.execute("demo__echo", {"value": "payload"})
 
     assert result == "echo:payload"
 
@@ -130,16 +130,16 @@ async def test_mcp_manager_reconnect_cleans_up_in_same_task(
         ]
     )
 
-    async def fake_open_session(self, cfg: MCPServerConfig, exit_stack):
+    async def fake_open_session(self, exit_stack):
         context = _TaskBoundContext()
         contexts.append(context)
         await exit_stack.enter_async_context(context)
         return next(sessions)
 
-    monkeypatch.setattr(MCPManager, "_open_session", fake_open_session)
+    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
 
     async with manager:
-        result = await manager.execute("echo", {"value": "payload"})
+        result = await manager.execute("demo__echo", {"value": "payload"})
 
     assert result == "echo:payload"
     assert len(contexts) == 2
@@ -158,14 +158,24 @@ async def test_mcp_manager_retries_tool_call_at_most_once_after_reconnect(
     second_session = _FakeSession(tool_name="echo", text="second", fail_times=1)
     sessions = iter([first_session, second_session])
 
-    async def fake_open_session(self, cfg: MCPServerConfig, exit_stack):
+    async def fake_open_session(self, exit_stack):
         return next(sessions)
 
-    monkeypatch.setattr(MCPManager, "_open_session", fake_open_session)
+    monkeypatch.setattr(_MCPServerSlot, "_open_session", fake_open_session)
 
     async with manager:
         with pytest.raises(RuntimeError, match="connection dropped"):
-            await manager.execute("echo", {"value": "payload"})
+            await manager.execute("demo__echo", {"value": "payload"})
 
     assert first_session.call_count == 1
     assert second_session.call_count == 1
+
+
+def test_mcp_manager_rejects_duplicate_server_names() -> None:
+    configs = [
+        MCPServerConfig(name="demo", transport="http", url="https://example.test/one"),
+        MCPServerConfig(name="demo", transport="http", url="https://example.test/two"),
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate MCP server names are not allowed: demo"):
+        MCPManager(configs)
