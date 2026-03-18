@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from loguru import logger
 from mcp import ClientSession, StdioServerParameters
@@ -38,15 +37,193 @@ class MCPServerConfig(BaseModel):
         return self
 
 
-@dataclass
-class _MCPServerState:
-    """Mutable connection state for one configured MCP server."""
+class _MCPLiveConnection:
+    """Single-use MCP session and discovered tool set."""
 
-    config: MCPServerConfig
-    exit_stack: AsyncExitStack | None = None
-    session: ClientSession | None = None
-    tools: list[Any] = field(default_factory=list)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    def __init__(self, manager: "MCPManager", config: MCPServerConfig) -> None:
+        self._manager = manager
+        self.config = config
+        self._exit_stack: AsyncExitStack | None = None
+        self.session: ClientSession | None = None
+        self.tools: list[Any] = []
+
+    async def __aenter__(self) -> "_MCPLiveConnection":
+        exit_stack = AsyncExitStack()
+        await exit_stack.__aenter__()
+        try:
+            session = await self._manager._open_session(self.config, exit_stack)
+            tools_response = await session.list_tools()
+        except Exception:
+            await exit_stack.__aexit__(None, None, None)
+            raise
+
+        self._exit_stack = exit_stack
+        self.session = session
+        self.tools = list(tools_response.tools)
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        exit_stack = self._exit_stack
+        self._exit_stack = None
+        self.session = None
+        self.tools.clear()
+        if exit_stack is not None:
+            await exit_stack.__aexit__(*exc_info)
+
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        assert self.session is not None
+        return await self.session.call_tool(tool_name, arguments=arguments)
+
+    async def run_until_cancelled(
+        self,
+        startup_future: asyncio.Future[None],
+        on_ready: Callable[[], None],
+        on_closed: Callable[[], None],
+    ) -> None:
+        """Own one MCP connection for its full lifetime in a single task."""
+        try:
+            async with self:
+                on_ready()
+                if not startup_future.done():
+                    startup_future.set_result(None)
+
+                logger.info(f"MCP: connected to '{self.config.name}', {len(self.tools)} tools")
+
+                await asyncio.Future()
+        except asyncio.CancelledError:
+            if not startup_future.done():
+                startup_future.set_exception(
+                    RuntimeError("MCP server task cancelled during startup")
+                )
+            raise
+        except Exception as e:
+            if not startup_future.done():
+                startup_future.set_exception(e)
+            raise
+        finally:
+            on_closed()
+
+
+class _MCPServerSlot:
+    """Restartable controller for one configured MCP server."""
+
+    def __init__(self, manager: "MCPManager", config: MCPServerConfig) -> None:
+        self._manager = manager
+        self.config = config
+        self.task: asyncio.Task[None] | None = None
+        self.connection: _MCPLiveConnection | None = None
+        self.lock = asyncio.Lock()
+
+    @property
+    def tools(self) -> list[Any]:
+        if self.connection is None:
+            return []
+        return self.connection.tools
+
+    def _set_connection(self, connection: _MCPLiveConnection) -> None:
+        self.connection = connection
+        self._manager._rebuild_tool_index()
+
+    def _clear_connection(self) -> None:
+        if self.task is asyncio.current_task():
+            self.task = None
+            self.connection = None
+            self._manager._rebuild_tool_index()
+
+    async def _start_task(self) -> None:
+        """Start a fresh task-owned MCP connection and wait for it to initialize."""
+        startup_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        connection = _MCPLiveConnection(self._manager, self.config)
+        task = asyncio.create_task(
+            connection.run_until_cancelled(
+                startup_future,
+                on_ready=lambda: self._set_connection(connection),
+                on_closed=self._clear_connection,
+            ),
+            name=f"mcp:{self.config.name}",
+        )
+        self.task = task
+
+        try:
+            await startup_future
+        except Exception:
+            try:
+                await task
+            except Exception:
+                pass
+            raise
+
+    async def _stop_task(self) -> None:
+        """Cancel the current MCP server task and wait for task-local cleanup."""
+        task = self.task
+        if task is None:
+            return
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"MCP: error while stopping '{self.config.name}': {e}")
+
+    async def _connect_with_retries(self, reason: str) -> None:
+        """Connect or reconnect this server with bounded retries and backoff."""
+        delay = self._manager.RETRY_DELAY_S
+        last_error: Exception | None = None
+
+        for attempt in range(1, self._manager.CONNECT_RETRIES + 1):
+            try:
+                await self._stop_task()
+                await self._start_task()
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"MCP: {reason} failed for '{self.config.name}' "
+                    f"(attempt {attempt}/{self._manager.CONNECT_RETRIES}): {e}"
+                )
+                if attempt < self._manager.CONNECT_RETRIES:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+
+        assert last_error is not None
+        raise last_error
+
+    async def _call_connected_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        connection = self.connection
+        assert connection is not None
+        return await connection.call_tool(tool_name, arguments)
+
+    async def start(self, reason: str) -> None:
+        async with self.lock:
+            await self._connect_with_retries(reason)
+
+    async def stop(self) -> None:
+        async with self.lock:
+            await self._stop_task()
+
+    async def execute(self, public_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+        async with self.lock:
+            if self.connection is None:
+                await self._connect_with_retries("session restore")
+
+            try:
+                return await self._call_connected_tool(tool_name, arguments)
+            except Exception as e:
+                logger.warning(
+                    f"MCP: call to '{public_name}' on '{self.config.name}' failed, reconnecting: {e}"
+                )
+                await self._connect_with_retries("reconnect after tool failure")
+
+                refreshed = self._manager._tool_map.get(public_name)
+                if refreshed is None or refreshed[0] != self.config.name:
+                    raise RuntimeError(
+                        f"MCP tool '{public_name}' is no longer available after reconnect"
+                    )
+
+                _, refreshed_tool_name = refreshed
+                return await self._call_connected_tool(refreshed_tool_name, arguments)
 
 
 class MCPManager:
@@ -62,37 +239,26 @@ class MCPManager:
 
     def __init__(self, server_configs: list[MCPServerConfig]) -> None:
         self._server_configs = server_configs
-        self._servers = {cfg.name: _MCPServerState(config=cfg) for cfg in server_configs}
+        self._servers = {cfg.name: _MCPServerSlot(self, cfg) for cfg in server_configs}
         # public_name -> (server_name, original_tool_name_on_server)
         self._tool_map: dict[str, tuple[str, str]] = {}
         # public_name -> tool schema (OpenAI format)
         self._definitions: dict[str, dict[str, Any]] = {}
 
     async def __aenter__(self) -> "MCPManager":
-        for cfg in self._server_configs:
+        for server in self._servers.values():
             try:
-                await self._connect_with_retries(self._servers[cfg.name], reason="initial connect")
+                await server.start(reason="initial connect")
             except Exception as e:
-                logger.warning(f"MCP: failed to connect to '{cfg.name}': {e}")
+                logger.warning(f"MCP: failed to connect to '{server.config.name}': {e}")
 
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
-        for state in self._servers.values():
-            if state.exit_stack is not None:
-                try:
-                    await state.exit_stack.__aexit__(*exc_info)
-                except Exception as e:
-                    # A reconnect in an address_loop task may have replaced the
-                    # exit_stack with one entered in a different task; anyio
-                    # cancel scopes are task-local so the exit fails here.
-                    logger.debug(f"MCP: could not clean up '{state.config.name}' on exit: {e}")
-                state.exit_stack = None
-                state.session = None
+        for server in self._servers.values():
+            await server.stop()
         self._tool_map.clear()
         self._definitions.clear()
-        for state in self._servers.values():
-            state.tools.clear()
 
     async def _open_session(
         self, cfg: MCPServerConfig, exit_stack: AsyncExitStack
@@ -115,58 +281,6 @@ class MCPManager:
         session = await exit_stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         return session
-
-    async def _connect_server(self, state: _MCPServerState) -> None:
-        """Establish a fresh session for one server and refresh its tool list."""
-        new_stack = AsyncExitStack()
-        await new_stack.__aenter__()
-        try:
-            session = await self._open_session(state.config, new_stack)
-            tools_response = await session.list_tools()
-        except Exception:
-            await new_stack.__aexit__(None, None, None)
-            raise
-
-        old_stack = state.exit_stack
-        state.exit_stack = new_stack
-        state.session = session
-        state.tools = list(tools_response.tools)
-        self._rebuild_tool_index()
-
-        if old_stack is not None:
-            try:
-                await old_stack.__aexit__(None, None, None)
-            except Exception as e:
-                # HTTP transports use anyio cancel scopes that are task-local;
-                # reconnects happen in a different task so cleanup may fail.
-                # The old connection is already broken, so this is safe to ignore.
-                logger.debug(
-                    f"MCP: could not clean up old connection for '{state.config.name}': {e}"
-                )
-
-        logger.info(f"MCP: connected to '{state.config.name}', {len(state.tools)} tools")
-
-    async def _connect_with_retries(self, state: _MCPServerState, reason: str) -> None:
-        """Connect or reconnect one server with bounded retries and backoff."""
-        delay = self.RETRY_DELAY_S
-        last_error: Exception | None = None
-
-        for attempt in range(1, self.CONNECT_RETRIES + 1):
-            try:
-                await self._connect_server(state)
-                return
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"MCP: {reason} failed for '{state.config.name}' "
-                    f"(attempt {attempt}/{self.CONNECT_RETRIES}): {e}"
-                )
-                if attempt < self.CONNECT_RETRIES:
-                    await asyncio.sleep(delay)
-                    delay *= 2
-
-        assert last_error is not None
-        raise last_error
 
     def _rebuild_tool_index(self) -> None:
         """Rebuild public tool names from the currently known server tool lists."""
@@ -204,30 +318,9 @@ class MCPManager:
     async def execute(self, public_name: str, arguments: dict[str, Any]) -> str:
         """Call an MCP tool and return its result as a string."""
         server_name, orig_name = self._tool_map[public_name]
-        state = self._servers[server_name]
+        server = self._servers[server_name]
 
-        async with state.lock:
-            if state.session is None:
-                await self._connect_with_retries(state, reason="session restore")
-
-            assert state.session is not None
-            try:
-                result = await state.session.call_tool(orig_name, arguments=arguments)
-            except Exception as e:
-                logger.warning(
-                    f"MCP: call to '{public_name}' on '{server_name}' failed, reconnecting: {e}"
-                )
-                await self._connect_with_retries(state, reason="reconnect after tool failure")
-
-                refreshed = self._tool_map.get(public_name)
-                if refreshed is None or refreshed[0] != server_name:
-                    raise RuntimeError(
-                        f"MCP tool '{public_name}' is no longer available after reconnect"
-                    )
-
-                _, refreshed_orig_name = refreshed
-                assert state.session is not None
-                result = await state.session.call_tool(refreshed_orig_name, arguments=arguments)
+        result = await server.execute(public_name, orig_name, arguments)
 
         parts = [item.text for item in result.content if isinstance(item, TextContent)]
         return "\n".join(parts) if parts else "(no output)"
