@@ -236,7 +236,7 @@ class AgentLoop:
         addr: MessageAddress,
     ) -> None:
         self._maybe_compact_session(session, addr, response.usage.get("total_tokens", 0))
-        content = response.content or ""
+        content = (response.content or "").rstrip("\n")
         if response.has_tool_calls:
             tool_call_dicts = [
                 {
