@@ -15,7 +15,7 @@ from benchclaw.agent.tools.media import (
     SearchImagesTool,
     SendImageTool,
 )
-from benchclaw.agent.tools.memory import LogTool, MemoryTool
+from benchclaw.agent.tools.memory import LogTool
 from benchclaw.agent.tools.message import MessageTool
 from benchclaw.agent.tools.shell import ExecTool, ExecToolConfig
 from benchclaw.agent.tools.web import WebFetchTool, WebSearchConfig, WebSearchTool
@@ -31,7 +31,6 @@ BUILTIN_TOOLS: tuple[tuple[str, type[Tool]], ...] = (
     ("annotate_media", AnnotateMediaTool),
     ("send_image", SendImageTool),
     ("search_images", SearchImagesTool),
-    ("memory", MemoryTool),
     ("log", LogTool),
     ("message", MessageTool),
     ("exec", ExecTool),
