@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack
-from typing import Any, Literal
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Literal
 
 from loguru import logger
 from mcp import ClientSession, StdioServerParameters
@@ -38,14 +38,104 @@ class MCPServerConfig(BaseModel):
 
 
 class _MCPLiveConnection:
-    """Runtime state for one live MCP session."""
+    """Runtime state for one live MCP session.
 
-    def __init__(self, config: MCPServerConfig, session: ClientSession, tools: list[Any]) -> None:
+    This object is intentionally single-use: each instance may be started at
+    most once. `_MCPServerSlot` creates a fresh `_MCPLiveConnection` for every
+    reconnect attempt instead of trying to restart an old one in place.
+    """
+
+    def __init__(self, config: MCPServerConfig) -> None:
         self.config = config
-        self.session = session
-        self.tools = tools
+        self.session: ClientSession | None = None
+        self.tools: list[Any] = []
+        self._task: asyncio.Task[None] | None = None
+
+    @asynccontextmanager
+    async def _create_transport(self) -> AsyncIterator[tuple[Any, Any]]:
+        """Yield a normalized `(read, write)` transport pair for this connection."""
+        if self.config.transport == "stdio":
+            params = StdioServerParameters(
+                command=self.config.command,  # type: ignore[arg-type]
+                args=self.config.args,
+                env=self.config.env or None,
+            )
+            async with stdio_client(params) as transport:
+                read, write = transport
+                yield read, write
+        elif self.config.transport == "http":
+            assert self.config.url is not None
+            async with streamable_http_client(self.config.url) as transport:
+                read, write, *_ = transport
+                yield read, write
+        else:
+            raise ValueError(f"unsupported MCP transport: {self.config.transport}")
+
+    async def __aenter__(self) -> "_MCPLiveConnection":
+        """Start the background task that owns this live connection.
+
+        Instances are single-use by design. Reconnects should allocate a new
+        `_MCPLiveConnection` rather than entering the same instance twice.
+        """
+        if self._task:
+            raise RuntimeError(f"MCP connection '{self.config.name}' can only be started once")
+
+        startup_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(self._run(startup_future), name=f"mcp:{self.config.name}")
+        self._task = task
+
+        try:
+            await startup_future
+        except Exception:
+            try:
+                await task
+            except Exception:
+                pass
+            raise
+
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        """Stop the task that owns this live connection."""
+        try:
+            if self._task:
+                if not self._task.done():
+                    self._task.cancel()
+                await self._task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"MCP: error while stopping '{self.config.name}': {e}")
+
+    async def _run(self, startup_future: asyncio.Future[None]) -> None:
+        """Own this connection for its full lifetime in a single task."""
+        try:
+            async with self._create_transport() as (read, write):
+                async with ClientSession(read, write) as session:
+                    self.session = session
+                    await session.initialize()
+                    self.tools = list((await session.list_tools()).tools)
+
+                    # Signal successful startup to the `__aenter__()` method, if it's still waiting.
+                    if not startup_future.done():
+                        startup_future.set_result(None)
+
+                    logger.info(f"MCP: connected to '{self.config.name}', {len(self.tools)} tools")
+
+                    await asyncio.Future()
+        except Exception as e:
+            # Signal startup failure to the `__aenter__()` method, if it's still waiting.
+            if not startup_future.done():
+                startup_future.set_exception(e)
+            raise
+        finally:
+            self.tools = []
+            self.session = None
+            if self._task is asyncio.current_task():
+                self._task = None
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+        assert self.session is not None, "MCP session is not connected"
         return await self.session.call_tool(tool_name, arguments=arguments)
 
 
@@ -54,7 +144,6 @@ class _MCPServerSlot:
 
     def __init__(self, config: MCPServerConfig) -> None:
         self.config = config
-        self.task: asyncio.Task[None] | None = None
         self.connection: _MCPLiveConnection | None = None
         self.lock = asyncio.Lock()
 
@@ -64,94 +153,37 @@ class _MCPServerSlot:
     def has_tool(self, tool_name: str) -> bool:
         return any(tool.name == tool_name for tool in self.get_tools())
 
-    async def _open_session(self, exit_stack: AsyncExitStack) -> ClientSession:
-        """Open a transport + ClientSession and return the initialized session."""
-        if self.config.transport == "stdio":
-            params = StdioServerParameters(
-                command=self.config.command,  # type: ignore[arg-type]
-                args=self.config.args,
-                env=self.config.env or None,
-            )
-            transport = await exit_stack.enter_async_context(stdio_client(params))
-            read, write = transport
-        else:
-            assert self.config.url is not None
-            transport = await exit_stack.enter_async_context(
-                streamable_http_client(self.config.url)
-            )
-            read, write, *_ = transport
-
-        session = await exit_stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session
-
-    async def _run_connection_task(self, startup_future: asyncio.Future[None]) -> None:
-        """Own one MCP connection for its full lifetime in a single task."""
-        try:
-            async with AsyncExitStack() as exit_stack:
-                session = await self._open_session(exit_stack)
-                tools_response = await session.list_tools()
-                self.connection = _MCPLiveConnection(
-                    self.config,
-                    session=session,
-                    tools=list(tools_response.tools),
-                )
-                if not startup_future.done():
-                    startup_future.set_result(None)
-
-                logger.info(
-                    f"MCP: connected to '{self.config.name}', {len(self.connection.tools)} tools"
-                )
-
-                await asyncio.Future()
-        except Exception as e:
-            if not startup_future.done():
-                startup_future.set_exception(e)
-            raise
-        finally:
-            if self.task is asyncio.current_task():
-                self.task = None
-                self.connection = None
-
-    async def _stop_task(self) -> None:
-        """Cancel the current MCP server task and wait for task-local cleanup."""
-        try:
-            if self.task and self.task.cancel():
-                await self.task
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"MCP: error while stopping '{self.config.name}': {e}")
+    async def _drop_connection(self) -> None:
+        """Stop and clear the current live connection, if any."""
+        connection, self.connection = self.connection, None
+        if connection is not None:
+            await connection.__aexit__(None, None, None)
 
     async def _connect_with_retries(
         self, reason: str, attempts: int = 3, delay: float = 2.0
     ) -> None:
         """Connect or reconnect this server with bounded retries and backoff."""
 
-        for attempt in range(attempts):
+        for attempt in range(1, attempts + 1):
             try:
-                await self._stop_task()
-                startup_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-                self.task = asyncio.create_task(
-                    self._run_connection_task(startup_future), name=f"mcp:{self.config.name}"
-                )
+                await self._drop_connection()
+                # `_MCPLiveConnection` instances are single-use, so each retry gets
+                # a fresh object with a fresh owner task.
+                connection = _MCPLiveConnection(self.config)
                 try:
-                    # Wait for the connection task to signal successful startup or failure:
-                    await startup_future
+                    await connection.__aenter__()
                 except Exception:
-                    try:
-                        await self.task
-                    except Exception:
-                        pass
+                    await connection.__aexit__(None, None, None)
                     raise
+                self.connection = connection
                 return
 
             except Exception as e:
                 logger.warning(
                     f"MCP: {reason} failed for '{self.config.name}' (attempt {attempt}/{attempts}): {e}"
                 )
-                if attempt < attempts - 1:
-                    await asyncio.sleep(delay * 2**attempt)
+                if attempt < attempts:
+                    await asyncio.sleep(delay * 2 ** (attempt - 1))
                 else:
                     raise RuntimeError(
                         f"MCP: failed to connect to '{self.config.name}' after {attempts} attempts"
@@ -163,7 +195,7 @@ class _MCPServerSlot:
 
     async def stop(self) -> None:
         async with self.lock:
-            await self._stop_task()
+            await self._drop_connection()
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         async with self.lock:
@@ -171,12 +203,15 @@ class _MCPServerSlot:
                 await self._connect_with_retries("session restore")
 
             try:
-                assert self.connection is not None, (
+                connection = self.connection
+                assert connection is not None, (
                     "connection not established after reconnect attempt 1, cannot call tool"
                 )
-                return await self.connection.call_tool(tool_name, arguments)
+                return await connection.call_tool(tool_name, arguments)
             except Exception as e:
                 logger.warning(f"MCP: call to '{tool_name}' on '{self.config.name}' failed: {e}")
+                await self._drop_connection()
+                raise
 
 
 class MCPManager:
