@@ -52,8 +52,7 @@ class _MCPLiveConnection:
 class _MCPServerSlot:
     """Restartable controller for one configured MCP server."""
 
-    def __init__(self, manager: "MCPManager", config: MCPServerConfig) -> None:
-        self._manager = manager
+    def __init__(self, config: MCPServerConfig) -> None:
         self.config = config
         self.task: asyncio.Task[None] | None = None
         self.connection: _MCPLiveConnection | None = None
@@ -124,12 +123,12 @@ class _MCPServerSlot:
         except Exception as e:
             logger.debug(f"MCP: error while stopping '{self.config.name}': {e}")
 
-    async def _connect_with_retries(self, reason: str) -> None:
+    async def _connect_with_retries(
+        self, reason: str, attempts: int = 3, delay: float = 2.0
+    ) -> None:
         """Connect or reconnect this server with bounded retries and backoff."""
-        delay = self._manager.RETRY_DELAY_S
-        last_error: Exception | None = None
 
-        for attempt in range(1, self._manager.CONNECT_RETRIES + 1):
+        for attempt in range(attempts):
             try:
                 await self._stop_task()
                 startup_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -137,6 +136,7 @@ class _MCPServerSlot:
                     self._run_connection_task(startup_future), name=f"mcp:{self.config.name}"
                 )
                 try:
+                    # Wait for the connection task to signal successful startup or failure:
                     await startup_future
                 except Exception:
                     try:
@@ -145,18 +145,17 @@ class _MCPServerSlot:
                         pass
                     raise
                 return
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    f"MCP: {reason} failed for '{self.config.name}' "
-                    f"(attempt {attempt}/{self._manager.CONNECT_RETRIES}): {e}"
-                )
-                if attempt < self._manager.CONNECT_RETRIES:
-                    await asyncio.sleep(delay)
-                    delay *= 2
 
-        assert last_error is not None
-        raise last_error
+            except Exception as e:
+                logger.warning(
+                    f"MCP: {reason} failed for '{self.config.name}' (attempt {attempt}/{attempts}): {e}"
+                )
+                if attempt < attempts - 1:
+                    await asyncio.sleep(delay * 2**attempt)
+                else:
+                    raise RuntimeError(
+                        f"MCP: failed to connect to '{self.config.name}' after {attempts} attempts"
+                    ) from e
 
     async def start(self, reason: str) -> None:
         async with self.lock:
@@ -171,27 +170,13 @@ class _MCPServerSlot:
             if self.connection is None:
                 await self._connect_with_retries("session restore")
 
-            if not self.has_tool(tool_name):
-                raise RuntimeError(
-                    f"MCP tool '{tool_name}' is not available on '{self.config.name}'"
-                )
-
             try:
-                assert self.connection is not None
+                assert self.connection is not None, (
+                    "connection not established after reconnect attempt 1, cannot call tool"
+                )
                 return await self.connection.call_tool(tool_name, arguments)
             except Exception as e:
-                logger.warning(
-                    f"MCP: call to '{tool_name}' on '{self.config.name}' failed, reconnecting: {e}"
-                )
-                await self._connect_with_retries("reconnect after tool failure")
-
-                if not self.has_tool(tool_name):
-                    raise RuntimeError(
-                        f"MCP tool '{tool_name}' is no longer available after reconnect"
-                    )
-
-                assert self.connection is not None
-                return await self.connection.call_tool(tool_name, arguments)
+                logger.warning(f"MCP: call to '{tool_name}' on '{self.config.name}' failed: {e}")
 
 
 class MCPManager:
@@ -202,9 +187,6 @@ class MCPManager:
     and discover their tools. On exit, all connections are cleanly closed.
     """
 
-    CONNECT_RETRIES = 3
-    RETRY_DELAY_S = 1.0
-
     def __init__(self, server_configs: list[MCPServerConfig]) -> None:
         server_names = [cfg.name for cfg in server_configs]
         duplicate_names = sorted({name for name in server_names if server_names.count(name) > 1})
@@ -212,7 +194,7 @@ class MCPManager:
             duplicates = ", ".join(duplicate_names)
             raise ValueError(f"Duplicate MCP server names are not allowed: {duplicates}")
 
-        self._servers = {cfg.name: _MCPServerSlot(self, cfg) for cfg in server_configs}
+        self._servers = {cfg.name: _MCPServerSlot(cfg) for cfg in server_configs}
 
     async def __aenter__(self) -> "MCPManager":
         servers = list(self._servers.values())
