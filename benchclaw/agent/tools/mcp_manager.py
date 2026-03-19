@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from loguru import logger
 from mcp import ClientSession, StdioServerParameters
@@ -38,56 +38,124 @@ class MCPServerConfig(BaseModel):
 
 
 class _MCPLiveConnection:
-    """Single-use MCP session and discovered tool set."""
+    """Runtime state for one live MCP session."""
 
-    def __init__(self, server: "_MCPServerSlot") -> None:
-        self._server = server
-        self.config = server.config
-        self._exit_stack: AsyncExitStack | None = None
-        self.session: ClientSession | None = None
-        self.tools: list[Any] = []
-
-    async def __aenter__(self) -> "_MCPLiveConnection":
-        exit_stack = AsyncExitStack()
-        await exit_stack.__aenter__()
-        try:
-            session = await self._server._open_session(exit_stack)
-            tools_response = await session.list_tools()
-        except Exception:
-            await exit_stack.__aexit__(None, None, None)
-            raise
-
-        self._exit_stack = exit_stack
+    def __init__(self, config: MCPServerConfig, session: ClientSession, tools: list[Any]) -> None:
+        self.config = config
         self.session = session
-        self.tools = list(tools_response.tools)
-        return self
-
-    async def __aexit__(self, *exc_info: Any) -> None:
-        exit_stack = self._exit_stack
-        self._exit_stack = None
-        self.session = None
-        self.tools.clear()
-        if exit_stack is not None:
-            await exit_stack.__aexit__(*exc_info)
+        self.tools = tools
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
-        assert self.session is not None
         return await self.session.call_tool(tool_name, arguments=arguments)
 
-    async def run_until_cancelled(
-        self,
-        startup_future: asyncio.Future[None],
-        on_ready: Callable[[], None],
-        on_closed: Callable[[], None],
-    ) -> None:
+
+class _MCPServerSlot:
+    """Restartable controller for one configured MCP server."""
+
+    def __init__(self, manager: "MCPManager", config: MCPServerConfig) -> None:
+        self._manager = manager
+        self.config = config
+        self.task: asyncio.Task[None] | None = None
+        self.connection: _MCPLiveConnection | None = None
+        self.lock = asyncio.Lock()
+        self._tool_map: dict[str, str] = {}
+        self._definitions: dict[str, dict[str, Any]] = {}
+
+    @property
+    def tools(self) -> list[Any]:
+        if self.connection is None:
+            return []
+        return self.connection.tools
+
+    def _set_connection(self, connection: _MCPLiveConnection) -> None:
+        self.connection = connection
+        self._tool_map.clear()
+        self._definitions.clear()
+
+        for tool in connection.tools:
+            public_name = f"{self.config.name}__{tool.name}"
+            self._tool_map[public_name] = tool.name
+            self._definitions[public_name] = {
+                "type": "function",
+                "function": {
+                    "name": public_name,
+                    "description": tool.description or "",
+                    "parameters": tool.inputSchema,
+                },
+            }
+
+    def _clear_connection(self) -> None:
+        if self.task is asyncio.current_task():
+            self.task = None
+            self.connection = None
+            self._tool_map.clear()
+            self._definitions.clear()
+
+    def get_definitions(self) -> list[dict[str, Any]]:
+        return list(self._definitions.values())
+
+    def contains_tool(self, public_name: str) -> bool:
+        return public_name in self._tool_map
+
+    def get_tool_name(self, public_name: str) -> str | None:
+        return self._tool_map.get(public_name)
+
+    async def _open_session(self, exit_stack: AsyncExitStack) -> ClientSession:
+        """Open a transport + ClientSession and return the initialized session."""
+        if self.config.transport == "stdio":
+            params = StdioServerParameters(
+                command=self.config.command,  # type: ignore[arg-type]
+                args=self.config.args,
+                env=self.config.env or None,
+            )
+            transport = await exit_stack.enter_async_context(stdio_client(params))
+            read, write = transport
+        else:
+            assert self.config.url is not None
+            transport = await exit_stack.enter_async_context(
+                streamable_http_client(self.config.url)
+            )
+            read, write, *_ = transport
+
+        session = await exit_stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
+
+    async def _start_task(self) -> None:
+        """Start a fresh task-owned MCP connection and wait for it to initialize."""
+        startup_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(
+            self._run_connection_task(startup_future), name=f"mcp:{self.config.name}"
+        )
+        self.task = task
+
+        try:
+            await startup_future
+        except Exception:
+            try:
+                await task
+            except Exception:
+                pass
+            raise
+
+    async def _run_connection_task(self, startup_future: asyncio.Future[None]) -> None:
         """Own one MCP connection for its full lifetime in a single task."""
         try:
-            async with self:
-                on_ready()
+            async with AsyncExitStack() as exit_stack:
+                session = await self._open_session(exit_stack)
+                tools_response = await session.list_tools()
+                connection = _MCPLiveConnection(
+                    self.config,
+                    session=session,
+                    tools=list(tools_response.tools),
+                )
+                self._set_connection(connection)
                 if not startup_future.done():
                     startup_future.set_result(None)
 
-                logger.info(f"MCP: connected to '{self.config.name}', {len(self.tools)} tools")
+                logger.info(
+                    f"MCP: connected to '{self.config.name}', {len(connection.tools)} tools"
+                )
 
                 await asyncio.Future()
         except asyncio.CancelledError:
@@ -101,87 +169,13 @@ class _MCPLiveConnection:
                 startup_future.set_exception(e)
             raise
         finally:
-            on_closed()
-
-
-class _MCPServerSlot:
-    """Restartable controller for one configured MCP server."""
-
-    def __init__(self, manager: "MCPManager", config: MCPServerConfig) -> None:
-        self._manager = manager
-        self.config = config
-        self.task: asyncio.Task[None] | None = None
-        self.connection: _MCPLiveConnection | None = None
-        self.lock = asyncio.Lock()
-
-    @property
-    def tools(self) -> list[Any]:
-        if self.connection is None:
-            return []
-        return self.connection.tools
-
-    def _set_connection(self, connection: _MCPLiveConnection) -> None:
-        self.connection = connection
-        self._manager._rebuild_tool_index()
-
-    def _clear_connection(self) -> None:
-        if self.task is asyncio.current_task():
-            self.task = None
-            self.connection = None
-            self._manager._rebuild_tool_index()
-
-    async def _open_session(self, exit_stack: AsyncExitStack) -> ClientSession:
-        """Open a transport + ClientSession and return the initialized session."""
-        if self.config.transport == "stdio":
-            params = StdioServerParameters(
-                command=self.config.command,  # type: ignore[arg-type]
-                args=self.config.args,
-                env=self.config.env or None,
-            )
-            transport = await exit_stack.enter_async_context(stdio_client(params))
-            read, write = transport
-        else:
-            transport = await exit_stack.enter_async_context(
-                streamable_http_client(self.config.url)  # type: ignore[arg-type]
-            )
-            read, write, *_ = transport
-
-        session = await exit_stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        return session
-
-    async def _start_task(self) -> None:
-        """Start a fresh task-owned MCP connection and wait for it to initialize."""
-        startup_future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        connection = _MCPLiveConnection(self)
-        task = asyncio.create_task(
-            connection.run_until_cancelled(
-                startup_future,
-                on_ready=lambda: self._set_connection(connection),
-                on_closed=self._clear_connection,
-            ),
-            name=f"mcp:{self.config.name}",
-        )
-        self.task = task
-
-        try:
-            await startup_future
-        except Exception:
-            try:
-                await task
-            except Exception:
-                pass
-            raise
+            self._clear_connection()
 
     async def _stop_task(self) -> None:
         """Cancel the current MCP server task and wait for task-local cleanup."""
-        task = self.task
-        if task is None:
-            return
-
-        task.cancel()
         try:
-            await task
+            if self.task and self.task.cancel():
+                await self.task
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -223,26 +217,31 @@ class _MCPServerSlot:
         async with self.lock:
             await self._stop_task()
 
-    async def execute(self, public_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+    async def execute(self, public_name: str, arguments: dict[str, Any]) -> Any:
         async with self.lock:
             if self.connection is None:
                 await self._connect_with_retries("session restore")
 
+            resolved_tool_name = self.get_tool_name(public_name)
+            if resolved_tool_name is None:
+                raise RuntimeError(
+                    f"MCP tool '{public_name}' is not available on '{self.config.name}'"
+                )
+
             try:
-                return await self._call_connected_tool(tool_name, arguments)
+                return await self._call_connected_tool(resolved_tool_name, arguments)
             except Exception as e:
                 logger.warning(
                     f"MCP: call to '{public_name}' on '{self.config.name}' failed, reconnecting: {e}"
                 )
                 await self._connect_with_retries("reconnect after tool failure")
 
-                refreshed = self._manager._tool_map.get(public_name)
-                if refreshed is None or refreshed[0] != self.config.name:
+                refreshed_tool_name = self.get_tool_name(public_name)
+                if refreshed_tool_name is None:
                     raise RuntimeError(
                         f"MCP tool '{public_name}' is no longer available after reconnect"
                     )
 
-                _, refreshed_tool_name = refreshed
                 return await self._call_connected_tool(refreshed_tool_name, arguments)
 
 
@@ -266,10 +265,6 @@ class MCPManager:
             raise ValueError(f"Duplicate MCP server names are not allowed: {duplicates}")
 
         self._servers = {cfg.name: _MCPServerSlot(self, cfg) for cfg in server_configs}
-        # public_name -> (server_name, original_tool_name_on_server)
-        self._tool_map: dict[str, tuple[str, str]] = {}
-        # public_name -> tool schema (OpenAI format)
-        self._definitions: dict[str, dict[str, Any]] = {}
 
     async def __aenter__(self) -> "MCPManager":
         for server in self._servers.values():
@@ -283,41 +278,30 @@ class MCPManager:
     async def __aexit__(self, *exc_info: Any) -> None:
         for server in self._servers.values():
             await server.stop()
-        self._tool_map.clear()
-        self._definitions.clear()
-
-    def _rebuild_tool_index(self) -> None:
-        """Rebuild public tool names from the currently known server tool lists."""
-        self._tool_map.clear()
-        self._definitions.clear()
-
-        for server_name, state in self._servers.items():
-            for tool in state.tools:
-                public_name = f"{server_name}__{tool.name}"
-
-                self._tool_map[public_name] = (server_name, tool.name)
-                self._definitions[public_name] = {
-                    "type": "function",
-                    "function": {
-                        "name": public_name,
-                        "description": tool.description or "",
-                        "parameters": tool.inputSchema,
-                    },
-                }
 
     def get_definitions(self) -> list[dict[str, Any]]:
         """Return OpenAI-format tool schemas for all MCP tools."""
-        return list(self._definitions.values())
+        definitions: list[dict[str, Any]] = []
+        for server in self._servers.values():
+            definitions.extend(server.get_definitions())
+        return definitions
+
+    def _find_server_for_tool(self, public_name: str) -> _MCPServerSlot | None:
+        for server in self._servers.values():
+            if server.contains_tool(public_name):
+                return server
+        return None
 
     async def execute(self, public_name: str, arguments: dict[str, Any]) -> str:
         """Call an MCP tool and return its result as a string."""
-        server_name, orig_name = self._tool_map[public_name]
-        server = self._servers[server_name]
+        server = self._find_server_for_tool(public_name)
+        if server is None:
+            raise KeyError(public_name)
 
-        result = await server.execute(public_name, orig_name, arguments)
+        result = await server.execute(public_name, arguments)
 
         parts = [item.text for item in result.content if isinstance(item, TextContent)]
         return "\n".join(parts) if parts else "(no output)"
 
     def __contains__(self, name: str) -> bool:
-        return name in self._tool_map
+        return self._find_server_for_tool(name) is not None
