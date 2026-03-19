@@ -31,6 +31,7 @@ class LogStore:
     async def __aenter__(self) -> "LogStore":
         self._date = now_aware().date()
         self._buffer = JsonlIO.read(self.log_file)
+        self._rollover(self._date)
         return self
 
     async def __aexit__(self, *_: Any) -> None:
@@ -67,15 +68,27 @@ class LogStore:
         JsonlIO.append(self.log_file, [entry])
         self._buffer.append(entry)
 
-    @staticmethod
-    def _fmt(entry: dict) -> str:
-        return f"[{entry.get('ts', '')}] {entry.get('content', '')}"
-
     def read_recent(self, n: int = 20) -> str:
-        """Return the last n log entries from the in-memory buffer."""
+        """Return the last n log entries from the in-memory buffer, grouped by date."""
         assert self._date is not None, "LogStore must be used as a context manager"
         recent = self._buffer[-n:]
-        return "\n".join(self._fmt(e) for e in recent) if recent else "(log is empty)"
+        if not recent:
+            return "(log is empty)"
+        lines = []
+        current_date = None
+        for e in recent:
+            ts = _parse_timestamp(e.get("ts", ""))
+            d = ts.date()
+            if d != current_date:
+                lines.append(str(d))
+                current_date = d
+            lines.append(f"  [{ts.strftime('%H:%M')}] {e.get('content', '')}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _fmt(entry: dict) -> str:
+        ts = _parse_timestamp(entry.get("ts", ""))
+        return f"[{ts.strftime('%Y-%m-%d %H:%M')}] {entry.get('content', '')}"
 
     def search(self, query: str) -> str:
         """Regex search across the in-memory log buffer."""
