@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Literal
 
@@ -45,11 +46,17 @@ class _MCPLiveConnection:
     reconnect attempt instead of trying to restart an old one in place.
     """
 
-    def __init__(self, config: MCPServerConfig) -> None:
+    def __init__(
+        self,
+        config: MCPServerConfig,
+        *,
+        on_exit: Callable[["_MCPLiveConnection"], None] | None = None,
+    ) -> None:
         self.config = config
         self.session: ClientSession | None = None
         self.tools: list[Any] = []
         self._task: asyncio.Task[None] | None = None
+        self._on_exit = on_exit
 
     @asynccontextmanager
     async def _create_transport(self) -> AsyncIterator[tuple[Any, Any]]:
@@ -133,6 +140,13 @@ class _MCPLiveConnection:
             self.session = None
             if self._task is asyncio.current_task():
                 self._task = None
+            if self._on_exit is not None:
+                try:
+                    self._on_exit(self)
+                except Exception as e:
+                    logger.debug(
+                        f"MCP: error while handling exit for '{self.config.name}': {e}"
+                    )
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         assert self.session is not None, "MCP session is not connected"
@@ -153,6 +167,17 @@ class _MCPServerSlot:
     def has_tool(self, tool_name: str) -> bool:
         return any(tool.name == tool_name for tool in self.get_tools())
 
+    def _handle_connection_exit(self, connection: _MCPLiveConnection) -> None:
+        asyncio.create_task(
+            self._clear_connection_if_current(connection),
+            name=f"mcp-clear:{self.config.name}",
+        )
+
+    async def _clear_connection_if_current(self, connection: _MCPLiveConnection) -> None:
+        async with self.lock:
+            if self.connection is connection:
+                self.connection = None
+
     async def _drop_connection(self) -> None:
         """Stop and clear the current live connection, if any."""
         connection, self.connection = self.connection, None
@@ -169,7 +194,7 @@ class _MCPServerSlot:
                 await self._drop_connection()
                 # `_MCPLiveConnection` instances are single-use, so each retry gets
                 # a fresh object with a fresh owner task.
-                connection = _MCPLiveConnection(self.config)
+                connection = _MCPLiveConnection(self.config, on_exit=self._handle_connection_exit)
                 try:
                     await connection.__aenter__()
                 except Exception:
