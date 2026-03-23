@@ -144,9 +144,7 @@ class _MCPLiveConnection:
                 try:
                     self._on_exit(self)
                 except Exception as e:
-                    logger.debug(
-                        f"MCP: error while handling exit for '{self.config.name}': {e}"
-                    )
+                    logger.debug(f"MCP: error while handling exit for '{self.config.name}': {e}")
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         assert self.session is not None, "MCP session is not connected"
@@ -159,10 +157,11 @@ class _MCPServerSlot:
     def __init__(self, config: MCPServerConfig) -> None:
         self.config = config
         self.connection: _MCPLiveConnection | None = None
+        self._known_tools: list[Any] = []
         self.lock = asyncio.Lock()
 
     def get_tools(self) -> list[Any]:
-        return self.connection.tools if self.connection else []
+        return self.connection.tools if self.connection else self._known_tools
 
     def has_tool(self, tool_name: str) -> bool:
         return any(tool.name == tool_name for tool in self.get_tools())
@@ -201,6 +200,7 @@ class _MCPServerSlot:
                     await connection.__aexit__(None, None, None)
                     raise
                 self.connection = connection
+                self._known_tools = list(connection.tools)
                 return
 
             except Exception as e:

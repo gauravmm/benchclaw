@@ -26,8 +26,8 @@ from benchclaw.utils import DurationField
 class ChannelConfig(BaseModel):
     allow_from: list[str] | None = None
     attention_policy: AttentionPolicy = AttentionPolicy.SUMMON_GROUP
-    attention_lookback: DurationField = timedelta(minutes=5)
-    attention_gap: DurationField = timedelta(minutes=2)
+    attention_lookback: DurationField = timedelta(minutes=10)
+    attention_gap: DurationField = timedelta(minutes=5)
 
     def make_channel(self, bus: "MessageBus", media_repo: Any = None) -> "BaseChannel":
         raise NotImplementedError(f"{type(self).__name__} must implement make_channel()")

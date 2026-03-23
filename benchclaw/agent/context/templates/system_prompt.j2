@@ -26,6 +26,7 @@ If a skill matches the request, read its `SKILL.md` before proceeding.
 
 Tool call format: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
 If you use a tool, include the tag anywhere in your response. Add a brief user-facing sentence first when useful.
+MCP tool names are prefixed with their server name, for example `mcp__hive__updateActionsStatus`. Use the exact tool name from the tool list instead of guessing an unprefixed variant.
 
 {%- macro tool_details(tool) -%}
 {%- set props = tool.parameters.get('properties', {}) -%}
