@@ -100,7 +100,7 @@ class ToolCallTracker:
 
         session.append(
             SystemEvent(
-                content=f"Background tool '{event.tool_name}' completed. Review the result and update the user if useful."
+                content=f"Background tool '{event.tool_name}' completed. Summarize the result for the user or take any necessary follow-up actions to achieve the goal."
             )
         )
         return True
