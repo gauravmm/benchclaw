@@ -12,6 +12,7 @@ from benchclaw.agent.tools.builtins import TOOL_CONFIG_TYPES
 from benchclaw.agent.tools.mcp_manager import MCPServerConfig
 from benchclaw.agent.tools.shell import ExecToolConfig
 from benchclaw.agent.tools.web import WebSearchConfig
+from benchclaw.channels.claude_code import ClaudeCodeConfig
 from benchclaw.channels.smtp_email import EmailConfig
 from benchclaw.channels.telegrm import TelegramConfig
 from benchclaw.channels.whatsapp.channel import WhatsAppConfig
@@ -61,6 +62,7 @@ class ToolsConfig(BaseModel):
 class ChannelConfigs(BaseModel):
     """Optional built-in channel configuration."""
 
+    claude_code: ClaudeCodeConfig | None = None
     email: EmailConfig | None = None
     telegram: TelegramConfig | None = None
     whatsapp: WhatsAppConfig | None = None
