@@ -214,17 +214,13 @@ class AgentLoop:
     ) -> None:
         if total_tokens <= self.config.context_window * _COMPACT_THRESHOLD:
             return
-        logger.info(
-            "Session compaction triggered for %s: token usage %s/%s",
-            addr,
-            total_tokens,
-            self.config.context_window,
+        logger.warning(
+            f"Compacting session {addr}: {total_tokens}/{self.config.context_window} tokens"
         )
         session.compact(self.master_ctx.log_store)
-        logger.info(
-            "Context compacted (%s events, compacted_through=%s)",
-            len(session.events),
-            session.compacted_through,
+        logger.warning(
+            f"Session {addr} compacted: {len(session.events)} events remain, "
+            f"compacted_through={session.compacted_through}"
         )
 
     async def _apply_llm_response(
