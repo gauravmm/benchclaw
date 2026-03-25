@@ -170,7 +170,7 @@ class EditFileTool(Tool):
             "Make a targeted edit to an existing text file by replacing an exact string match, from inside the workspace directory by default. "
             "This is safer than overwriting the whole file when you only need to change part of it. "
             "The edit is rejected if the original text is missing or appears more than once. "
-            "Example: `{'path': 'USER.md', 'old_text': 'port: 8080', 'new_text': 'port: 9090'}`."
+            "Example: `{'path': 'USER.md', 'old_str': 'port: 8080', 'new_str': 'port: 9090'}`."
         )
 
     @property
@@ -182,14 +182,14 @@ class EditFileTool(Tool):
                     "type": "string",
                     "description": "The file path to edit, where . is the workspace dir.",
                 },
-                "old_text": {"type": "string", "description": "The exact text to find and replace"},
-                "new_text": {"type": "string", "description": "The text to replace with"},
+                "old_str": {"type": "string", "description": "The exact text to find and replace"},
+                "new_str": {"type": "string", "description": "The text to replace with"},
             },
-            "required": ["path", "old_text", "new_text"],
+            "required": ["path", "old_str", "new_str"],
         }
 
     async def execute(
-        self, ctx: ToolContext, path: str, old_text: str, new_text: str, **kwargs: Any
+        self, ctx: ToolContext, path: str, old_str: str, new_str: str, **kwargs: Any
     ) -> str:
         file_path = _resolve_path(path, ctx)
         if not file_path.exists():
@@ -201,16 +201,16 @@ class EditFileTool(Tool):
 
         content = file_path.read_text(encoding="utf-8")
 
-        if old_text not in content:
-            raise ValueError("old_text not found in file. Make sure it matches exactly.")
+        if old_str not in content:
+            raise ValueError("old_str not found in file. Make sure it matches exactly.")
 
-        count = content.count(old_text)
+        count = content.count(old_str)
         if count > 1:
             raise ValueError(
-                f"old_text appears {count} times. Please provide more context to make it unique."
+                f"old_str appears {count} times. Please provide more context to make it unique."
             )
 
-        new_content = content.replace(old_text, new_text, 1)
+        new_content = content.replace(old_str, new_str, 1)
         file_path.write_text(new_content, encoding="utf-8")
         _record_snapshot(ctx, file_path)
 
