@@ -38,7 +38,6 @@ from benchclaw.session import (
 )
 
 _COMPACT_THRESHOLD = 0.8
-_DEBUG_INLINE_IMAGE_URL_CHARS = 40
 
 
 @dataclass
@@ -231,7 +230,14 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
     ) -> None:
-        self._maybe_compact_session(session, addr, response.usage.get("total_tokens", 0))
+        usage = response.usage
+        logger.info(
+            f"LLM response for {addr}: "
+            f"{usage.get('prompt_tokens', '?')} prompt, "
+            f"{usage.get('completion_tokens', '?')} completion, "
+            f"{usage.get('total_tokens', '?')} total / {self.config.context_window} budget"
+        )
+        self._maybe_compact_session(session, addr, usage.get("total_tokens", 0))
         content = (response.content or "").rstrip("\n")
         if response.has_tool_calls:
             tool_call_dicts = [
@@ -347,17 +353,7 @@ class AgentLoop:
             RenderOptions(pending_image_paths=pending_images),
             max_messages=self.config.memory_window,
         )
-        self._dump_messages(
-            session.render_llm_messages(
-                prompt,
-                self.media_repo,
-                RenderOptions(
-                    pending_image_paths=pending_images,
-                    max_inline_image_url_chars=_DEBUG_INLINE_IMAGE_URL_CHARS,
-                ),
-                max_messages=self.config.memory_window,
-            )
-        )
+        self._dump_messages(llm_messages)
         if pending_images:
             pending_images.clear()
         response = await self._call_provider(addr, llm_messages)
