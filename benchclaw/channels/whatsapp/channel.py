@@ -15,7 +15,7 @@ import websockets
 from loguru import logger
 from pydantic import ValidationError
 
-from benchclaw.bus import MediaMetadata, MessageBus, OutboundMessage, TypingEvent
+from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
 from benchclaw.channels.base import BaseChannel, ChannelConfig
 from benchclaw.channels.whatsapp.address import (
     WhatsAppId,
@@ -176,12 +176,7 @@ class WhatsAppChannel(BaseChannel):
         media_metadata = [
             item.to_media_metadata(source_channel=self.name) for item in event.mediaMetadata
         ]
-        media_paths = self._save_bridge_image(event, sender_id, source_ts, media_metadata)
-
-        if content == "[Voice Message]":
-            logger.info(
-                f"Voice message received from {sender_id}, but direct download from bridge is not yet supported."
-            )
+        media_paths = self._save_bridge_media(event, sender_id, source_ts, media_metadata)
 
         await self._handle_message(
             sender_id=sender_id,
@@ -241,7 +236,7 @@ class WhatsAppChannel(BaseChannel):
             metadata["summon"] = summon_source
         return metadata
 
-    def _save_bridge_image(
+    def _save_bridge_media(
         self,
         event: BridgeMessageEvent,
         sender_id: str,
@@ -251,21 +246,36 @@ class WhatsAppChannel(BaseChannel):
         if not event.mediaBase64:
             return []
         if not self.media_repo:
-            logger.warning("WhatsApp received image but media_repo not configured; skipping")
+            logger.warning("WhatsApp received media but media_repo not configured; skipping")
             return []
 
         try:
-            mime_type = event.mediaType or "image/jpeg"
-            ext = {
+            mime_type = event.mediaType or "application/octet-stream"
+            _MIME_EXT = {
                 "image/jpeg": ".jpg",
                 "image/png": ".png",
                 "image/gif": ".gif",
                 "image/webp": ".webp",
-            }.get(mime_type, ".bin")
+                "audio/ogg; codecs=opus": ".ogg",
+                "audio/ogg": ".ogg",
+                "audio/mpeg": ".mp3",
+                "audio/mp4": ".m4a",
+                "audio/aac": ".aac",
+            }
+            ext = _MIME_EXT.get(mime_type, ".bin")
+            # Derive broad media_type from the MIME prefix, falling back to the
+            # existing metadata value so voice/audio distinction is preserved.
+            mime_prefix = mime_type.split("/")[0]
+            if mime_prefix in {"image", "audio", "video"}:
+                media_type = mime_prefix
+            elif media_metadata:
+                media_type = media_metadata[0].get("media_type") or "file"
+            else:
+                media_type = "file"
             file_path = self.media_repo.register(
-                event.chatId.as_address(),
+                MessageAddress("whatsapp", event.chatId.comparable_id),
                 sender_id=sender_id,
-                media_type="image",
+                media_type=media_type,
                 ext=ext,
                 mime_type=mime_type,
                 timestamp=source_ts,
@@ -280,15 +290,15 @@ class WhatsAppChannel(BaseChannel):
                 media_metadata.append(
                     {
                         "path": str(file_path),
-                        "media_type": "image",
+                        "media_type": media_type,
                         "mime_type": mime_type,
                         "size_bytes": None,
                         "saved_at": saved_at,
                         "source_channel": self.name,
                     }
                 )
-            logger.debug(f"Saved WhatsApp image to {file_path}")
+            logger.debug(f"Saved WhatsApp media to {file_path}")
             return [self.media_repo.media_relpath(file_path)]
         except Exception as e:
-            logger.error(f"Failed to save WhatsApp image: {e}")
+            logger.error(f"Failed to save WhatsApp media: {e}")
             return []

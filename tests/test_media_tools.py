@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from benchclaw.agent.tools.base import ToolContext
-from benchclaw.agent.tools.media import SearchImagesTool, SendImageTool
+from benchclaw.agent.tools.media import SearchMediaTool, SendMediaTool
 from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.telegrm import TelegramChannel, TelegramConfig
 from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig
@@ -26,17 +26,17 @@ def _write_png(path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_image_uses_current_address(tmp_path: Path):
+async def test_send_media_uses_current_address(tmp_path: Path):
     workspace = tmp_path
     image = workspace / "media" / "x.png"
     _write_png(image)
     bus = MessageBus()
     ctx = ToolContext(workspace=workspace, bus=bus, address=MessageAddress("telegram", "123"))
 
-    result = await SendImageTool().execute(ctx, path="media/x.png", caption="hello")
+    result = await SendMediaTool().execute(ctx, path="media/x.png", caption="hello")
     outbound = await bus.consume_outbound(channel="telegram")
 
-    assert result == "Image sent to telegram:123"
+    assert result == "Media sent to telegram:123"
     assert isinstance(outbound, OutboundMessage)
     assert outbound.address == MessageAddress("telegram", "123")
     assert outbound.media == ["media/x.png"]
@@ -44,7 +44,7 @@ async def test_send_image_uses_current_address(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_send_image_normalizes_whatsapp_shorthand_address(tmp_path: Path):
+async def test_send_media_normalizes_whatsapp_shorthand_address(tmp_path: Path):
     workspace = tmp_path
     image = workspace / "media" / "x.png"
     _write_png(image)
@@ -55,7 +55,7 @@ async def test_send_image_normalizes_whatsapp_shorthand_address(tmp_path: Path):
         address=MessageAddress("whatsapp", "222355137806442@lid"),
     )
 
-    result = await SendImageTool().execute(
+    result = await SendMediaTool().execute(
         ctx,
         path="media/x.png",
         caption="hello",
@@ -63,26 +63,13 @@ async def test_send_image_normalizes_whatsapp_shorthand_address(tmp_path: Path):
     )
     outbound = await bus.consume_outbound(channel="whatsapp")
 
-    assert result == "Image sent to whatsapp:222355137806442"
+    assert result == "Media sent to whatsapp:222355137806442"
     assert isinstance(outbound, OutboundMessage)
     assert outbound.address == MessageAddress("whatsapp", "222355137806442")
 
 
 @pytest.mark.asyncio
-async def test_send_image_rejects_non_image(tmp_path: Path):
-    workspace = tmp_path
-    bad = workspace / "notes.txt"
-    bad.write_text("not an image", encoding="utf-8")
-    ctx = ToolContext(
-        workspace=workspace, bus=MessageBus(), address=MessageAddress("telegram", "1")
-    )
-
-    with pytest.raises(ValueError, match="not an image"):
-        await SendImageTool().execute(ctx, path="notes.txt")
-
-
-@pytest.mark.asyncio
-async def test_search_images_defaults_to_global_caption_search(tmp_path: Path):
+async def test_search_media_defaults_to_global_caption_search(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     repo.load()
     path = repo.register(
@@ -105,14 +92,14 @@ async def test_search_images_defaults_to_global_caption_search(tmp_path: Path):
         media_repo=repo,
         address=MessageAddress("telegram", "chat-1"),
     )
-    result = await SearchImagesTool().execute(ctx)
+    result = await SearchMediaTool().execute(ctx)
     parsed = json.loads(result)
 
     assert {item["path"] for item in parsed} == {repo.media_relpath(path), "images/diagram.png"}
 
 
 @pytest.mark.asyncio
-async def test_search_images_filters_explicit_address(tmp_path: Path):
+async def test_search_media_filters_explicit_address(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     repo.load()
     first = repo.register(
@@ -139,7 +126,7 @@ async def test_search_images_filters_explicit_address(tmp_path: Path):
     repo.set_caption(repo.media_relpath(second), "receipt two")
 
     ctx = ToolContext(workspace=tmp_path, media_repo=repo)
-    result = await SearchImagesTool().execute(
+    result = await SearchMediaTool().execute(
         ctx,
         query="receipt",
         address="telegram:chat-2",
@@ -150,11 +137,11 @@ async def test_search_images_filters_explicit_address(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_search_images_normalizes_whatsapp_shorthand_address(tmp_path: Path):
+async def test_search_media_matches_whatsapp_address(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     repo.load()
     path = repo.register(
-        MessageAddress("whatsapp", "222355137806442@lid"),
+        MessageAddress("whatsapp", "222355137806442"),
         sender_id="alice",
         media_type="image",
         ext=".png",
@@ -165,51 +152,48 @@ async def test_search_images_normalizes_whatsapp_shorthand_address(tmp_path: Pat
     _write_png(path)
     repo.set_caption(repo.media_relpath(path), "receipt")
 
-    ctx = ToolContext(
-        workspace=tmp_path,
-        media_repo=repo,
-        address=MessageAddress("whatsapp", "222355137806442@lid"),
-    )
-    result = await SearchImagesTool().execute(
+    ctx = ToolContext(workspace=tmp_path, media_repo=repo)
+    result = await SearchMediaTool().execute(
         ctx,
         query="receipt",
         address="whatsapp:222355137806442",
     )
     parsed = json.loads(result)
 
-    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442@lid"]
+    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442"]
 
 
 @pytest.mark.asyncio
-async def test_search_images_matches_nested_whatsapp_lid_record(tmp_path: Path):
-    nested = {
-        "images": {
-            "receipt.png": {
-                "_entry": {
-                    "address": "whatsapp:222355137806442@lid",
-                    "sender_id": "alice",
-                    "timestamp": "2026-03-10T14:23:00",
-                    "media_type": "image",
-                    "mime_type": "image/png",
-                    "original_name": "receipt.png",
-                    "caption": "receipt",
-                }
-            }
-        }
-    }
-    (tmp_path / ".media.json").write_text(json.dumps(nested), encoding="utf-8")
-
+async def test_search_media_filters_by_media_type(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     repo.load()
-    ctx = ToolContext(workspace=tmp_path, media_repo=repo)
-    result = await SearchImagesTool().execute(
-        ctx,
-        query="receipt",
-        address="whatsapp:222355137806442",
+    img_path = repo.register(
+        MessageAddress("telegram", "chat-1"),
+        sender_id="alice",
+        media_type="image",
+        ext=".png",
+        mime_type="image/png",
+        timestamp=datetime(2026, 3, 10, 14, 23, 0),
     )
+    audio_path = repo.register(
+        MessageAddress("telegram", "chat-1"),
+        sender_id="alice",
+        media_type="audio",
+        ext=".ogg",
+        mime_type="audio/ogg",
+        timestamp=datetime(2026, 3, 10, 14, 24, 0),
+    )
+    _write_png(img_path)
+    audio_path.write_bytes(b"fake ogg")
+    repo.set_caption(repo.media_relpath(img_path), "a photo")
+    repo.set_caption(repo.media_relpath(audio_path), "a voice note")
+
+    ctx = ToolContext(workspace=tmp_path, media_repo=repo)
+    result = await SearchMediaTool().execute(ctx, media_type="audio")
     parsed = json.loads(result)
 
-    assert [item["address"] for item in parsed] == ["whatsapp:222355137806442@lid"]
+    assert len(parsed) == 1
+    assert parsed[0]["media_type"] == "audio"
 
 
 class _FakeTelegramBot:

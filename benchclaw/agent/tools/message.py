@@ -28,7 +28,7 @@ class MessageTool(Tool):
         return (
             "Deliver a text-only proactive message to a different chat or channel. "
             "Your normal assistant reply is already delivered to the current chat automatically, so do not use this for the current turn's reply. "
-            "Always provide an explicit channel and chat_id. Use send_image for images. "
+            "Always provide an explicit channel and chat_id. Use send_media for images and audio."
             "Example: `{'content': 'Your report is ready!', 'channel': 'telegram', 'chat_id': '123456'}`."
         )
 

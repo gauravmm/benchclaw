@@ -44,7 +44,7 @@ _COMPACT_THRESHOLD = 0.8
 class _AddressState:
     iteration_count: int = 0
     pending_system_events: list[str] = field(default_factory=list)
-    pending_images: list[str] = field(default_factory=list)
+    pending_media: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -328,7 +328,7 @@ class AgentLoop:
             )
             logger.info(f"Processing message from {addr}: {preview}")
             session.append(user_event)
-            state.pending_images = list(user_event.media)
+            state.pending_media = list(user_event.media)
             state.iteration_count = 0
             needs_llm = True
 
@@ -340,22 +340,22 @@ class AgentLoop:
         tracker: ToolCallTracker,
         call_ctx: ToolContext,
         addr: MessageAddress,
-        pending_images: list[str] | None = None,
+        pending_media: list[str] | None = None,
     ) -> None:
-        if pending_images is None:
-            pending_images = []
+        if pending_media is None:
+            pending_media = []
         prompt = self.context.build_system_prompt(
             self.tools.values(), addr.channel, addr.chat_id, session.describe_current_session()
         )
         llm_messages = session.render_llm_messages(
             prompt,
             self.media_repo,
-            RenderOptions(pending_image_paths=pending_images),
+            RenderOptions(pending_media_paths=pending_media),
             max_messages=self.config.memory_window,
         )
         self._dump_messages(llm_messages)
-        if pending_images:
-            pending_images.clear()
+        if pending_media:
+            pending_media.clear()
         response = await self._call_provider(addr, llm_messages)
         if response is None:
             return
@@ -395,7 +395,7 @@ class AgentLoop:
                 tracker,
                 call_ctx,
                 addr,
-                pending_images=state.pending_images,
+                pending_media=state.pending_media,
             )
 
     async def run(self) -> None:

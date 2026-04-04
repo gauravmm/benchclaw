@@ -23,12 +23,12 @@ EventKind = Literal["user", "assistant", "tool", "system", "summary"]
 @dataclass(frozen=True)
 class RenderOptions:
     include_reasoning: bool = True
-    pending_image_paths: list[str] | None = None
+    pending_media_paths: list[str] | None = None
     max_inline_image_url_chars: int | None = None
 
 
 class MediaRenderer(Protocol):
-    def build_image_blocks(self, paths: list[str]) -> list[dict[str, object]]: ...
+    def build_media_blocks(self, paths: list[str]) -> list[dict[str, object]]: ...
 
 
 def _sender_label(metadata: dict[str, Any]) -> str | None:
@@ -82,7 +82,7 @@ def _render_user_content(
     if media:
         stubs = "\n".join(
             (
-                f"[image: {path}] "
+                f"[media: {path}] "
                 "(call annotate_media with this exact path before your final response if it has not been annotated yet)"
             )
             for path in media
@@ -379,12 +379,12 @@ class Session:
         event: ConversationEvent,
         *,
         options: RenderOptions,
-        pending_image_blocks: list[dict[str, object]] | None = None,
+        pending_media_blocks: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         if isinstance(event, AssistantEvent):
             message = event.to_llm_message(include_reasoning=options.include_reasoning)
         elif isinstance(event, UserEvent):
-            message = event.to_llm_message(pending_image_blocks=pending_image_blocks or [])
+            message = event.to_llm_message(pending_image_blocks=pending_media_blocks or [])
         else:
             message = event.to_llm_message()
         message["content"] = _truncate_inline_images(
@@ -400,16 +400,16 @@ class Session:
                 return i
         return None
 
-    def _build_pending_image_blocks(
+    def _build_pending_media_blocks(
         self,
         media_repo: MediaRenderer | None,
         options: RenderOptions,
     ) -> list[dict[str, object]] | None:
-        if not options.pending_image_paths:
+        if not options.pending_media_paths:
             return None
         if media_repo is None:
             return None
-        return media_repo.build_image_blocks(options.pending_image_paths)
+        return media_repo.build_media_blocks(options.pending_media_paths)
 
     def _render_history(
         self,
@@ -420,7 +420,7 @@ class Session:
     ) -> list[dict[str, object]]:
         options = options or RenderOptions()
         last_reasoning_idx = self._find_last_reasoning_index(history)
-        pending_image_blocks = self._build_pending_image_blocks(media_repo, options)
+        pending_media_blocks = self._build_pending_media_blocks(media_repo, options)
         messages: list[dict[str, object]] = []
         for i, event in enumerate(history):
             messages.append(
@@ -428,10 +428,10 @@ class Session:
                     event,
                     options=RenderOptions(
                         include_reasoning=options.include_reasoning and i == last_reasoning_idx,
-                        pending_image_paths=None,
+                        pending_media_paths=None,
                         max_inline_image_url_chars=options.max_inline_image_url_chars,
                     ),
-                    pending_image_blocks=pending_image_blocks if i == len(history) - 1 else None,
+                    pending_media_blocks=pending_media_blocks if i == len(history) - 1 else None,
                 )
             )
         return messages

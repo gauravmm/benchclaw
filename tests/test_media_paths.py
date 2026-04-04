@@ -197,7 +197,7 @@ def test_image_block_returns_provider_payload(tmp_path: Path):
     assert url.startswith("data:image/png;base64,")
 
 
-def test_build_image_blocks_skips_non_image_files(tmp_path: Path):
+def test_build_media_blocks_skips_unsupported_files(tmp_path: Path):
     repo = MediaRepository(tmp_path)
     repo.load()
     _write_png(tmp_path / "images" / "pixel.png")
@@ -205,7 +205,7 @@ def test_build_image_blocks_skips_non_image_files(tmp_path: Path):
     note.parent.mkdir(parents=True, exist_ok=True)
     note.write_text("hello", encoding="utf-8")
 
-    blocks = repo.build_image_blocks(["images/pixel.png", "images/missing.png", "images/note.txt"])
+    blocks = repo.build_media_blocks(["images/pixel.png", "images/missing.png", "images/note.txt"])
 
     assert len(blocks) == 1
     assert blocks[0]["type"] == "image_url"
@@ -413,12 +413,12 @@ def test_search_includes_generic_captioned_files(tmp_path: Path):
     assert results[0]["address"] is None
 
 
-def test_search_normalizes_whatsapp_address_matching(tmp_path: Path):
+def test_search_matches_whatsapp_address(tmp_path: Path):
     nested = {
         "images": {
             "receipt.png": {
                 "_entry": {
-                    "address": "whatsapp:222355137806442@lid",
+                    "address": "whatsapp:222355137806442",
                     "sender_id": "whatsapp-user",
                     "timestamp": "2026-03-10T14:23:00",
                     "media_type": "image",
@@ -439,4 +439,4 @@ def test_search_normalizes_whatsapp_address_matching(tmp_path: Path):
     )
 
     assert len(results) == 1
-    assert results[0]["address"] == "whatsapp:222355137806442@lid"
+    assert results[0]["address"] == "whatsapp:222355137806442"

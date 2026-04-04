@@ -14,7 +14,6 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 from benchclaw.bus import MessageAddress
-from benchclaw.channels.whatsapp.address import WhatsAppId
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
 
@@ -33,14 +32,9 @@ class MediaEntry(BaseModel):
     @classmethod
     def _parse_address(cls, value: Any) -> MessageAddress | None:
         if value is None or isinstance(value, MessageAddress):
-            if isinstance(value, MessageAddress) and value.channel == "whatsapp":
-                return WhatsAppId.from_address(value).as_address()
             return value
         if isinstance(value, str):
-            parsed = MessageAddress.from_string(value)
-            if parsed.channel == "whatsapp":
-                return WhatsAppId.from_address(parsed).as_address()
-            return parsed
+            return MessageAddress.from_string(value)
         raise TypeError(f"Unsupported media address value: {value!r}")
 
     @field_serializer("address")
@@ -96,12 +90,7 @@ class MediaRepository:
             return False
         if parsed.channel != query_addr.channel:
             return False
-        if parsed.channel != "whatsapp":
-            return parsed.chat_id == query_addr.chat_id
-        return (
-            WhatsAppId.from_address(parsed).comparable_id
-            == WhatsAppId.from_address(query_addr).comparable_id
-        )
+        return parsed.chat_id == query_addr.chat_id
 
     def register(
         self,
@@ -164,14 +153,31 @@ class MediaRepository:
         data = base64.b64encode(abs_path.read_bytes()).decode()
         return {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{data}"}}
 
-    def build_image_blocks(self, paths: Iterable[str]) -> list[dict[str, object]]:
-        """Build provider-ready image blocks, skipping missing or non-image paths."""
+    def audio_block(self, path: str) -> dict[str, object]:
+        """Build a provider-ready audio block for one workspace-relative file path."""
+        abs_path, mime_type = self.resolve_file(path)
+        if not mime_type or not mime_type.startswith("audio/"):
+            raise ValueError(f"Path is not an audio file: {path}")
+        # Strip codec parameter for the block media_type (e.g. "audio/ogg; codecs=opus" → "audio/ogg")
+        block_mime = mime_type.split(";")[0].strip()
+        data = base64.b64encode(abs_path.read_bytes()).decode()
+        return {
+            "type": "input_audio",
+            "source": {"type": "base64", "media_type": block_mime, "data": data},
+        }
+
+    def build_media_blocks(self, paths: Iterable[str]) -> list[dict[str, object]]:
+        """Build provider-ready content blocks for images and audio, skipping unsupported paths."""
         blocks: list[dict[str, object]] = []
         for path in paths:
             try:
-                blocks.append(self.image_block(path))
-            except FileNotFoundError, ValueError:
-                logger.warning(f"Skipping non-image or missing file: {path}")
+                _, mime_type = self.resolve_file(path)
+                if mime_type and mime_type.startswith("audio/"):
+                    blocks.append(self.audio_block(path))
+                else:
+                    blocks.append(self.image_block(path))
+            except (FileNotFoundError, ValueError):
+                logger.warning(f"Skipping unsupported or missing media file: {path}")
         return blocks
 
     def set_caption(self, path: str, caption: str) -> None:
@@ -223,8 +229,6 @@ class MediaRepository:
     ) -> list[dict[str, Any]]:
         """Search saved file metadata and captions across the whole workspace."""
         limit = max(1, min(limit, 20))
-        if address is not None and address.channel == "whatsapp":
-            address = WhatsAppId.from_address(address).as_address()
         needle = (query or "").strip().casefold()
         lower_from = self._parse_date_bound(date_from, end=False)
         upper_to = self._parse_date_bound(date_to, end=True)

@@ -1,4 +1,4 @@
-"""Media tools for re-reading, searching, and sending stored images."""
+"""Media tools for re-reading, searching, and sending stored media files."""
 
 from __future__ import annotations
 
@@ -8,37 +8,31 @@ from typing import Any
 
 from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.bus import MessageAddress, OutboundMessage, ToolResult
-from benchclaw.channels.whatsapp.address import WhatsAppId
 from benchclaw.media import MediaRepository
 
 
 def _resolve_target_address(ctx: ToolContext, address: str | None) -> MessageAddress | None:
     """Resolve an explicit or implicit target address."""
-    target = MessageAddress.from_string(address) if address else ctx.address
-    if target is None:
-        return None
-    if target.channel == "whatsapp":
-        return WhatsAppId.from_address(target).as_address()
-    return target
+    return MessageAddress.from_string(address) if address else ctx.address
 
 
-class ReadImageTool(Tool):
-    """Tool to re-load a media image into the LLM context."""
+class ReadMediaTool(Tool):
+    """Tool to re-load a media file (image or audio) into the LLM context."""
 
     @classmethod
-    def build(cls, _config: None, _ctx: ToolContext) -> "ReadImageTool":
+    def build(cls, _config: None, _ctx: ToolContext) -> "ReadMediaTool":
         return cls()
 
     @property
     def name(self) -> str:
-        return "read_image"
+        return "read_media"
 
     @property
     def description(self) -> str:
         return (
-            "Load a workspace image by its relative path so you can inspect it again. "
-            "Use the exact stored path, for example 'media/a3f7b2c1/0310/1423-01.jpg' or 'images/receipt.png'. "
-            "Only call this when you need to examine an image to answer a follow-up question."
+            "Load a workspace media file (image or audio) by its relative path so you can inspect or re-listen to it. "
+            "Use the exact stored path, for example 'media/a3f7b2c1/0310/1423-01.jpg' or 'media/a3f7b2c1/0310/1423-01.ogg'. "
+            "Only call this when you need to examine a media file to answer a follow-up question."
         )
 
     @property
@@ -48,7 +42,7 @@ class ReadImageTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Workspace-relative path to the image file.",
+                    "description": "Workspace-relative path to the media file.",
                 }
             },
             "required": ["path"],
@@ -58,27 +52,30 @@ class ReadImageTool(Tool):
         if Path(path).is_absolute():
             raise ValueError(f"Path is outside the workspace: {path}")
         media_repo = ctx.media_repo or MediaRepository(ctx.workspace)
+        _, mime_type = media_repo.resolve_file(path)
+        if mime_type and mime_type.startswith("audio/"):
+            return [media_repo.audio_block(path)]
         return [media_repo.image_block(path)]
 
 
-class SendImageTool(Tool):
-    """Send a stored workspace image to the current or another chat."""
+class SendMediaTool(Tool):
+    """Send a stored workspace media file to the current or another chat."""
 
     @classmethod
-    def build(cls, _config: None, _ctx: ToolContext) -> "SendImageTool":
+    def build(cls, _config: None, _ctx: ToolContext) -> "SendMediaTool":
         return cls()
 
     @property
     def name(self) -> str:
-        return "send_image"
+        return "send_media"
 
     @property
     def description(self) -> str:
         return (
-            "Send one stored workspace image to the current chat by default, or to another chat "
+            "Send one stored workspace media file (image or audio) to the current chat by default, or to another chat "
             "when you provide an explicit address like 'telegram:12345'. "
-            "Use this instead of the message tool for image delivery. "
-            "When sending an image, put the user-visible text in the image caption/body rather than also saying in plain text that you sent it. "
+            "Use this instead of the message tool for media delivery. "
+            "When sending media, put the user-visible text in the caption/body rather than also saying in plain text that you sent it. "
             "Strongly prefer omitting `address` when sending to the current chat."
         )
 
@@ -89,12 +86,12 @@ class SendImageTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Workspace-relative image path.",
+                    "description": "Workspace-relative media path.",
                 },
                 "caption": {
                     "type": "string",
                     "description": (
-                        "Optional caption/body to send with the image. "
+                        "Optional caption/body to send with the media. "
                         "Put all required user-visible text here when applicable, instead of sending a separate plain-text acknowledgement."
                     ),
                 },
@@ -113,7 +110,7 @@ class SendImageTool(Tool):
         self, ctx: ToolContext, path: str, caption: str = "", address: str | None = None, **_: Any
     ) -> str:
         if not ctx.bus:
-            raise RuntimeError("send_image requires message bus access")
+            raise RuntimeError("send_media requires message bus access")
         target = _resolve_target_address(ctx, address)
         if target is None:
             raise ValueError("No target address available")
@@ -121,32 +118,30 @@ class SendImageTool(Tool):
         if Path(path).is_absolute():
             raise ValueError(f"Path is outside the workspace: {path}")
         media_repo = ctx.media_repo or MediaRepository(ctx.workspace)
-        _, mime = media_repo.resolve_file(path)
-        if not mime or not mime.startswith("image/"):
-            raise ValueError(f"Path is not an image: {path}")
+        media_repo.resolve_file(path)  # validates path exists
 
         await ctx.bus.publish_outbound(
             OutboundMessage(address=target, content=caption, media=[path])
         )
-        return f"Image sent to {target}"
+        return f"Media sent to {target}"
 
 
-class SearchImagesTool(Tool):
-    """Search stored images using saved metadata and captions."""
+class SearchMediaTool(Tool):
+    """Search stored media using saved metadata and captions."""
 
     @classmethod
-    def build(cls, _config: None, _ctx: ToolContext) -> "SearchImagesTool":
+    def build(cls, _config: None, _ctx: ToolContext) -> "SearchMediaTool":
         return cls()
 
     @property
     def name(self) -> str:
-        return "search_images"
+        return "search_media"
 
     @property
     def description(self) -> str:
         return (
-            "Search captioned workspace images using stored metadata and model-authored captions. "
-            "Use this when you remember an image but not its exact media path."
+            "Search captioned workspace media (images, audio) using stored metadata and model-authored captions. "
+            "Use this when you remember a media file but not its exact path."
         )
 
     @property
@@ -157,6 +152,10 @@ class SearchImagesTool(Tool):
                 "query": {
                     "type": "string",
                     "description": "Optional free-text search over captions and metadata.",
+                },
+                "media_type": {
+                    "type": "string",
+                    "description": "Optional filter by media type: 'image', 'audio', 'voice', etc. Omit to search all types.",
                 },
                 "address": {
                     "type": "string",
@@ -188,6 +187,7 @@ class SearchImagesTool(Tool):
         self,
         ctx: ToolContext,
         query: str = "",
+        media_type: str | None = None,
         address: str | None = None,
         sender_id: str | None = None,
         date_from: str | None = None,
@@ -196,10 +196,8 @@ class SearchImagesTool(Tool):
         **_: Any,
     ) -> str:
         if not ctx.media_repo:
-            raise RuntimeError("search_images requires media repository access")
+            raise RuntimeError("search_media requires media repository access")
         resolved_address = MessageAddress.from_string(address) if address else None
-        if resolved_address and resolved_address.channel == "whatsapp":
-            resolved_address = WhatsAppId.from_address(resolved_address).as_address()
 
         results = ctx.media_repo.search(
             query=query or None,
@@ -209,6 +207,8 @@ class SearchImagesTool(Tool):
             date_to=date_to,
             limit=limit,
         )
+        if media_type:
+            results = [r for r in results if r.get("media_type") == media_type]
         return json.dumps(results, ensure_ascii=False)
 
 
@@ -226,8 +226,9 @@ class AnnotateMediaTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Save a concise caption or annotation for a stored workspace media file. "
-            "Use this after receiving an image so future turns can search or answer follow-up questions without re-reading it."
+            "Save a concise caption or annotation for a stored workspace media file (image or audio). "
+            "Use this after receiving media so future turns can search or answer follow-up questions without re-reading it. "
+            "For audio, include a transcript summary, tone/intent notes, and language if non-English."
         )
 
     @property

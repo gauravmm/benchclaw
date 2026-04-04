@@ -11,9 +11,9 @@ from benchclaw.agent.tools.filesystem import (
 )
 from benchclaw.agent.tools.media import (
     AnnotateMediaTool,
-    ReadImageTool,
-    SearchImagesTool,
-    SendImageTool,
+    ReadMediaTool,
+    SearchMediaTool,
+    SendMediaTool,
 )
 from benchclaw.agent.tools.memory import LogTool
 from benchclaw.agent.tools.message import MessageTool
@@ -27,10 +27,10 @@ BUILTIN_TOOLS: tuple[tuple[str, type[Tool]], ...] = (
     ("edit_file", EditFileTool),
     ("glob", GlobTool),
     ("grep", GrepTool),
-    ("read_image", ReadImageTool),
+    ("read_media", ReadMediaTool),
     ("annotate_media", AnnotateMediaTool),
-    ("send_image", SendImageTool),
-    ("search_images", SearchImagesTool),
+    ("send_media", SendMediaTool),
+    ("search_media", SearchMediaTool),
     ("log", LogTool),
     ("message", MessageTool),
     ("exec", ExecTool),

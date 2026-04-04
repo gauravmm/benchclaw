@@ -200,6 +200,24 @@ export class WhatsAppClient {
           }
         }
 
+        // Download audio if present and attach as base64 for Python-side persistence
+        if (msg.message?.audioMessage && this.sock) {
+          try {
+            const buffer = await downloadMediaMessage(
+              msg,
+              'buffer',
+              {},
+              { logger, reuploadRequest: this.sock.updateMediaMessage },
+            );
+            if (buffer) {
+              outMsg.mediaBase64 = (buffer as Buffer).toString('base64');
+              outMsg.mediaType = msg.message.audioMessage.mimetype || 'audio/ogg; codecs=opus';
+            }
+          } catch (e) {
+            console.error('Failed to download WhatsApp audio:', e);
+          }
+        }
+
         this.options.onMessage(outMsg);
       }
     });
