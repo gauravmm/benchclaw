@@ -44,7 +44,7 @@ class AgentsConfig(BaseModel):
 class ProviderConfig(BaseModel):
     """LLM provider configuration."""
 
-    name: str = "anthropic"
+    name: str = "openrouter"
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None
