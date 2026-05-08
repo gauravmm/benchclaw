@@ -1,12 +1,12 @@
 # WHATSAPP PARITY — bring WhatsApp up to Telegram's outbound feature set
 
-After Phases 2 and 5 of `BACKPORT.md`, BenchClaw's Telegram channel
-gained a typed segment pipeline and MIME-based outbound media dispatch.
-WhatsApp was left as the pre-Phase-2 monolith: a single 304-line
-`channel.py` whose `send()` rejects non-image media outright. This spec
-brings WhatsApp up to par on outbound media and the structural split,
-without porting Telegram's markdown / chunking / typing-indicator work
-(those are intentionally out of scope).
+The TeachClaw backport gave BenchClaw's Telegram channel a typed
+segment pipeline and MIME-based outbound media dispatch. WhatsApp was
+left as the pre-backport monolith: a single 304-line `channel.py`
+whose `send()` rejected non-image media outright. This spec brings
+WhatsApp up to par on outbound media and the structural split,
+without porting Telegram's markdown / chunking / typing-indicator
+work (those are intentionally out of scope).
 
 ## Out of scope
 
