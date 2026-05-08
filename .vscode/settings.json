@@ -13,7 +13,6 @@
     ".ruff_cache/": true,
     "**/__pycache__": true
   },
-  "claudeCode.planView": "markdown",
   "python.testing.pytestArgs": ["tests"],
   "python.testing.unittestEnabled": false,
   "python.testing.pytestEnabled": true

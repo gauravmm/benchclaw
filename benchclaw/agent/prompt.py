@@ -11,14 +11,15 @@ so :class:`AgentLoop` stays focused on orchestration.
 from __future__ import annotations
 
 import platform
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
 from jinja2 import Environment, PackageLoader
 
-from benchclaw.agent.skills import SkillsLoader
 from benchclaw.bus import MessageAddress
 from benchclaw.config import AgentConfig
 from benchclaw.media import MediaRepository
@@ -34,6 +35,43 @@ if TYPE_CHECKING:
 TailProvider = Callable[[MessageAddress], tuple[str, str] | None]
 
 BOOTSTRAP_FILES = ["AGENTS.md"]
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
+
+
+def _load_skills(workspace: Path) -> list[dict[str, str]]:
+    """Enumerate ``workspace/skills/<name>/SKILL.md`` and read each frontmatter
+    description, in stable directory order.
+
+    Returns one dict per skill with ``name``, ``path`` (relative to workspace),
+    and ``description`` (falls back to the directory name if frontmatter is
+    missing or has no ``description`` key). Frontmatter parse errors are
+    tolerated — a broken SKILL.md still surfaces in the system prompt.
+    """
+    skills_dir = workspace / "skills"
+    if not skills_dir.exists():
+        return []
+    out: list[dict[str, str]] = []
+    for skill_dir in sorted(skills_dir.iterdir()):
+        skill_file = skill_dir / "SKILL.md"
+        if not skill_dir.is_dir() or not skill_file.exists():
+            continue
+        description = ""
+        text = skill_file.read_text(encoding="utf-8")
+        if (m := _FRONTMATTER_RE.match(text)) is not None:
+            try:
+                meta = yaml.safe_load(m.group(1)) or {}
+            except yaml.YAMLError:
+                meta = {}
+            if isinstance(meta, dict):
+                description = str(meta.get("description") or "").strip()
+        out.append(
+            {
+                "name": skill_dir.name,
+                "path": str(skill_file.relative_to(workspace)),
+                "description": description or skill_dir.name,
+            }
+        )
+    return out
 
 
 def _xml_text(value: Any) -> str:
@@ -82,8 +120,7 @@ def build_system_prompt(
         for f in BOOTSTRAP_FILES
         if (workspace / f).exists()
     ]
-    skills_loader = SkillsLoader(workspace)
-    all_skills = skills_loader.get_all_skills()
+    skills = _load_skills(workspace)
     memory_dir = workspace / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     memory_files = sorted(p.name for p in memory_dir.iterdir() if p.is_file())
@@ -99,7 +136,7 @@ def build_system_prompt(
             workspace_path=str(workspace.expanduser().resolve()),
             bootstrap_files=bootstrap_files,
             memory_files=memory_files,
-            skills=all_skills,
+            skills=skills,
             tools=[
                 {"name": t.name, "description": t.description, "parameters": t.parameters}
                 for t in (tools or [])

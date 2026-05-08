@@ -71,6 +71,8 @@ source = ["benchclaw"]
 branch = true
 omit = [
     "benchclaw/__main__.py",
+    "tests/*",
+    "*/tests/*",
 ]
 
 [tool.coverage.report]
