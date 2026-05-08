@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from benchclaw.agent.context.builder import ContextBuilder
+from benchclaw.agent.prompt import build_system_prompt
 
 
 class _DummyTool:
@@ -26,7 +26,6 @@ class _DummyTool:
 
 
 def test_build_system_prompt_uses_xml_safe_rendering(tmp_path: Path) -> None:
-    builder = ContextBuilder(tmp_path)
     tool = _DummyTool(
         name='quote"tool',
         description='Say "hi" & compare <values>.',
@@ -39,7 +38,8 @@ def test_build_system_prompt_uses_xml_safe_rendering(tmp_path: Path) -> None:
         },
     )
 
-    prompt = builder.build_system_prompt(
+    prompt = build_system_prompt(
+        tmp_path,
         tools=[tool],
         channel="whatsapp",
         chat_id="123&456",
@@ -55,14 +55,13 @@ def test_build_system_prompt_uses_xml_safe_rendering(tmp_path: Path) -> None:
 
 
 def test_build_system_prompt_describes_media_annotation_flow(tmp_path: Path) -> None:
-    builder = ContextBuilder(tmp_path)
     tool = _DummyTool(
         name="annotate_media",
         description="Save image annotations.",
         parameters={"type": "object", "properties": {}, "required": []},
     )
 
-    prompt = builder.build_system_prompt(tools=[tool])
+    prompt = build_system_prompt(tmp_path, tools=[tool])
 
     assert "<private_tags>" not in prompt
     assert "annotate_media" in prompt

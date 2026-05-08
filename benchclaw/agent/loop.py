@@ -8,9 +8,9 @@ from pathlib import Path
 
 from loguru import logger
 
-from benchclaw.agent.context import ContextBuilder
 from benchclaw.agent.dump import dump_messages
 from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
+from benchclaw.agent.prompt import PromptBuilder
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.memory import LogStore
@@ -30,7 +30,6 @@ from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from benchclaw.session import (
     AssistantEvent,
-    RenderOptions,
     Session,
     SessionManager,
     SystemEvent,
@@ -58,7 +57,6 @@ class AgentLoop:
         self.debug_dump_path = debug_dump_path
         self.media_repo = media_repo
 
-        self.context = ContextBuilder(config.workspace_path)
         self.sessions = SessionManager(config.workspace_path / "sessions")
 
         master_ctx = ToolContext(
@@ -70,6 +68,12 @@ class AgentLoop:
         self.master_ctx = master_ctx
         mcp_manager = MCPManager(config.mcp_servers) if config.mcp_servers else None
         self.tools = ToolRegistry(config.tools, master_ctx, mcp_manager=mcp_manager)
+        self.prompt = PromptBuilder(
+            config.workspace_path,
+            tools=self.tools,
+            media_repo=media_repo,
+            agent_config=self.config,
+        )
 
     async def _run_tool_and_post(
         self,
@@ -278,20 +282,8 @@ class AgentLoop:
     ) -> None:
         if pending_media is None:
             pending_media = []
-        prompt = self.context.build_system_prompt(
-            self.tools.values(),
-            addr.channel,
-            addr.chat_id,
-            session.describe_current_session(),
-            model=self.config.model,
-            context_window=self.config.context_window,
-        )
-        llm_messages = session.render_llm_messages(
-            prompt,
-            self.media_repo,
-            RenderOptions(pending_media_paths=pending_media),
-            max_messages=self.config.memory_window,
-        )
+        build = self.prompt.build(session, addr, pending_media)
+        llm_messages = build.messages
         dump_messages(self.debug_dump_path, llm_messages)
         if pending_media:
             pending_media.clear()
