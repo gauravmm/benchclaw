@@ -52,9 +52,6 @@ def plan_segments(
 ) -> list[OutboundSegment]:
     if msg.media:
         media_path, mime = resolve_outbound_media(channel, msg)
-        # Phase A keeps the legacy image-only constraint; Phase B drops it.
-        if not mime or not mime.startswith("image/"):
-            raise ValueError(f"WhatsApp outbound media is not an image: {msg.media[0]}")
         return [MediaSegment(path=media_path, mime=mime, caption=msg.content or None)]
     body = msg.content or ""
     return [TextSegment(body=body)] if body else []
@@ -86,13 +83,60 @@ async def dispatch(
                 await _send_payload(channel, {"type": "send", "to": to, "text": body})
                 yield None
             case MediaSegment(path=path, mime=mime, caption=caption):
-                payload: dict[str, Any] = {"type": "send", "to": to}
-                if caption:
-                    payload["text"] = caption
-                payload["imageBase64"] = base64.b64encode(path.read_bytes()).decode()
-                payload["imageMimeType"] = mime
-                await _send_payload(channel, payload)
-                yield None
+                async for _ in _dispatch_media(channel, to, path, mime, caption, msg):
+                    yield None
+
+
+async def _dispatch_media(
+    channel: "WhatsAppChannel",
+    to: str,
+    path: Path,
+    mime: str,
+    caption: str | None,
+    msg: OutboundMessage,
+) -> AsyncIterator[None]:
+    """Build the bridge payload for a single :class:`MediaSegment`, dispatching
+    on MIME family. Audio doesn't support captions on WhatsApp natively,
+    so a non-empty caption is sent as a follow-up text message after the
+    audio (Phase C of WHATSAPP_PARITY)."""
+    encoded = base64.b64encode(path.read_bytes()).decode()
+    kind = mime.split("/", 1)[0] if mime else ""
+    payload: dict[str, Any] = {"type": "send", "to": to}
+
+    audio_caption_followup: str | None = None
+
+    if kind == "image":
+        payload["imageBase64"] = encoded
+        payload["imageMimeType"] = mime
+        if caption:
+            payload["text"] = caption
+    elif kind == "video":
+        payload["videoBase64"] = encoded
+        payload["videoMimeType"] = mime
+        if caption:
+            payload["text"] = caption
+    elif kind == "audio":
+        payload["audioBase64"] = encoded
+        payload["audioMimeType"] = mime
+        # WhatsApp drops audio captions; remember the caption so we can
+        # send it as a follow-up message instead of silently losing it.
+        audio_caption_followup = caption or None
+    else:
+        payload["documentBase64"] = encoded
+        payload["documentMimeType"] = mime or "application/octet-stream"
+        payload["documentName"] = path.name
+        if caption:
+            payload["text"] = caption
+
+    await _send_payload(channel, payload)
+    yield None
+
+    if audio_caption_followup:
+        await _send_payload(
+            channel,
+            {"type": "send", "to": to, "text": audio_caption_followup},
+        )
+        yield None
 
 
 async def _send_payload(channel: "WhatsAppChannel", payload: dict[str, Any]) -> None:

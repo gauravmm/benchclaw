@@ -437,24 +437,69 @@ export class WhatsAppClient {
 
   async sendMessage(
     to: string,
-    text: string,
-    imageBase64?: string,
-    imageMimeType?: string,
+    payload: {
+      text?: string;
+      imageBase64?: string;
+      imageMimeType?: string;
+      videoBase64?: string;
+      videoMimeType?: string;
+      audioBase64?: string;
+      audioMimeType?: string;
+      documentBase64?: string;
+      documentMimeType?: string;
+      documentName?: string;
+    },
   ): Promise<void> {
     if (!this.sock) {
       throw new Error('Not connected');
     }
 
-    if (imageBase64) {
+    const caption = payload.text || undefined;
+
+    // Dispatch on whichever media payload is set; first match wins. Audio
+    // doesn't support captions on WhatsApp, so the caller (Python side) is
+    // expected to send the caption as a follow-up text message — see
+    // outbound.py / Phase C.
+    if (payload.imageBase64) {
       await this.sock.sendMessage(to, {
-        image: Buffer.from(imageBase64, 'base64'),
-        mimetype: imageMimeType || 'image/jpeg',
-        caption: text || undefined,
+        image: Buffer.from(payload.imageBase64, 'base64'),
+        mimetype: payload.imageMimeType || 'image/jpeg',
+        caption,
+      });
+      return;
+    }
+    if (payload.videoBase64) {
+      await this.sock.sendMessage(to, {
+        video: Buffer.from(payload.videoBase64, 'base64'),
+        mimetype: payload.videoMimeType || 'video/mp4',
+        caption,
+      });
+      return;
+    }
+    if (payload.audioBase64) {
+      // Opus → push-to-talk bubble; everything else renders as a regular
+      // audio file.
+      const ptt = (payload.audioMimeType || '').toLowerCase().includes('opus');
+      await this.sock.sendMessage(to, {
+        audio: Buffer.from(payload.audioBase64, 'base64'),
+        mimetype: payload.audioMimeType || 'audio/ogg; codecs=opus',
+        ptt,
+      });
+      return;
+    }
+    if (payload.documentBase64) {
+      await this.sock.sendMessage(to, {
+        document: Buffer.from(payload.documentBase64, 'base64'),
+        mimetype: payload.documentMimeType || 'application/octet-stream',
+        fileName: payload.documentName,
+        caption,
       });
       return;
     }
 
-    await this.sock.sendMessage(to, { text });
+    if (payload.text) {
+      await this.sock.sendMessage(to, { text: payload.text });
+    }
   }
 
   async sendTyping(to: string, isTyping: boolean): Promise<void> {

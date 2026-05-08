@@ -9,9 +9,18 @@ import { WhatsAppClient, InboundMessage } from './whatsapp.js';
 interface SendCommand {
   type: 'send';
   to: string;
-  text: string;
+  text?: string;
+  // At most one media payload may be set per command. The Python side
+  // enforces this; the bridge picks whichever it sees first.
   imageBase64?: string;
   imageMimeType?: string;
+  videoBase64?: string;
+  videoMimeType?: string;
+  audioBase64?: string;
+  audioMimeType?: string;
+  documentBase64?: string;
+  documentMimeType?: string;
+  documentName?: string;
 }
 
 interface TypingCommand {
@@ -102,7 +111,18 @@ export class BridgeServer {
 
   private async handleCommand(cmd: SendCommand | TypingCommand): Promise<void> {
     if (cmd.type === 'send' && this.wa) {
-      await this.wa.sendMessage(cmd.to, cmd.text, cmd.imageBase64, cmd.imageMimeType);
+      await this.wa.sendMessage(cmd.to, {
+        text: cmd.text,
+        imageBase64: cmd.imageBase64,
+        imageMimeType: cmd.imageMimeType,
+        videoBase64: cmd.videoBase64,
+        videoMimeType: cmd.videoMimeType,
+        audioBase64: cmd.audioBase64,
+        audioMimeType: cmd.audioMimeType,
+        documentBase64: cmd.documentBase64,
+        documentMimeType: cmd.documentMimeType,
+        documentName: cmd.documentName,
+      });
     } else if (cmd.type === 'typing' && this.wa) {
       await this.wa.sendTyping(cmd.to, cmd.is_typing);
     }
