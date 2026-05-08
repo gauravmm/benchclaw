@@ -40,7 +40,7 @@ class MessageTool(Tool):
                 "content": {"type": "string", "description": "The message content to send"},
                 "channel": {
                     "type": "string",
-                    "description": "Target channel (telegram, whatsapp, smtp_email, etc.)",
+                    "description": "Target channel (telegram, whatsapp, etc.)",
                 },
                 "chat_id": {"type": "string", "description": "Target chat/user ID"},
             },
