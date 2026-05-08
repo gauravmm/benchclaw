@@ -7,6 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from benchclaw.agent.compactor import Compactor
 from benchclaw.agent.dump import dump_messages
 from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
 from benchclaw.agent.prompt import PromptBuilder
@@ -32,8 +33,6 @@ from benchclaw.session import (
     SystemEvent,
     UserEvent,
 )
-
-_COMPACT_THRESHOLD = 0.8
 
 
 class AgentLoop:
@@ -72,6 +71,7 @@ class AgentLoop:
             agent_config=self.config,
         )
         self.response = ResponseHandler(bus, self.tools, self.config)
+        self.compactor = Compactor(self.config, master_ctx.log_store)
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -116,20 +116,6 @@ class AgentLoop:
             )
             return None
 
-    def _maybe_compact_session(
-        self, session: Session, addr: MessageAddress, total_tokens: int
-    ) -> None:
-        if total_tokens <= self.config.context_window * _COMPACT_THRESHOLD:
-            return
-        logger.warning(
-            f"Compacting session {addr}: {total_tokens}/{self.config.context_window} tokens"
-        )
-        session.compact(self.master_ctx.log_store)
-        logger.warning(
-            f"Session {addr} compacted: {len(session.events)} events remain, "
-            f"compacted_through={session.compacted_through}"
-        )
-
     async def _apply_llm_response(
         self,
         response: LLMResponse,
@@ -138,7 +124,7 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
     ) -> None:
-        self._maybe_compact_session(session, addr, response.usage.get("total_tokens", 0))
+        self.compactor.maybe_compact(session, addr, response.usage.get("total_tokens", 0))
         await self.response.apply(response, session, tracker, call_ctx, addr)
 
     @staticmethod
