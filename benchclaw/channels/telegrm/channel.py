@@ -1,4 +1,4 @@
-"""Telegram channel implementation using python-telegram-bot."""
+"""Telegram channel lifecycle, ``send``, and inbound dispatch wiring."""
 
 from __future__ import annotations
 
@@ -14,90 +14,15 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
-from benchclaw.channels.base import BaseChannel, ChannelConfig
+from benchclaw.channels.base import BaseChannel
+from benchclaw.channels.telegrm.config import TelegramConfig
+from benchclaw.channels.telegrm.markdown_html import markdown_to_telegram_html, split_long
+from benchclaw.channels.telegrm.typing_loop import TypingManager
 from benchclaw.media import MediaRepository
 
-
-class TelegramConfig(ChannelConfig):
-    """Telegram channel configuration."""
-
-    token: str = ""  # Bot token from @BotFather
-    proxy: str | None = (
-        None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
-    )
-
-    def make_channel(
-        self, bus: MessageBus, media_repo: MediaRepository | None = None
-    ) -> "TelegramChannel":
-        return TelegramChannel(self, bus, media_repo=media_repo)
-
-    def is_configured(self) -> bool:
-        return bool(self.token.strip())
-
-
-def _markdown_to_telegram_html(text: str) -> str:
-    """
-    Convert markdown to Telegram-safe HTML.
-    """
-    if not text:
-        return ""
-
-    # 1. Extract and protect code blocks (preserve content from other processing)
-    code_blocks: list[str] = []
-
-    def save_code_block(m: re.Match) -> str:
-        code_blocks.append(m.group(1))
-        return f"\x00CB{len(code_blocks) - 1}\x00"
-
-    text = re.sub(r"```[\w]*\n?([\s\S]*?)```", save_code_block, text)
-
-    # 2. Extract and protect inline code
-    inline_codes: list[str] = []
-
-    def save_inline_code(m: re.Match) -> str:
-        inline_codes.append(m.group(1))
-        return f"\x00IC{len(inline_codes) - 1}\x00"
-
-    text = re.sub(r"`([^`]+)`", save_inline_code, text)
-
-    # 3. Headers # Title -> just the title text
-    text = re.sub(r"^#{1,6}\s+(.+)$", r"\1", text, flags=re.MULTILINE)
-
-    # 4. Blockquotes > text -> just the text (before HTML escaping)
-    text = re.sub(r"^>\s*(.*)$", r"\1", text, flags=re.MULTILINE)
-
-    # 5. Escape HTML special characters
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    # 6. Links [text](url) - must be before bold/italic to handle nested cases
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
-
-    # 7. Bold **text** or __text__
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
-
-    # 8. Italic _text_ (avoid matching inside words like some_var_name)
-    text = re.sub(r"(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])", r"<i>\1</i>", text)
-
-    # 9. Strikethrough ~~text~~
-    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
-
-    # 10. Bullet lists - item -> • item
-    text = re.sub(r"^[-*]\s+", "• ", text, flags=re.MULTILINE)
-
-    # 11. Restore inline code with HTML tags
-    for i, code in enumerate(inline_codes):
-        # Escape HTML in code content
-        escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        text = text.replace(f"\x00IC{i}\x00", f"<code>{escaped}</code>")
-
-    # 12. Restore code blocks with HTML tags
-    for i, code in enumerate(code_blocks):
-        # Escape HTML in code content
-        escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        text = text.replace(f"\x00CB{i}\x00", f"<pre><code>{escaped}</code></pre>")
-
-    return text
+# Telegram caps message text at 4096 chars and captions at 1024.
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_CAPTION_LIMIT = 1024
 
 
 class TelegramChannel(BaseChannel):
@@ -118,10 +43,9 @@ class TelegramChannel(BaseChannel):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
         self.media_repo = media_repo
-        self.groq_api_key = None  # TODO: Remove
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
-        self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._typing = TypingManager()
         self._bot_username: str | None = None
         self._bot_user_id: int | None = None
 
@@ -146,6 +70,7 @@ class TelegramChannel(BaseChannel):
         if self.config.proxy:
             builder = builder.proxy(self.config.proxy).get_updates_proxy(self.config.proxy)
         self._app = builder.build()
+        self._typing.attach(self._app)
         self._app.add_error_handler(self._on_error)
 
         # Add message handler for text, photos, voice, documents
@@ -165,21 +90,18 @@ class TelegramChannel(BaseChannel):
 
         logger.info("Starting Telegram bot (polling mode)...")
 
-        # Initialize and start polling
         await self._app.initialize()
         await self._app.start()
 
-        # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
         self._bot_username = bot_info.username
         self._bot_user_id = bot_info.id
         logger.info(f"Telegram bot @{bot_info.username} connected")
 
-        # Start polling (this runs until cancelled)
         assert self._app.updater
         await self._app.updater.start_polling(
             allowed_updates=["message"],
-            drop_pending_updates=True,  # Ignore old messages on startup
+            drop_pending_updates=True,
         )
 
         try:
@@ -187,10 +109,7 @@ class TelegramChannel(BaseChannel):
         except asyncio.CancelledError:
             pass
         finally:
-            # Cancel all typing indicators
-            for chat_id in list(self._typing_tasks):
-                self._stop_typing(chat_id)
-
+            self._typing.detach()
             if self._app:
                 logger.info("Stopping Telegram bot...")
                 await self._app.updater.stop()
@@ -223,7 +142,7 @@ class TelegramChannel(BaseChannel):
                     mime = filetype.guess_mime(str(image_path))
                 if not mime or not mime.startswith("image/"):
                     raise ValueError(f"Telegram outbound media is not an image: {msg.media[0]}")
-                caption = _markdown_to_telegram_html(msg.content) if msg.content else None
+                caption = markdown_to_telegram_html(msg.content) if msg.content else None
                 with image_path.open("rb") as photo:
                     await self._app.bot.send_photo(
                         chat_id=chat_id,
@@ -232,16 +151,22 @@ class TelegramChannel(BaseChannel):
                         parse_mode="HTML" if caption else None,
                     )
                 return
-            # Convert markdown to Telegram HTML
-            html_content = _markdown_to_telegram_html(msg.content)
-            await self._app.bot.send_message(chat_id=chat_id, text=html_content, parse_mode="HTML")
+            await self._send_text(chat_id, msg.content)
         except Exception as e:
-            # Fallback to plain text if HTML parsing fails
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
             try:
                 await self._app.bot.send_message(chat_id=chat_id, text=msg.content)
             except Exception as e2:
                 logger.error(f"Error sending Telegram message: {e2}")
+
+    async def _send_text(self, chat_id: int, content: str) -> None:
+        """Send text content as one or more messages, splitting at limit."""
+        assert self._app is not None
+        for chunk in split_long(content, TELEGRAM_TEXT_LIMIT):
+            html_content = markdown_to_telegram_html(chunk)
+            await self._app.bot.send_message(
+                chat_id=chat_id, text=html_content, parse_mode="HTML"
+            )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
@@ -261,8 +186,8 @@ class TelegramChannel(BaseChannel):
         self._chat_ids[sender_id] = chat_id
 
         # Build content from text and/or media
-        content_parts = []
-        media_paths = []
+        content_parts: list[str] = []
+        media_paths: list[str] = []
         media_metadata: list[MediaMetadata] = []
         str_chat_id = str(chat_id)
 
@@ -352,7 +277,6 @@ class TelegramChannel(BaseChannel):
 
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
 
-        # Forward to the message bus
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str_chat_id,
@@ -382,34 +306,11 @@ class TelegramChannel(BaseChannel):
                 return "mention"
         return None
 
-    def _start_typing(self, chat_id: str) -> None:
-        """Start sending 'typing...' indicator for a chat."""
-        # Cancel any existing typing task for this chat
-        self._stop_typing(chat_id)
-        self._typing_tasks[chat_id] = asyncio.create_task(self._typing_loop(chat_id))
-
-    def _stop_typing(self, chat_id: str) -> None:
-        """Stop the typing indicator for a chat."""
-        task = self._typing_tasks.pop(chat_id, None)
-        if task and not task.done():
-            task.cancel()
-
     async def notify_typing(self, event: TypingEvent) -> None:
         if event.is_typing:
-            self._start_typing(event.address.chat_id)
+            await self._typing.start(event.address.chat_id)
         else:
-            self._stop_typing(event.address.chat_id)
-
-    async def _typing_loop(self, chat_id: str) -> None:
-        """Repeatedly send 'typing' action until cancelled."""
-        try:
-            while self._app:
-                await self._app.bot.send_chat_action(chat_id=int(chat_id), action="typing")
-                await asyncio.sleep(4)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"Typing indicator stopped for {chat_id}: {e}")
+            self._typing.stop(event.address.chat_id)
 
     async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log polling / handler errors instead of silently swallowing them."""

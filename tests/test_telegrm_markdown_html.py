@@ -1,20 +1,17 @@
-"""Tests for ``benchclaw.channels.telegrm.markdown_to_telegram_html``.
+"""Tests for ``benchclaw.channels.telegrm.markdown_html``.
 
-A pure-function utility powering Telegram delivery: model output
-(markdown) → Telegram HTML.
+Two pure-function utilities power Telegram delivery:
+- ``markdown_to_telegram_html``: model output (markdown) → Telegram HTML.
+- ``split_long``: keeps each chunk under Telegram's 4096-char limit.
 
 Rendering bugs here are user-visible — broken bold, leaked HTML
 metacharacters, links that don't click. Cheap and high-value to lock
 down with unit tests.
-
-NOTE: Phase 2 splits ``channels/telegrm.py`` into a package with a
-public ``markdown_html`` module and adds ``split_long``. Tests for
-``split_long`` land with that phase.
 """
 
 from __future__ import annotations
 
-from benchclaw.channels.telegrm import _markdown_to_telegram_html as markdown_to_telegram_html
+from benchclaw.channels.telegrm.markdown_html import markdown_to_telegram_html, split_long
 
 
 def test_empty_input_returns_empty_string():
@@ -104,3 +101,57 @@ def test_inline_code_protects_markdown_inside():
 def test_bold_inside_link_text():
     rendered = markdown_to_telegram_html("[**important**](https://x)")
     assert rendered == '<a href="https://x"><b>important</b></a>'
+
+
+# ---------------------------------------------------------------------------
+# split_long
+# ---------------------------------------------------------------------------
+
+
+def test_split_long_short_input_returns_single_chunk():
+    assert split_long("hi", 100) == ["hi"]
+
+
+def test_split_long_prefers_paragraph_boundary():
+    """When the limit lands past a blank line, cut at the most recent
+    ``\\n\\n`` rather than mid-word."""
+    text = "para one\n\npara two more text"
+    chunks = split_long(text, 12)
+    assert chunks[0] == "para one"
+    # remainder may be split further (no break in "para two more text"),
+    # but reassembly must round-trip.
+    assert "".join(chunks).replace("", "") == "para onepara two more text"
+
+
+def test_split_long_falls_back_to_single_newline():
+    text = "line one\nline two more text"
+    chunks = split_long(text, 12)
+    assert chunks[0] == "line one"
+    assert "line two" in chunks[1]
+
+
+def test_split_long_hard_cuts_when_no_break_available():
+    """No newline before the limit → cut at exactly the limit."""
+    text = "a" * 50
+    chunks = split_long(text, 20)
+    assert all(len(c) <= 20 for c in chunks)
+    assert "".join(chunks) == text
+
+
+def test_split_long_strips_chunk_trailing_whitespace():
+    text = "first   \n\nsecond"
+    chunks = split_long(text, 10)
+    assert chunks[0] == "first"
+
+
+def test_split_long_drops_leading_newlines_on_followup():
+    """``\\n\\n`` separator should not become a leading blank line in the
+    next chunk."""
+    text = "alpha\n\nbeta gamma delta"
+    chunks = split_long(text, 8)
+    assert chunks[1].lstrip("\n") == chunks[1]
+
+
+def test_split_long_handles_exact_limit():
+    text = "x" * 10
+    assert split_long(text, 10) == [text]
