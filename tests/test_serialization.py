@@ -77,11 +77,13 @@ def test_session_save_load_roundtrip(tmp_path: Path):
     loaded = Session.load(path)
     assert loaded is not None
     assert loaded.addr == addr
-    assert len(loaded.messages) == 2
-    assert loaded.messages[0]["content"] == "hello"
-    assert loaded.messages[0]["media"] == ["workspace/media/telegram/99/20260308_101530/abc.jpg"]
-    assert loaded.messages[0]["media_metadata"][0]["media_type"] == "image"
-    assert loaded.messages[1]["metadata"]["tools_used"] == ["search"]
+    assert len(loaded.events) == 2
+    assert isinstance(loaded.events[0], UserEvent)
+    assert loaded.events[0].content == "hello"
+    assert loaded.events[0].media == ["workspace/media/telegram/99/20260308_101530/abc.jpg"]
+    assert loaded.events[0].media_metadata[0]["media_type"] == "image"
+    assert isinstance(loaded.events[1], AssistantEvent)
+    assert loaded.events[1].metadata["tools_used"] == ["search"]
 
 
 def test_session_load_missing_file(tmp_path: Path):
@@ -125,8 +127,30 @@ def test_session_clear(tmp_path: Path):
     session = Session(addr=addr)
     session.append(UserEvent(content="test"))
     session.clear()
-    assert session.messages == []
+    assert session.events == []
     assert session.compacted_through == -1
+
+
+def test_session_clear_writes_marker_so_audit_trail_persists(tmp_path: Path):
+    """``/clear`` should not truncate the JSONL file — the prior conversation
+    stays on disk; the next load drops events before the marker."""
+    addr = MessageAddress(channel="telegram", chat_id="1")
+    path = tmp_path / "session.jsonl"
+    session = Session(addr=addr)
+    session.attach_log(path, write_header=True)
+    session.append(UserEvent(content="before clear"))
+    session.clear()
+    session.append(UserEvent(content="after clear"))
+
+    raw_lines = [line for line in path.read_text().splitlines() if line.strip()]
+    # metadata header + 2 events + 1 clear marker = 4 lines
+    assert len(raw_lines) == 4
+
+    loaded = Session.load(path)
+    assert loaded is not None
+    assert len(loaded.events) == 1
+    assert isinstance(loaded.events[0], UserEvent)
+    assert loaded.events[0].content == "after clear"
 
 
 @pytest.mark.asyncio
@@ -154,7 +178,7 @@ def test_session_history_includes_sender_and_timestamp_prefix() -> None:
         )
     )
 
-    rendered = session.get_history()[-1]
+    rendered = session.render_history(session.events)[-1]
     assert rendered["role"] == "user"
     assert rendered["content"].startswith("[Gaurav @")
     assert rendered["content"].endswith(": hello")
@@ -168,7 +192,7 @@ def test_session_history_includes_user_timestamp_prefix() -> None:
         UserEvent(content="ping", sender_id="7|alice", metadata={"sender_label": "alice"})
     )
 
-    history = session.get_history()
+    history = session.render_history(session.events)
     assert history[-1]["role"] == "user"
     assert history[-1]["content"].startswith("[alice @")
     assert history[-1]["content"].endswith(": ping")
@@ -225,8 +249,8 @@ async def test_session_manager_persists_on_exit(tmp_path: Path):
     # Re-enter and check the session was saved
     async with SessionManager(tmp_path) as sm2:
         s2 = sm2.get(addr)
-        assert len(s2.messages) == 1
-        assert s2.messages[0]["content"] == "persisted"
+        assert len(s2.events) == 1
+        assert s2.events[0].content == "persisted"
 
 
 @pytest.mark.asyncio
@@ -242,7 +266,7 @@ async def test_session_manager_save_midway(tmp_path: Path):
     assert path.exists()
     loaded = Session.load(path)
     assert loaded is not None
-    assert loaded.messages[0]["content"] == "mid"
+    assert loaded.events[0].content == "mid"
 
 
 @pytest.mark.asyncio

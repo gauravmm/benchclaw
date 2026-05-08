@@ -19,6 +19,9 @@ _MAX_REASONING_CHARS = 500
 
 EventKind = Literal["user", "assistant", "tool", "system", "summary"]
 
+# Persistence-only marker kinds; not part of ConversationEvent.
+ClearAction = Literal["reset", "forget"]
+
 
 @dataclass(frozen=True)
 class RenderOptions:
@@ -297,6 +300,21 @@ class SummaryEvent(BaseEvent):
 ConversationEvent = UserEvent | AssistantEvent | ToolEvent | SystemEvent | SummaryEvent
 
 
+def _clear_record(action: ClearAction) -> dict[str, Any]:
+    """Build a persistence marker line written by :meth:`Session.clear`.
+
+    On load, events written before the most recent clear marker are
+    dropped from the in-memory history. The audit trail (the older
+    events) stays on disk.
+    """
+    return {
+        "_type": "marker",
+        "kind": "clear",
+        "action": action,
+        "timestamp": now_aware().isoformat(timespec="seconds"),
+    }
+
+
 def event_from_record(record: dict[str, Any]) -> ConversationEvent:
     kind = record["kind"]
     timestamp = _parse_timestamp(record["timestamp"])
@@ -350,19 +368,34 @@ class Session:
     updated_at: datetime = field(default_factory=now_aware)
     metadata: dict[str, Any] = field(default_factory=dict)
     compacted_through: int = -1
+    _log_path: Path | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.created_at = ensure_aware(self.created_at)
         self.updated_at = ensure_aware(self.updated_at)
 
-    @property
-    def messages(self) -> list[dict[str, Any]]:
-        """Compatibility view of persisted events."""
-        return [event.to_record() for event in self.events]
+    def attach_log(self, path: Path, *, write_header: bool) -> None:
+        """Bind this session to a JSONL file for incremental writes.
+
+        ``write_header=True`` (new session): create the file and write the
+        metadata header. ``write_header=False`` (loaded session): reuse the
+        existing file; subsequent ``append`` / ``clear`` calls write one
+        line each, so a kill -9 mid-turn never drops the in-memory tail.
+        """
+        self._log_path = path
+        if write_header:
+            self.save(path)
+
+    def _append_log_line(self, record: dict[str, Any]) -> None:
+        if self._log_path is None:
+            return
+        with open(self._log_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
     def append(self, event: ConversationEvent) -> None:
         self.events.append(event)
         self.updated_at = now_aware()
+        self._append_log_line(event.to_record())
 
     def compact(self, log_store: LogStore | None, *, log_limit: int = 20) -> None:
         recent_activity = log_store.read_recent(n=log_limit) if log_store else "[No logs available]"
@@ -411,7 +444,7 @@ class Session:
             return None
         return media_repo.build_media_blocks(options.pending_media_paths)
 
-    def _render_history(
+    def render_history(
         self,
         history: list[ConversationEvent],
         *,
@@ -447,7 +480,7 @@ class Session:
         history = self.get_history_events(max_messages)
         return [
             {"role": "system", "content": system_prompt},
-            *self._render_history(history, media_repo=media_repo, options=options),
+            *self.render_history(history, media_repo=media_repo, options=options),
         ]
 
     def get_history_events(self, max_messages: int = 50) -> list[ConversationEvent]:
@@ -468,15 +501,17 @@ class Session:
                 history = history[-max_messages:]
         return history
 
-    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
-        """Render the current conversation history for the provider."""
-        return self._render_history(self.get_history_events(max_messages))
+    def clear(self, action: ClearAction = "reset") -> None:
+        """Clear all events from the in-memory history.
 
-    def clear(self) -> None:
-        """Clear all events and reset the session state."""
+        Writes a clear marker to the log file so the prior conversation is
+        retained on disk; events before the most recent marker are dropped
+        from the rendered history at load time.
+        """
         self.events = []
         self.compacted_through = -1
         self.updated_at = now_aware()
+        self._append_log_line(_clear_record(action))
 
     def describe_current_session(self) -> str:
         """Return a readable prompt label for the current chat when possible."""
@@ -518,8 +553,9 @@ class Session:
                         continue
 
                     data = json.loads(line)
+                    record_type = data.get("_type")
 
-                    if data.get("_type") == "metadata":
+                    if record_type == "metadata":
                         metadata = data.get("metadata", {})
                         created_at = (
                             _parse_timestamp(data["created_at"]) if data.get("created_at") else None
@@ -530,6 +566,11 @@ class Session:
                         compacted_through = data.get("compacted_through", -1)
                         if data.get("address"):
                             addr = MessageAddress.from_string(data["address"])
+                    elif record_type == "marker" and data.get("kind") == "clear":
+                        # Drop everything before the most recent clear; the
+                        # audit trail stays on disk but isn't rendered.
+                        events = []
+                        compacted_through = -1
                     else:
                         events.append(event_from_record(data))
 
@@ -594,12 +635,15 @@ class SessionManager:
                 self._archive(old_session)
             sessions = sessions[:MAX_SESSIONS]
 
+        for session in sessions:
+            session.attach_log(self._get_session_path(session.addr), write_header=False)
         self._cache = {s.addr: s for s in sessions}
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        for session in self._cache.values():
-            session.save(self._get_session_path(session.addr))
+        # No-op: every Session.append already wrote its line. Kept so
+        # ``async with`` callers don't have to change.
+        return None
 
     def _archive(self, s: Session) -> None:
         path = self._get_session_path(s.addr)
@@ -616,7 +660,9 @@ class SessionManager:
 
     def get(self, key: MessageAddress) -> Session:
         if key not in self._cache:
-            self._cache[key] = Session(addr=key)
+            session = Session(addr=key)
+            session.attach_log(self._get_session_path(key), write_header=True)
+            self._cache[key] = session
             if len(self._cache) > MAX_SESSIONS:
                 oldest = min(
                     (s for s in self._cache.values() if s.addr != key),
