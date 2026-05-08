@@ -154,6 +154,10 @@ class _MCPLiveConnection:
 class _MCPServerSlot:
     """Restartable controller for one configured MCP server."""
 
+    # Base delay between connect attempts. Class-level so tests can drop it
+    # to 0 without poking instance state.
+    RETRY_DELAY_S: float = 2.0
+
     def __init__(self, config: MCPServerConfig) -> None:
         self.config = config
         self.connection: _MCPLiveConnection | None = None
@@ -184,9 +188,11 @@ class _MCPServerSlot:
             await connection.__aexit__(None, None, None)
 
     async def _connect_with_retries(
-        self, reason: str, attempts: int = 3, delay: float = 2.0
+        self, reason: str, attempts: int = 3, delay: float | None = None
     ) -> None:
         """Connect or reconnect this server with bounded retries and backoff."""
+        if delay is None:
+            delay = self.RETRY_DELAY_S
 
         for attempt in range(1, attempts + 1):
             try:
@@ -236,7 +242,23 @@ class _MCPServerSlot:
             except Exception as e:
                 logger.warning(f"MCP: call to '{tool_name}' on '{self.config.name}' failed: {e}")
                 await self._drop_connection()
-                raise
+                # One reconnect-and-retry — the most common failure mode is a
+                # stale session at the server end, and a fresh connect either
+                # recovers or surfaces a different error the caller can act on.
+                try:
+                    await self._connect_with_retries("session restore after tool failure")
+                except Exception:
+                    raise e
+                connection = self.connection
+                assert connection is not None
+                try:
+                    return await connection.call_tool(tool_name, arguments)
+                except Exception as e2:
+                    logger.warning(
+                        f"MCP: retry of '{tool_name}' on '{self.config.name}' failed: {e2}"
+                    )
+                    await self._drop_connection()
+                    raise
 
 
 class MCPManager:
@@ -247,6 +269,10 @@ class MCPManager:
     and discover their tools. On exit, all connections are cleanly closed.
     """
 
+    # Mirrors _MCPServerSlot.RETRY_DELAY_S for ergonomic configuration via
+    # ``manager.RETRY_DELAY_S = 0`` at the manager level (tests, mostly).
+    RETRY_DELAY_S: float = _MCPServerSlot.RETRY_DELAY_S
+
     def __init__(self, server_configs: list[MCPServerConfig]) -> None:
         server_names = [cfg.name for cfg in server_configs]
         duplicate_names = sorted({name for name in server_names if server_names.count(name) > 1})
@@ -255,6 +281,12 @@ class MCPManager:
             raise ValueError(f"Duplicate MCP server names are not allowed: {duplicates}")
 
         self._servers = {cfg.name: _MCPServerSlot(cfg) for cfg in server_configs}
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        if name == "RETRY_DELAY_S":
+            for slot in getattr(self, "_servers", {}).values():
+                slot.RETRY_DELAY_S = value
 
     async def __aenter__(self) -> "MCPManager":
         servers = list(self._servers.values())

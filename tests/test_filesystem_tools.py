@@ -104,8 +104,8 @@ async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
     result = await edit_tool.execute(
         ctx,
         path="notes.txt",
-        old_text="hello",
-        new_text="goodbye",
+        old_str="hello",
+        new_str="goodbye",
     )
 
     assert result == "Successfully edited notes.txt"
@@ -114,8 +114,8 @@ async def test_edit_existing_file_succeeds_after_read_and_refreshes_snapshot(
     second_result = await edit_tool.execute(
         ctx,
         path="notes.txt",
-        old_text="goodbye",
-        new_text="hello",
+        old_str="goodbye",
+        new_str="hello",
     )
 
     assert second_result == "Successfully edited notes.txt"

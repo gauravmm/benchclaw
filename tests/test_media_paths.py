@@ -1,7 +1,7 @@
 """Tests for MediaRepository."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from benchclaw.bus import MessageAddress
@@ -245,8 +245,12 @@ def test_purge_old_only_removes_old_registered_media(tmp_path: Path):
     repo = MediaRepository(tmp_path, max_age_days=30)
     repo.load()
 
-    old_ts = datetime(2025, 1, 1, 12, 0, 0)
-    new_ts = datetime(2026, 3, 10, 14, 23, 0)
+    # Anchor relative to wall-clock so this stays valid as time advances —
+    # the test was originally written against fixed 2025/2026 dates and
+    # rotted out once both fell on the wrong side of the 30-day cutoff.
+    now = datetime.now()
+    old_ts = now - timedelta(days=120)
+    new_ts = now - timedelta(days=1)
 
     old_path = repo.register(
         _wa("555"),

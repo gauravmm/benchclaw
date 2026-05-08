@@ -7,7 +7,8 @@ Time: {{ now }}
 Workspace: {{ workspace_path }}
 {% if model %}Model: {{ model | xml_text }} (context window: {{ context_window }} tokens)
 {% endif %}
-{% if channel and chat_id %}Session: {{ channel | xml_text }} / {{ chat_id | xml_text }}
+{% if session_label %}Session: {{ session_label | xml_text }}
+{% elif channel and chat_id %}Session: {{ channel | xml_text }} / {{ chat_id | xml_text }}
 {% endif %}{% if memory_files %}Memory ({{ workspace_path }}/memory/): {{ memory_files | join(", ") | xml_text }}
 {% endif %}
 
@@ -33,11 +34,14 @@ MCP tool names are prefixed with their server name, for example `mcp__hive__upda
 {%- macro tool_details(tool) -%}
 {%- set props = tool.parameters.get('properties', {}) -%}
 {%- set req = tool.parameters.get('required', []) -%}
-{{ (tool.description or '') | xml_text }}{% if props %} Args: {% for name, prop in props.items() %}{{ name }}{% if name not in req %}?{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
+{{ (tool.description or '') | xml_text }}{% if props %} Args: {% for name, prop in props.items() %}{{ name }}{% if name not in req %}?{% endif %}{% if prop.get('description') %} — {{ prop.description | xml_text }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
 {%- endmacro %}
 <tools>
 {% for tool in tools %}  <tool name="{{ tool.name | xml_attr }}">{{ tool_details(tool) }}</tool>
 {% endfor %}</tools>
+{% if 'annotate_media' in (tools | map(attribute='name') | list) %}
+When the user sends an image (or any media), you MUST call `annotate_media` to record what it shows before your final reply, so the caption can be searched later.
+{% endif %}
 {% endif %}
 {% if bootstrap_files %}
 ## Workspace
