@@ -1,6 +1,5 @@
 """Tool registry: manages tool lifecycle and execution."""
 
-import asyncio
 import contextlib
 from collections.abc import Iterable
 from typing import Any, Self
@@ -15,9 +14,10 @@ class ToolRegistry:
     """
     Registry for agent tools.
 
-    Manages tool construction, lifecycle (background tasks and async context
-    managers), and execution. Enter as an async context manager to start all
-    tool background() tasks and enter any tool async context managers.
+    Manages tool construction and async-context lifecycle. Enter as an
+    async context manager to enter every tool that implements
+    ``__aenter__`` and the MCP manager. Long-running tool loops (cron)
+    are owned by ``AgentLoop``'s TaskGroup, not by the registry.
     Raises RuntimeError if entered more than once on the same instance.
     """
 
@@ -42,19 +42,11 @@ class ToolRegistry:
         for tool in self._tools.values():
             if hasattr(tool, "__aenter__"):
                 await self._exit_stack.enter_async_context(tool)  # type: ignore[arg-type]
-            if type(tool).background is not Tool.background:
-                tool._task = asyncio.create_task(tool.background(self._master_ctx), name=tool.name)
         if self._mcp_manager:
             await self._exit_stack.enter_async_context(self._mcp_manager)
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
-        for tool in self._tools.values():
-            if tool._task:
-                tool._task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
-                    await asyncio.wait_for(asyncio.shield(tool._task), timeout=5.0)
-                tool._task = None
         await self._exit_stack.__aexit__(*exc_info)
         self._running = False
 

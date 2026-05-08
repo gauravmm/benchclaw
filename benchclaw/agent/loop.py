@@ -15,6 +15,7 @@ from benchclaw.agent.loop_state import AddressState, ToolCallTracker
 from benchclaw.agent.prompt import PromptBuilder
 from benchclaw.agent.response import ResponseHandler
 from benchclaw.agent.tools.base import ToolContext
+from benchclaw.agent.tools.cron.tool import CronTool
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
@@ -260,6 +261,9 @@ class AgentLoop:
                             tg.create_task(self._address_loop(addr), name=f"agent-{addr}")
 
                     tg.create_task(_dispatch(), name="agent-dispatch")
+                    cron_tool = self.tools.get("cron")
+                    if isinstance(cron_tool, CronTool):
+                        tg.create_task(cron_tool.run_loop(), name="cron-loop")
             except* asyncio.CancelledError:
                 # Cooperative shutdown: TaskGroup has already cancelled and
                 # awaited every per-address task plus the dispatcher; swallow

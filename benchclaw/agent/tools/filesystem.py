@@ -8,20 +8,25 @@ from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext
 
 
 def _resolve_path(path: str, ctx: ToolContext) -> Path:
-    """Resolve path and enforce directory restriction."""
-    resolved = Path(path) if path.startswith("/") else ctx.workspace / path
-    resolved = resolved.expanduser().resolve()
+    """Resolve *path* against the workspace and enforce ``allowed_dir``.
 
-    # Must be within allowed_dir if specified, to prevent accidental or malicious access to sensitive files outside the workspace.
-    if ctx.allowed_dir and not str(resolved).startswith(str(ctx.allowed_dir.resolve())):
-        raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
+    Absolute paths are honoured; relative paths join onto the workspace.
+    Symlinks are resolved before the allowed-dir check so escapes via
+    ``..`` or symlink to ``/etc/passwd`` are caught.
+    """
+    p = Path(path).expanduser()
+    resolved = (p if p.is_absolute() else ctx.workspace / p).resolve()
+    if ctx.allowed_dir is not None:
+        allowed = ctx.allowed_dir.resolve()
+        if allowed not in resolved.parents and resolved != allowed:
+            raise PermissionError(f"Path {path} is outside allowed directory {ctx.allowed_dir}")
     return resolved
 
 
 def _display_path(path: Path, ctx: ToolContext) -> str:
-    """Return a workspace-relative display path when possible."""
+    """Workspace-relative display path; absolute fallback when outside the workspace."""
     try:
-        return str(path.relative_to(ctx.workspace))
+        return str(path.resolve().relative_to(ctx.workspace.resolve()))
     except ValueError:
         return str(path)
 

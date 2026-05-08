@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Any
 
 from benchclaw.bus import MessageAddress, MessageBus, ToolResult
 
+# NOTE: ``Task`` is imported solely so the ``ToolContext.background_tasks``
+# field below resolves; the legacy ``Tool.background`` / ``Tool._task``
+# lifecycle was dropped in Phase 4a — long-running tool loops (cron) are
+# now owned by ``AgentLoop``'s TaskGroup.
+
 if TYPE_CHECKING:
     from benchclaw.agent.tools.memory import LogStore
     from benchclaw.media import MediaRepository
@@ -43,8 +48,6 @@ class Tool:
     Tools are capabilities that the agent can use to interact with
     the environment, such as reading files, executing commands, etc.
     """
-
-    _task: Task | None = None
 
     # When True, a turn whose only tool call is this tool ends the turn —
     # the loop skips the follow-up LLM call. Use for tools that already
@@ -86,10 +89,6 @@ class Tool:
         Returns:
             String result of the tool execution.
         """
-        pass
-
-    async def background(self, ctx: "ToolContext") -> None:
-        """Optional long-running coroutine started by ToolRegistry.__aenter__. No-op by default."""
         pass
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:

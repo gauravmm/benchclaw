@@ -134,8 +134,8 @@ class CronTool(Tool):
             logger.error(f"Cron: job '{job.id}' failed: {e}")
         self._store.executed(job.id, start)
 
-    async def background(self, ctx: ToolContext) -> None:
-        """Run the cron loop until cancelled."""
+    async def run_loop(self) -> None:
+        """Run the cron loop until cancelled. Started as a task by AgentLoop."""
         import asyncio
 
         try:
