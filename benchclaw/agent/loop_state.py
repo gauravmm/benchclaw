@@ -21,12 +21,6 @@ class AddressState:
     pending_media: list[str] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class BatchApplication:
-    needs_llm: bool = False
-    start_typing: bool = False
-
-
 class ToolCallTracker:
     """Per-address tracker for in-flight background tool calls."""
 

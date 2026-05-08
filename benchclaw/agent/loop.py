@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 from loguru import logger
@@ -10,7 +11,7 @@ from loguru import logger
 from benchclaw.agent.cache_monitor import PromptCacheMonitor
 from benchclaw.agent.compactor import Compactor
 from benchclaw.agent.dump import dump_messages
-from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
+from benchclaw.agent.loop_state import AddressState, ToolCallTracker
 from benchclaw.agent.prompt import PromptBuilder
 from benchclaw.agent.response import ResponseHandler
 from benchclaw.agent.tools.base import ToolContext
@@ -137,16 +138,17 @@ class AgentLoop:
             session.append(SystemEvent(content=content))
         state.pending_system_events.clear()
 
-    def _apply_batch(
+    async def _apply_batch(
         self,
         batch: InboundMessageBatch,
         session: Session,
         tracker: ToolCallTracker,
         addr: MessageAddress,
         state: AddressState,
-    ) -> BatchApplication:
+    ) -> bool:
+        """Apply one inbound batch to the session and return whether the
+        address loop should run an LLM turn after this batch."""
         needs_llm = False
-        start_typing = False
 
         for result in batch.tool_results:
             tracker.handle_result(result, session)
@@ -154,8 +156,7 @@ class AgentLoop:
             self._flush_pending_system_events(session, state)
             # Skip the follow-up LLM call after a lone terminal_when_lone
             # tool turn (e.g. send_media) — the tool already produced the
-            # user-visible reply. Pending system events stay flushed so a
-            # subsequent user message renders cleanly.
+            # user-visible reply.
             if not tracker.take_terminal_when_lone():
                 needs_llm = True
 
@@ -168,7 +169,7 @@ class AgentLoop:
                 needs_llm = True
 
         if batch.user_messages:
-            start_typing = True
+            await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
             if tracker.pending:
                 tracker.handle_interrupt(session)
             self._flush_pending_system_events(session, state)
@@ -185,7 +186,7 @@ class AgentLoop:
             state.iteration_count = 0
             needs_llm = True
 
-        return BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
+        return needs_llm
 
     async def _process_llm_turn(
         self,
@@ -226,10 +227,8 @@ class AgentLoop:
                 await self.bus.publish_outbound(TypingEvent(addr, is_typing=False))
 
             batch = await self.bus.consume_inbound_batch(address=addr)
-            batch_result = self._apply_batch(batch, session, tracker, addr, state)
-            if batch_result.start_typing:
-                await self.bus.publish_outbound(TypingEvent(addr, is_typing=True))
-            if not batch_result.needs_llm:
+            needs_llm = await self._apply_batch(batch, session, tracker, addr, state)
+            if not needs_llm:
                 continue
 
             if state.iteration_count >= self.config.max_tool_iterations:
@@ -246,25 +245,23 @@ class AgentLoop:
             )
 
     async def run(self) -> None:
-        async with self.sessions:
-            async with self.tools:
-                logger.info("Agent loop started")
-                new_addr_queue = self.bus.subscribe_new_addresses()
-                addr_tasks: dict[MessageAddress, asyncio.Task] = {}
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(self.sessions)
+            await stack.enter_async_context(self.tools)
+            logger.info("Agent loop started")
+            new_addr_queue = self.bus.subscribe_new_addresses()
 
-                async def _dispatch() -> None:
-                    while True:
-                        addr = await new_addr_queue.get()
-                        addr_tasks[addr] = asyncio.create_task(
-                            self._address_loop(addr), name=f"agent-{addr}"
-                        )
+            try:
+                async with asyncio.TaskGroup() as tg:
 
-                dispatch_task = asyncio.create_task(_dispatch())
-                try:
-                    await asyncio.get_event_loop().create_future()
-                except asyncio.CancelledError:
-                    for task in [dispatch_task, *addr_tasks.values()]:
-                        task.cancel()
-                    await asyncio.gather(
-                        dispatch_task, *addr_tasks.values(), return_exceptions=True
-                    )
+                    async def _dispatch() -> None:
+                        while True:
+                            addr = await new_addr_queue.get()
+                            tg.create_task(self._address_loop(addr), name=f"agent-{addr}")
+
+                    tg.create_task(_dispatch(), name="agent-dispatch")
+            except* asyncio.CancelledError:
+                # Cooperative shutdown: TaskGroup has already cancelled and
+                # awaited every per-address task plus the dispatcher; swallow
+                # the re-raised group so callers see a clean exit.
+                pass
