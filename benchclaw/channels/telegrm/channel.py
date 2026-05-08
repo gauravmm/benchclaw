@@ -1,13 +1,14 @@
-"""Telegram channel lifecycle, ``send``, and inbound dispatch wiring."""
+"""Telegram channel lifecycle and inbound dispatch wiring.
+
+The outbound pipeline lives in :mod:`benchclaw.channels.telegrm.outbound`.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from pathlib import Path
 from typing import Any
 
-import filetype
 from loguru import logger
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
@@ -15,14 +16,10 @@ from telegram.request import HTTPXRequest
 
 from benchclaw.bus import MediaMetadata, MessageAddress, MessageBus, OutboundMessage, TypingEvent
 from benchclaw.channels.base import BaseChannel
+from benchclaw.channels.telegrm import outbound
 from benchclaw.channels.telegrm.config import TelegramConfig
-from benchclaw.channels.telegrm.markdown_html import markdown_to_telegram_html, split_long
 from benchclaw.channels.telegrm.typing_loop import TypingManager
 from benchclaw.media import MediaRepository
-
-# Telegram caps message text at 4096 chars and captions at 1024.
-TELEGRAM_TEXT_LIMIT = 4096
-TELEGRAM_CAPTION_LIMIT = 1024
 
 
 class TelegramChannel(BaseChannel):
@@ -118,55 +115,8 @@ class TelegramChannel(BaseChannel):
                 self._app = None
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send a message through Telegram."""
-        if not self._app:
-            logger.warning("Telegram bot not running")
-            return
-
-        try:
-            chat_id = int(msg.address.chat_id)
-        except ValueError:
-            logger.error(f"Invalid chat_id: {msg.address.chat_id}")
-            return
-
-        try:
-            if msg.media:
-                if self.media_repo and not Path(msg.media[0]).is_absolute():
-                    image_path, mime = self.media_repo.resolve_file(msg.media[0])
-                else:
-                    image_path = Path(msg.media[0])
-                    if not image_path.is_absolute():
-                        image_path = Path.cwd() / image_path
-                    if not image_path.is_file():
-                        raise FileNotFoundError(f"Telegram image not found: {msg.media[0]}")
-                    mime = filetype.guess_mime(str(image_path))
-                if not mime or not mime.startswith("image/"):
-                    raise ValueError(f"Telegram outbound media is not an image: {msg.media[0]}")
-                caption = markdown_to_telegram_html(msg.content) if msg.content else None
-                with image_path.open("rb") as photo:
-                    await self._app.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=photo,
-                        caption=caption,
-                        parse_mode="HTML" if caption else None,
-                    )
-                return
-            await self._send_text(chat_id, msg.content)
-        except Exception as e:
-            logger.warning(f"HTML parse failed, falling back to plain text: {e}")
-            try:
-                await self._app.bot.send_message(chat_id=chat_id, text=msg.content)
-            except Exception as e2:
-                logger.error(f"Error sending Telegram message: {e2}")
-
-    async def _send_text(self, chat_id: int, content: str) -> None:
-        """Send text content as one or more messages, splitting at limit."""
-        assert self._app is not None
-        for chunk in split_long(content, TELEGRAM_TEXT_LIMIT):
-            html_content = markdown_to_telegram_html(chunk)
-            await self._app.bot.send_message(
-                chat_id=chat_id, text=html_content, parse_mode="HTML"
-            )
+        """Send a message through Telegram via the outbound pipeline."""
+        await outbound.send(self, msg)
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
