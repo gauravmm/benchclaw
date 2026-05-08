@@ -13,7 +13,7 @@ from benchclaw.agent.tools.mcp_manager import MCPServerConfig
 from benchclaw.agent.tools.shell import ExecToolConfig
 from benchclaw.agent.tools.web import WebSearchConfig
 from benchclaw.channels.telegrm import TelegramConfig
-from benchclaw.channels.whatsapp.channel import WhatsAppConfig
+from benchclaw.channels.whatsapp import WhatsAppConfig
 
 
 class AgentConfig(BaseModel):

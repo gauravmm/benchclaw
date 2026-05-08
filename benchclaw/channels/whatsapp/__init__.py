@@ -1,21 +1,11 @@
 """WhatsApp channel package."""
 
-from typing import Any
-
-from benchclaw.channels.whatsapp.address import (
-    WhatsAppId,
-)
+from benchclaw.channels.whatsapp.address import WhatsAppId
+from benchclaw.channels.whatsapp.channel import WhatsAppChannel
+from benchclaw.channels.whatsapp.config import WhatsAppConfig
 
 __all__ = [
     "WhatsAppChannel",
     "WhatsAppConfig",
     "WhatsAppId",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    if name in {"WhatsAppChannel", "WhatsAppConfig"}:
-        from benchclaw.channels.whatsapp.channel import WhatsAppChannel, WhatsAppConfig
-
-        return {"WhatsAppChannel": WhatsAppChannel, "WhatsAppConfig": WhatsAppConfig}[name]
-    raise AttributeError(name)

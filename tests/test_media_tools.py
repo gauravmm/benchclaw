@@ -10,7 +10,7 @@ from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.media import SearchMediaTool, SendMediaTool
 from benchclaw.bus import MessageAddress, MessageBus, OutboundMessage
 from benchclaw.channels.telegrm import TelegramChannel, TelegramConfig
-from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig
+from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig, inbound
 from benchclaw.media import MediaRepository
 
 PNG_1X1 = (
@@ -327,7 +327,7 @@ async def test_whatsapp_inbound_preserves_direct_chat_id(tmp_path: Path):
         "isGroup": False,
     }
 
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     msg = await bus.consume_inbound(address=MessageAddress("whatsapp", "222355137806442@lid"))
     assert msg.address == MessageAddress("whatsapp", "222355137806442@lid")

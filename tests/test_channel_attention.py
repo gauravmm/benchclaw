@@ -11,7 +11,7 @@ from benchclaw.bus import InboundMessage, MessageAddress, MessageBus, OutboundMe
 from benchclaw.channels.attention import AttentionPolicy, InboundAttentionFilter
 from benchclaw.channels.base import BaseChannel, ChannelConfig
 from benchclaw.channels.telegrm import TelegramChannel, TelegramConfig
-from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig
+from benchclaw.channels.whatsapp import WhatsAppChannel, WhatsAppConfig, inbound
 from benchclaw.channels.whatsapp.address import WhatsAppId
 from benchclaw.channels.whatsapp.bridge import BridgeMessageEvent
 
@@ -351,7 +351,7 @@ async def test_whatsapp_bridge_mapping_sets_public_summon(
 ) -> None:
     bus = MessageBus()
     channel = WhatsAppChannel(WhatsAppConfig(), bus, media_repo=None)
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     address = MessageAddress(channel="whatsapp", chat_id=str(payload["chatId"]))
     msg = await bus.consume_inbound(address=address)
@@ -377,7 +377,7 @@ async def test_whatsapp_bridge_rewrites_bot_id_mentions_to_bot_name() -> None:
         "mentions": ["38818635882692@lid"],
     }
 
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     address = MessageAddress(channel="whatsapp", chat_id=str(payload["chatId"]))
     msg = await bus.consume_inbound(address=address)
@@ -402,7 +402,7 @@ async def test_whatsapp_bridge_uses_name_cache_for_bot_name() -> None:
         "mentions": ["38818635882692@lid"],
     }
 
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     address = MessageAddress(channel="whatsapp", chat_id=str(payload["chatId"]))
     msg = await bus.consume_inbound(address=address)
@@ -431,7 +431,7 @@ async def test_whatsapp_bridge_rewrites_all_resolved_mentions_to_names() -> None
         "mentions": ["38818635882692@lid", "12025550123@s.whatsapp.net"],
     }
 
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     address = MessageAddress(channel="whatsapp", chat_id=str(payload["chatId"]))
     msg = await bus.consume_inbound(address=address)
@@ -456,7 +456,7 @@ async def test_whatsapp_bridge_prefers_resolved_sender_name_for_sender_label() -
         "senderName": "Resolved Name",
     }
 
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     address = MessageAddress(channel="whatsapp", chat_id=str(payload["chatId"]))
     msg = await bus.consume_inbound(address=address)
@@ -476,7 +476,7 @@ async def test_whatsapp_bridge_invalid_payload_is_dropped() -> None:
         "isGroup": True,
     }
 
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     assert bus.inbound == {}
 
@@ -497,7 +497,7 @@ async def test_whatsapp_bridge_uses_mention_names_for_bot_rewrite() -> None:
         "mentions": ["38818635882692@lid"],
     }
 
-    await channel._handle_bridge_message(json.dumps(payload))
+    await inbound.handle_bridge_message(channel, json.dumps(payload))
 
     address = MessageAddress(channel="whatsapp", chat_id=str(payload["chatId"]))
     msg = await bus.consume_inbound(address=address)
