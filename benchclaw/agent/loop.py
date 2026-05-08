@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 from loguru import logger
@@ -11,6 +10,7 @@ from loguru import logger
 from benchclaw.agent.dump import dump_messages
 from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
 from benchclaw.agent.prompt import PromptBuilder
+from benchclaw.agent.response import ResponseHandler
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.memory import LogStore
@@ -21,15 +21,12 @@ from benchclaw.bus import (
     MessageAddress,
     MessageBus,
     OutboundMessage,
-    SystemMessageEvent,
-    ToolResultEvent,
     TypingEvent,
 )
 from benchclaw.config import Config
 from benchclaw.media import MediaRepository
-from benchclaw.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from benchclaw.providers.base import LLMProvider, LLMResponse
 from benchclaw.session import (
-    AssistantEvent,
     Session,
     SessionManager,
     SystemEvent,
@@ -74,23 +71,7 @@ class AgentLoop:
             media_repo=media_repo,
             agent_config=self.config,
         )
-
-    async def _run_tool_and_post(
-        self,
-        tc: ToolCallRequest,
-        call_ctx: ToolContext,
-        addr: MessageAddress,
-    ) -> None:
-        try:
-            result = await self.tools.execute(tc.name, tc.arguments, call_ctx)
-        except asyncio.CancelledError:
-            result = "Cancelled."
-        except Exception as e:
-            result = f"Error executing {tc.name}: {e}"
-        await self.bus.publish_inbound(
-            addr,
-            ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
-        )
+        self.response = ResponseHandler(bus, self.tools, self.config)
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -157,64 +138,8 @@ class AgentLoop:
         call_ctx: ToolContext,
         addr: MessageAddress,
     ) -> None:
-        usage = response.usage
-        logger.info(
-            f"LLM response for {addr}: "
-            f"{usage.get('prompt_tokens', '?')} prompt, "
-            f"{usage.get('completion_tokens', '?')} completion, "
-            f"{usage.get('total_tokens', '?')} total / {self.config.context_window} budget"
-        )
-        self._maybe_compact_session(session, addr, usage.get("total_tokens", 0))
-        content = (response.content or "").rstrip("\n")
-        if response.has_tool_calls:
-            tool_call_dicts = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
-                }
-                for tc in response.tool_calls
-            ]
-            session.append(
-                AssistantEvent(
-                    content=content,
-                    tool_calls=tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
-                )
-            )
-            for tc in response.tool_calls:
-                args_str = json.dumps(tc.arguments, ensure_ascii=False)
-                logger.info(f"Tool call (background): {tc.name}({args_str[:200]})")
-                task = asyncio.create_task(
-                    self._run_tool_and_post(tc, call_ctx, addr),
-                    name=f"tool-{tc.id[:8]}",
-                )
-                tracker.add(tc.id, tc.name, task)
-            if (
-                len(response.tool_calls) == 1
-                and (lone_tool := self.tools.get(response.tool_calls[0].name)) is not None
-                and lone_tool.terminal_when_lone
-            ):
-                tracker.mark_turn_terminal_when_lone()
-            if content:
-                await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
-            return
-
-        if not content:
-            logger.warning(
-                f"LLM returned empty response (no text, no tool calls) for {addr} — injecting nudge"
-            )
-            await self.bus.publish_inbound(
-                addr,
-                SystemMessageEvent(
-                    content="You did not provide a text response. Please respond to the user now."
-                ),
-            )
-            return
-        session.append(AssistantEvent(content=content))
-        preview = content[:120] + "..." if len(content) > 120 else content
-        logger.info(f"Response to {addr}: {preview}")
-        await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
+        self._maybe_compact_session(session, addr, response.usage.get("total_tokens", 0))
+        await self.response.apply(response, session, tracker, call_ctx, addr)
 
     @staticmethod
     def _flush_pending_system_events(session: Session, state: AddressState) -> None:
