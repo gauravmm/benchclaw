@@ -5,6 +5,8 @@ Do not generate tabular output. Use prose or lists instead.
 
 Time: {{ now }}
 Workspace: {{ workspace_path }}
+{% if model %}Model: {{ model | xml_text }} (context window: {{ context_window }} tokens)
+{% endif %}
 {% if channel and chat_id %}Session: {{ channel | xml_text }} / {{ chat_id | xml_text }}
 {% endif %}{% if memory_files %}Memory ({{ workspace_path }}/memory/): {{ memory_files | join(", ") | xml_text }}
 {% endif %}

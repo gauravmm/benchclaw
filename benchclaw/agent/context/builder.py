@@ -49,6 +49,8 @@ class ContextBuilder:
         channel: str | None = None,
         chat_id: str | None = None,
         session_label: str | None = None,
+        model: str | None = None,
+        context_window: int | None = None,
     ) -> str:
         system = platform.system()
         bootstrap_files = [
@@ -76,6 +78,8 @@ class ContextBuilder:
             channel=channel,
             chat_id=chat_id,
             session_label=session_label,
+            model=model,
+            context_window=context_window,
         )
 
     def build_context(

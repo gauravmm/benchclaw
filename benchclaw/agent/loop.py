@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
 
 from benchclaw.agent.context import ContextBuilder
+from benchclaw.agent.dump import dump_messages
+from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.mcp_manager import MCPManager
 from benchclaw.agent.tools.memory import LogStore
@@ -33,76 +34,10 @@ from benchclaw.session import (
     Session,
     SessionManager,
     SystemEvent,
-    ToolEvent,
     UserEvent,
 )
 
 _COMPACT_THRESHOLD = 0.8
-
-
-@dataclass
-class _AddressState:
-    iteration_count: int = 0
-    pending_system_events: list[str] = field(default_factory=list)
-    pending_media: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class _BatchApplication:
-    needs_llm: bool = False
-    start_typing: bool = False
-
-
-class ToolCallTracker:
-    """Per-address tracker for in-flight background tool calls."""
-
-    def __init__(self) -> None:
-        self._in_flight: dict[str, str] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
-
-    @property
-    def tasks(self) -> dict[str, asyncio.Task]:
-        return self._tasks
-
-    @property
-    def pending(self) -> bool:
-        return bool(self._in_flight)
-
-    def add(self, tool_call_id: str, tool_name: str, task: asyncio.Task) -> None:
-        self._in_flight[tool_call_id] = tool_name
-        self._tasks[tool_call_id] = task
-
-    def handle_interrupt(self, session: Session) -> None:
-        if not self._in_flight:
-            return
-        tool_list = ", ".join(f"{name} ({tid[:8]})" for tid, name in self._in_flight.items())
-        session.append(
-            SystemEvent(
-                content="The following tools are still executing in the background: "
-                f"{tool_list}. Their results will arrive as new events."
-            )
-        )
-        self._in_flight.clear()
-
-    def handle_result(self, event: ToolResultEvent, session: Session) -> bool:
-        self._tasks.pop(event.tool_call_id, None)
-        session.append(
-            ToolEvent(
-                content=event.result,
-                tool_call_id=event.tool_call_id,
-                tool_name=event.tool_name,
-            )
-        )
-        if event.tool_call_id in self._in_flight:
-            del self._in_flight[event.tool_call_id]
-            return not self._in_flight
-
-        session.append(
-            SystemEvent(
-                content=f"Background tool '{event.tool_name}' completed. Summarize the result for the user or take any necessary follow-up actions to achieve the goal."
-            )
-        )
-        return True
 
 
 class AgentLoop:
@@ -152,18 +87,6 @@ class AgentLoop:
             addr,
             ToolResultEvent(tool_call_id=tc.id, tool_name=tc.name, result=result),
         )
-
-    def _dump_messages(self, messages: list[dict[str, object]]) -> None:
-        if not self.debug_dump_path:
-            return
-
-        try:
-            self.debug_dump_path.write_text(
-                json.dumps(messages, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            logger.warning(f"Failed to write debug dump: {e}")
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -284,7 +207,7 @@ class AgentLoop:
         await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
 
     @staticmethod
-    def _flush_pending_system_events(session: Session, state: _AddressState) -> None:
+    def _flush_pending_system_events(session: Session, state: AddressState) -> None:
         for content in state.pending_system_events:
             session.append(SystemEvent(content=content))
         state.pending_system_events.clear()
@@ -295,8 +218,8 @@ class AgentLoop:
         session: Session,
         tracker: ToolCallTracker,
         addr: MessageAddress,
-        state: _AddressState,
-    ) -> _BatchApplication:
+        state: AddressState,
+    ) -> BatchApplication:
         needs_llm = False
         start_typing = False
 
@@ -332,7 +255,7 @@ class AgentLoop:
             state.iteration_count = 0
             needs_llm = True
 
-        return _BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
+        return BatchApplication(needs_llm=needs_llm, start_typing=start_typing)
 
     async def _process_llm_turn(
         self,
@@ -345,7 +268,12 @@ class AgentLoop:
         if pending_media is None:
             pending_media = []
         prompt = self.context.build_system_prompt(
-            self.tools.values(), addr.channel, addr.chat_id, session.describe_current_session()
+            self.tools.values(),
+            addr.channel,
+            addr.chat_id,
+            session.describe_current_session(),
+            model=self.config.model,
+            context_window=self.config.context_window,
         )
         llm_messages = session.render_llm_messages(
             prompt,
@@ -353,7 +281,7 @@ class AgentLoop:
             RenderOptions(pending_media_paths=pending_media),
             max_messages=self.config.memory_window,
         )
-        self._dump_messages(llm_messages)
+        dump_messages(self.debug_dump_path, llm_messages)
         if pending_media:
             pending_media.clear()
         response = await self._call_provider(addr, llm_messages)
@@ -372,7 +300,7 @@ class AgentLoop:
             address=addr,
             background_tasks=tracker.tasks,
         )
-        state = _AddressState()
+        state = AddressState()
 
         while True:
             if not tracker.pending:
