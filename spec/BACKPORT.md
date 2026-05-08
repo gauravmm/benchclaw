@@ -111,25 +111,16 @@ Pure refactor — no behaviour change. (`0ccb9a9`)
   the dispatcher proceeds) so fast LLM replies don't lose the typing
   indicator. (`b5f07bb`)
 
-### 2d. Reaction handling
-
-- Heart-reaction recognition + tolerate bare reaction tags. (`a75b193`)
-- Thread reaction replies onto the originating bot message. (`0a8e4c8`)
-- Reaction emoji swap + tombstones + menu refresh + cleanup. (`1a1b05f`)
-
-### 2e. Group chat support
-
-- Allow groups through `auth_gate` with admin-gated auth.
-- Rate-limit windows keyed by `(chat_id, sender_id)`.
-- `/clear`, `/forgetme`, `/setsecret`, `/auth` become admin-only in
-  groups; DM behaviour unchanged.
-- Shared session per group chat. (`5a308ce`)
-- **Note:** skip the rich group `/start` welcome from `30ef425`; keep
-  the existing minimal welcome.
-
 **Acceptance:** Telegram package imports green; DM behaviour byte-identical
-to pre-split; new tests for group chats + typing dedupe pass; WhatsApp
-channel untouched.
+to pre-split; typing dedupe regression tests pass; WhatsApp channel
+untouched.
+
+**Out of scope.** Reaction handling (heart reactions, threaded reaction
+replies, emoji swap/tombstones) and group chat support (admin-gated auth,
+per-(chat_id, sender_id) rate limiting, admin-only state mutations,
+shared group sessions) are dropped from BenchClaw. Both were valuable for
+TeachClaw's classroom domain but pull in per-user state and admin gating
+that BenchClaw doesn't carry.
 
 ---
 
