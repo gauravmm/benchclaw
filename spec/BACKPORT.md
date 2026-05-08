@@ -64,9 +64,10 @@ code changes.
   (`1ed00d8`)
 - Add tests for Telegram `markdown_to_telegram_html` and `split_long`.
   (`a151f91`)
-- Add tests for state-mutating Telegram commands (`/clear`, `/forgetme`,
-  `/setsecret`, `/whoauthed`) using lightweight fakes instead of a real
-  `Application`. (`062eac7`)
+- ~~Add tests for state-mutating Telegram commands (`/clear`,
+  `/forgetme`, `/setsecret`, `/whoauthed`).~~ N/A — these slash
+  commands aren't part of BenchClaw's Telegram channel (see Phase 2,
+  out-of-scope note); without the handlers, there's nothing to test.
 
 **Acceptance:** `pytest --cov` runs cleanly; coverage gate enforced in CI.
 
@@ -83,17 +84,17 @@ about it.
 Replace `channels/telegrm.py` with `channels/telegrm/` containing:
 
 - `channel.py` — lifecycle, `make_channel`, `background()`, `send()`
-- `config.py` — `TelegramConfig`, slash-command lists
-- `state.py` — typed inbound/outbound state objects
+- `config.py` — `TelegramConfig`
+- `state.py` — typed outbound state objects
 - `markdown_html.py` — `markdown_to_telegram_html`, `split_long`
-- `auth_gate.py` — shared-secret check, per-user marker, group/DM gating
 - `inbound.py` — message → bus translation
 - `outbound.py` — bus → Telegram dispatch (typed `OutboundSegment` list)
-- `reactions.py` — reaction handling
-- `commands.py` — slash-command handlers (`/clear`, `/forgetme`, etc.)
 - `typing_loop.py` — typing indicator refresh
 
 Pure refactor — no behaviour change. (`0ccb9a9`)
+
+`auth_gate.py`, `reactions.py`, and `commands.py` from TeachClaw are
+out of scope here — see the 2d/2e drop note below for context.
 
 ### 2b. Outbound pipeline cleanup
 
@@ -166,8 +167,10 @@ refactor with no behaviour change.
   (`71f2a0c`)
 - Subscribe to `bus.subscribe_new_addresses()` and spawn
   `_address_loop` per `MessageAddress` lazily.
-- Collapse `BatchApplication`; extract a per-address `_build_call_ctx`
-  factory that owns storage-layout knowledge. (`41ea3a4`)
+- Collapse `BatchApplication` to a plain ``bool``. (TeachClaw's
+  ``_build_call_ctx`` factory carries storage-layout knowledge that
+  BenchClaw doesn't have — call_ctx is built inline in `_address_loop`
+  and stays that way.) (`41ea3a4`)
 - Skip the follow-up LLM call after a `terminal_when_lone` tool turn —
   the tool already produced the user-visible reply, so don't nudge the
   model for a second response. (`643a2d8`)
@@ -182,8 +185,9 @@ switches don't bust the cache prefix. BenchClaw skips persona but
 - `PromptBuilder._inject_tail()` returns
   `(messages, stable_prefix_end)` — a list of synthetic tail messages
   plus the index marking the cacheable boundary.
-- Built-in tail entries: `<current_time>`, `<storage_listing>`. (Drop
-  `<persona>` entirely.)
+- Built-in tail entries: `<current_time>`. (`<persona>` and
+  `<storage_listing>` are TeachClaw-only; BenchClaw has no per-user
+  storage, so there's nothing to list.)
 - Expose a registration hook so other modules (event-loop sources,
   tools) can append persistent synthetic messages to the tail without
   reaching into the loop. This is the substrate for future "ambient
@@ -198,9 +202,10 @@ switches don't bust the cache prefix. BenchClaw skips persona but
 - Do **not** include persona block.
 
 **Acceptance:** all existing agent-loop tests pass; new tests cover
-`TurnOutcome` transitions, tail injection, and cache monitor warnings;
-WhatsApp + Telegram + claude_code + smtp_email channels continue to
-deliver messages end-to-end.
+tail injection and cache monitor warnings; WhatsApp + Telegram channels
+continue to deliver messages end-to-end. (`claude_code` and
+`smtp_email` were dropped earlier in BenchClaw — see Phase 2's
+out-of-scope note.)
 
 ---
 
