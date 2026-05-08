@@ -7,6 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from benchclaw.agent.cache_monitor import PromptCacheMonitor
 from benchclaw.agent.compactor import Compactor
 from benchclaw.agent.dump import dump_messages
 from benchclaw.agent.loop_state import AddressState, BatchApplication, ToolCallTracker
@@ -72,6 +73,9 @@ class AgentLoop:
         )
         self.response = ResponseHandler(bus, self.tools, self.config)
         self.compactor = Compactor(self.config, master_ctx.log_store)
+        self.cache_monitor = PromptCacheMonitor(
+            log_dir=config.workspace_path / "logs" / "cache" if debug_dump_path else None
+        )
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -194,6 +198,7 @@ class AgentLoop:
         if pending_media is None:
             pending_media = []
         build = self.prompt.build(session, addr, pending_media)
+        self.cache_monitor.observe(addr, build)
         llm_messages = build.messages
         dump_messages(self.debug_dump_path, llm_messages)
         if pending_media:
