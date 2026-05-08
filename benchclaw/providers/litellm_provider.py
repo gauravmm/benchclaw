@@ -99,7 +99,8 @@ class LiteLLMProvider(LLMProvider):
                 finish_reason="error",
             )
 
-    def _parse_response(self, response: litellm.ModelResponse) -> LLMResponse:
+    @staticmethod
+    def _parse_response(response: litellm.ModelResponse) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
         choice = response.choices[0]
         assert isinstance(choice, litellm.Choices)
