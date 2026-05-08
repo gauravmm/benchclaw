@@ -62,6 +62,11 @@ class ToolRegistry:
         """Iterate over registered tools."""
         return self._tools.values()
 
+    def get(self, name: str) -> Tool | None:
+        """Look up a registered local tool by name. Returns None for MCP tools
+        (whose lifecycle is owned by ``MCPManager``)."""
+        return self._tools.get(name)
+
     def get_definitions(self) -> list[dict[str, Any]]:
         """Get tool definitions in OpenAI format."""
         defs = [tool.to_schema() for tool in self.values()]

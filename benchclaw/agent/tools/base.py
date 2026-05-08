@@ -46,6 +46,12 @@ class Tool:
 
     _task: Task | None = None
 
+    # When True, a turn whose only tool call is this tool ends the turn —
+    # the loop skips the follow-up LLM call. Use for tools that already
+    # produce the user-visible reply (e.g. send_media) so the model isn't
+    # nudged for a second prose echo.
+    terminal_when_lone: bool = False
+
     @classmethod
     def build(cls, config: Any, ctx: "ToolContext") -> "Tool":
         """Instantiate this tool from a config object and build context."""

@@ -36,7 +36,13 @@ async def test_send_media_uses_current_address(tmp_path: Path):
     result = await SendMediaTool().execute(ctx, path="media/x.png", caption="hello")
     outbound = await bus.consume_outbound(channel="telegram")
 
-    assert result == "Media sent to telegram:123"
+    parsed = json.loads(result)
+    assert parsed == {
+        "status": "sent",
+        "turn_complete": True,
+        "path": "media/x.png",
+        "address": "telegram:123",
+    }
     assert isinstance(outbound, OutboundMessage)
     assert outbound.address == MessageAddress("telegram", "123")
     assert outbound.media == ["media/x.png"]
@@ -63,7 +69,10 @@ async def test_send_media_normalizes_whatsapp_shorthand_address(tmp_path: Path):
     )
     outbound = await bus.consume_outbound(channel="whatsapp")
 
-    assert result == "Media sent to whatsapp:222355137806442"
+    parsed = json.loads(result)
+    assert parsed["status"] == "sent"
+    assert parsed["turn_complete"] is True
+    assert parsed["address"] == "whatsapp:222355137806442"
     assert isinstance(outbound, OutboundMessage)
     assert outbound.address == MessageAddress("whatsapp", "222355137806442")
 

@@ -61,6 +61,13 @@ class ReadMediaTool(Tool):
 class SendMediaTool(Tool):
     """Send a stored workspace media file to the current or another chat."""
 
+    # The caption sent with the media IS the user-visible reply, so a turn
+    # whose only call is send_media should not be followed by a model echo.
+    # Phrasing the result as English prose (e.g. "Media sent to ...") trips
+    # Gemma in particular — it interprets the prose as a draft reply and
+    # echoes it back. JSON keeps the status machine-readable.
+    terminal_when_lone = True
+
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "SendMediaTool":
         return cls()
@@ -123,7 +130,9 @@ class SendMediaTool(Tool):
         await ctx.bus.publish_outbound(
             OutboundMessage(address=target, content=caption, media=[path])
         )
-        return f"Media sent to {target}"
+        return json.dumps(
+            {"status": "sent", "turn_complete": True, "path": path, "address": str(target)}
+        )
 
 
 class SearchMediaTool(Tool):

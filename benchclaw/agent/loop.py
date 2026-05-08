@@ -186,6 +186,12 @@ class AgentLoop:
                     name=f"tool-{tc.id[:8]}",
                 )
                 tracker.add(tc.id, tc.name, task)
+            if (
+                len(response.tool_calls) == 1
+                and (lone_tool := self.tools.get(response.tool_calls[0].name)) is not None
+                and lone_tool.terminal_when_lone
+            ):
+                tracker.mark_turn_terminal_when_lone()
             if content:
                 await self.bus.publish_outbound(OutboundMessage(address=addr, content=content))
             return
@@ -227,7 +233,12 @@ class AgentLoop:
             tracker.handle_result(result, session)
         if batch.tool_results and not tracker.pending:
             self._flush_pending_system_events(session, state)
-            needs_llm = True
+            # Skip the follow-up LLM call after a lone terminal_when_lone
+            # tool turn (e.g. send_media) — the tool already produced the
+            # user-visible reply. Pending system events stay flushed so a
+            # subsequent user message renders cleanly.
+            if not tracker.take_terminal_when_lone():
+                needs_llm = True
 
         for event in batch.system_events:
             if tracker.pending:
