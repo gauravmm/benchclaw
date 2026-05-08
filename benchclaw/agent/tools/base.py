@@ -4,7 +4,9 @@ from abc import abstractmethod
 from asyncio import Task
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from pydantic import BaseModel
 
 from benchclaw.bus import MessageAddress, MessageBus, ToolResult
 
@@ -55,6 +57,13 @@ class Tool:
     # nudged for a second prose echo.
     terminal_when_lone: bool = False
 
+    # Optional Pydantic model describing the tool's call arguments. When
+    # set, the default ``parameters`` property below derives the JSON
+    # schema from it. Subclasses may override ``parameters`` directly when
+    # they need full control of the schema (e.g. legacy hand-rolled
+    # tools), but new tools should declare ``Params`` instead.
+    Params: ClassVar[type[BaseModel] | None] = None
+
     @classmethod
     def build(cls, config: Any, ctx: "ToolContext") -> "Tool":
         """Instantiate this tool from a config object and build context."""
@@ -72,10 +81,18 @@ class Tool:
         return None
 
     @property
-    @abstractmethod
     def parameters(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters."""
-        pass
+        """JSON Schema for tool parameters.
+
+        Default: derive from ``cls.Params`` (the Pydantic model). Tools
+        without a ``Params`` declaration must override this property.
+        """
+        if self.Params is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} must declare a ``Params`` model or override "
+                "``parameters``."
+            )
+        return self.Params.model_json_schema()
 
     @abstractmethod
     async def execute(self, ctx: "ToolContext", **kwargs: Any) -> ToolResult:

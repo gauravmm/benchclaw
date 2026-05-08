@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from benchclaw.agent.tools.base import FileSnapshot, Tool, ToolContext
 
 
@@ -69,6 +71,11 @@ def _require_fresh_snapshot(ctx: ToolContext, path: Path) -> None:
 class ReadFileTool(Tool):
     """Tool to read file contents."""
 
+    class Params(BaseModel):
+        path: str = Field(
+            description="The file path to read, where . is the workspace dir."
+        )
+
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "ReadFileTool":
         return cls()
@@ -86,19 +93,6 @@ class ReadFileTool(Tool):
             "Example: `{'path': 'README.md'}`."
         )
 
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The file path to read, where . is the workspace dir.",
-                }
-            },
-            "required": ["path"],
-        }
-
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> str:
         file_path = _resolve_path(path, ctx)
         if not file_path.exists():
@@ -113,6 +107,12 @@ class ReadFileTool(Tool):
 
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
+
+    class Params(BaseModel):
+        path: str = Field(
+            description="The file path to write, where . is the workspace dir."
+        )
+        content: str = Field(description="The content to write")
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "WriteFileTool":
@@ -131,20 +131,6 @@ class WriteFileTool(Tool):
             "Example: `{'path': 'notes/output.txt', 'content': 'Hello, world!'}`."
         )
 
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The file path to write, where . is the workspace dir.",
-                },
-                "content": {"type": "string", "description": "The content to write"},
-            },
-            "required": ["path", "content"],
-        }
-
     async def execute(self, ctx: ToolContext, path: str, content: str, **kwargs: Any) -> str:
         file_path = _resolve_path(path, ctx)
         if file_path.exists():
@@ -160,6 +146,13 @@ class WriteFileTool(Tool):
 
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
+
+    class Params(BaseModel):
+        path: str = Field(
+            description="The file path to edit, where . is the workspace dir."
+        )
+        old_str: str = Field(description="The exact text to find and replace")
+        new_str: str = Field(description="The text to replace with")
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "EditFileTool":
@@ -177,21 +170,6 @@ class EditFileTool(Tool):
             "The edit is rejected if the original text is missing or appears more than once. "
             "Example: `{'path': 'USER.md', 'old_str': 'port: 8080', 'new_str': 'port: 9090'}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "The file path to edit, where . is the workspace dir.",
-                },
-                "old_str": {"type": "string", "description": "The exact text to find and replace"},
-                "new_str": {"type": "string", "description": "The text to replace with"},
-            },
-            "required": ["path", "old_str", "new_str"],
-        }
 
     async def execute(
         self, ctx: ToolContext, path: str, old_str: str, new_str: str, **kwargs: Any
@@ -225,6 +203,16 @@ class EditFileTool(Tool):
 class GlobTool(Tool):
     """Tool to match filesystem paths with a glob pattern."""
 
+    class Params(BaseModel):
+        pattern: str = Field(description="The glob pattern to match")
+        path: str = Field(
+            default=".",
+            description="The directory to search from, where . is the workspace dir.",
+        )
+        max_results: int = Field(
+            default=200, ge=1, description="Maximum number of matches to return"
+        )
+
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "GlobTool":
         return cls()
@@ -241,25 +229,6 @@ class GlobTool(Tool):
             "Returns matching paths relative to the workspace when possible. "
             "Example: `{'pattern': 'benchclaw/**/*.py', 'path': '.'}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "The glob pattern to match"},
-                "path": {
-                    "type": "string",
-                    "description": "The directory to search from, where . is the workspace dir.",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of matches to return",
-                    "minimum": 1,
-                },
-            },
-            "required": ["pattern"],
-        }
 
     async def execute(
         self,
@@ -289,6 +258,27 @@ class GlobTool(Tool):
 class GrepTool(Tool):
     """Tool to search file contents for matching lines."""
 
+    class Params(BaseModel):
+        pattern: str = Field(description="The text or regex pattern to search for")
+        path: str = Field(
+            default=".",
+            description="The file or directory to search, where . is the workspace dir.",
+        )
+        file_pattern: str = Field(
+            default="*",
+            description="Glob filter for files when searching a directory",
+        )
+        is_regex: bool = Field(
+            default=False,
+            description="Whether pattern should be treated as a regular expression",
+        )
+        case_sensitive: bool = Field(
+            default=False, description="Whether matching should be case-sensitive"
+        )
+        max_results: int = Field(
+            default=200, ge=1, description="Maximum number of matching lines to return"
+        )
+
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "GrepTool":
         return cls()
@@ -305,40 +295,6 @@ class GrepTool(Tool):
             "Use `file_pattern` to limit which files are searched when scanning directories. "
             "Example: `{'pattern': 'register_tool', 'path': 'benchclaw', 'file_pattern': '*.py'}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "The text or regex pattern to search for",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "The file or directory to search, where . is the workspace dir.",
-                },
-                "file_pattern": {
-                    "type": "string",
-                    "description": "Glob filter for files when searching a directory",
-                },
-                "is_regex": {
-                    "type": "boolean",
-                    "description": "Whether pattern should be treated as a regular expression",
-                },
-                "case_sensitive": {
-                    "type": "boolean",
-                    "description": "Whether matching should be case-sensitive",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of matching lines to return",
-                    "minimum": 1,
-                },
-            },
-            "required": ["pattern"],
-        }
 
     async def execute(
         self,

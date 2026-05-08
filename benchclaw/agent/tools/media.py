@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.bus import MessageAddress, OutboundMessage, ToolResult
 from benchclaw.media import MediaRepository
@@ -18,6 +20,9 @@ def _resolve_target_address(ctx: ToolContext, address: str | None) -> MessageAdd
 
 class ReadMediaTool(Tool):
     """Tool to re-load a media file (image or audio) into the LLM context."""
+
+    class Params(BaseModel):
+        path: str = Field(description="Workspace-relative path to the media file.")
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "ReadMediaTool":
@@ -34,19 +39,6 @@ class ReadMediaTool(Tool):
             "Use the exact stored path, for example 'media/a3f7b2c1/0310/1423-01.jpg' or 'media/a3f7b2c1/0310/1423-01.ogg'. "
             "Only call this when you need to examine a media file to answer a follow-up question."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Workspace-relative path to the media file.",
-                }
-            },
-            "required": ["path"],
-        }
 
     async def execute(self, ctx: ToolContext, path: str, **kwargs: Any) -> ToolResult:
         if Path(path).is_absolute():
@@ -68,6 +60,24 @@ class SendMediaTool(Tool):
     # echoes it back. JSON keeps the status machine-readable.
     terminal_when_lone = True
 
+    class Params(BaseModel):
+        path: str = Field(description="Workspace-relative media path.")
+        caption: str = Field(
+            default="",
+            description=(
+                "Optional caption/body to send with the media. "
+                "Put all required user-visible text here when applicable, "
+                "instead of sending a separate plain-text acknowledgement."
+            ),
+        )
+        address: str | None = Field(
+            default=None,
+            description=(
+                "Optional target address as channel:chat_id. Defaults to the "
+                "current chat; omit this when sending to the current chat."
+            ),
+        )
+
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "SendMediaTool":
         return cls()
@@ -85,33 +95,6 @@ class SendMediaTool(Tool):
             "When sending media, put the user-visible text in the caption/body rather than also saying in plain text that you sent it. "
             "Strongly prefer omitting `address` when sending to the current chat."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Workspace-relative media path.",
-                },
-                "caption": {
-                    "type": "string",
-                    "description": (
-                        "Optional caption/body to send with the media. "
-                        "Put all required user-visible text here when applicable, instead of sending a separate plain-text acknowledgement."
-                    ),
-                },
-                "address": {
-                    "type": "string",
-                    "description": (
-                        "Optional target address as channel:chat_id. Defaults to the current chat; "
-                        "omit this when sending to the current chat."
-                    ),
-                },
-            },
-            "required": ["path"],
-        }
 
     async def execute(
         self, ctx: ToolContext, path: str, caption: str = "", address: str | None = None, **_: Any
@@ -138,6 +121,36 @@ class SendMediaTool(Tool):
 class SearchMediaTool(Tool):
     """Search stored media using saved metadata and captions."""
 
+    class Params(BaseModel):
+        query: str = Field(
+            default="",
+            description="Optional free-text search over captions and metadata.",
+        )
+        media_type: str | None = Field(
+            default=None,
+            description=(
+                "Optional filter by media type: 'image', 'audio', 'voice', etc. "
+                "Omit to search all types."
+            ),
+        )
+        address: str | None = Field(
+            default=None, description="Optional address filter as channel:chat_id."
+        )
+        sender_id: str | None = Field(
+            default=None, description="Optional sender_id filter."
+        )
+        date_from: str | None = Field(
+            default=None,
+            description="Optional inclusive lower timestamp/date bound in ISO format.",
+        )
+        date_to: str | None = Field(
+            default=None,
+            description="Optional inclusive upper timestamp/date bound in ISO format.",
+        )
+        limit: int = Field(
+            default=10, ge=1, le=20, description="Maximum number of results to return."
+        )
+
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "SearchMediaTool":
         return cls()
@@ -152,45 +165,6 @@ class SearchMediaTool(Tool):
             "Search captioned workspace media (images, audio) using stored metadata and model-authored captions. "
             "Use this when you remember a media file but not its exact path."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Optional free-text search over captions and metadata.",
-                },
-                "media_type": {
-                    "type": "string",
-                    "description": "Optional filter by media type: 'image', 'audio', 'voice', etc. Omit to search all types.",
-                },
-                "address": {
-                    "type": "string",
-                    "description": "Optional address filter as channel:chat_id.",
-                },
-                "sender_id": {
-                    "type": "string",
-                    "description": "Optional sender_id filter.",
-                },
-                "date_from": {
-                    "type": "string",
-                    "description": "Optional inclusive lower timestamp/date bound in ISO format.",
-                },
-                "date_to": {
-                    "type": "string",
-                    "description": "Optional inclusive upper timestamp/date bound in ISO format.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 20,
-                    "description": "Maximum number of results to return. Default 10.",
-                },
-            },
-            "required": [],
-        }
 
     async def execute(
         self,
@@ -224,6 +198,10 @@ class SearchMediaTool(Tool):
 class AnnotateMediaTool(Tool):
     """Persist a caption or annotation for a stored media file."""
 
+    class Params(BaseModel):
+        path: str = Field(description="Workspace-relative media path to annotate.")
+        caption: str = Field(description="Searchable caption or annotation text.")
+
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "AnnotateMediaTool":
         return cls()
@@ -239,23 +217,6 @@ class AnnotateMediaTool(Tool):
             "Use this after receiving media so future turns can search or answer follow-up questions without re-reading it. "
             "For audio, include a transcript summary, tone/intent notes, and language if non-English."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Workspace-relative media path to annotate.",
-                },
-                "caption": {
-                    "type": "string",
-                    "description": "Searchable caption or annotation text.",
-                },
-            },
-            "required": ["path", "caption"],
-        }
 
     async def execute(self, ctx: ToolContext, path: str, caption: str, **_: Any) -> str:
         if not ctx.media_repo:

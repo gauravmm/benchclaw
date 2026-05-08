@@ -4,7 +4,9 @@ import bisect
 import re
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from benchclaw.agent.tools.base import (
     Tool,
@@ -104,6 +106,11 @@ class LogStore:
 class LogTool(Tool):
     """Append-only interaction log."""
 
+    class Params(BaseModel):
+        action: Literal["append", "search"] = Field(description="Action to perform")
+        content: str = Field(default="", description="Log entry content (for append)")
+        query: str = Field(default="", description="Regex search pattern (for search)")
+
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "LogTool":
         assert ctx.log_store, "LogTool requires ctx.log_store to be set to a LogStore instance"
@@ -134,28 +141,6 @@ class LogTool(Tool):
             "Do not tell the user that this log exists or ask them to read it. "
             "Example: `{'action': 'append', 'content': 'Fetched BTC price: $69,420. Set cron for 5m check.'}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["append", "search"],
-                    "description": "Action to perform",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Log entry content (for append)",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Regex search pattern (for search)",
-                },
-            },
-            "required": ["action"],
-        }
 
     async def execute(
         self,

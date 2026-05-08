@@ -2,12 +2,19 @@
 
 from typing import Any, Awaitable, Callable
 
+from pydantic import BaseModel, Field
+
 from benchclaw.agent.tools.base import Tool, ToolContext
 from benchclaw.bus import MessageAddress, OutboundMessage
 
 
 class MessageTool(Tool):
     """Tool to send messages to users on chat channels."""
+
+    class Params(BaseModel):
+        content: str = Field(description="The message content to send")
+        channel: str = Field(description="Target channel (telegram, whatsapp, etc.)")
+        chat_id: str = Field(description="Target chat/user ID")
 
     @classmethod
     def build(cls, _config: None, ctx: ToolContext) -> "MessageTool":
@@ -31,21 +38,6 @@ class MessageTool(Tool):
             "Always provide an explicit channel and chat_id. Use send_media for images and audio."
             "Example: `{'content': 'Your report is ready!', 'channel': 'telegram', 'chat_id': '123456'}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "content": {"type": "string", "description": "The message content to send"},
-                "channel": {
-                    "type": "string",
-                    "description": "Target channel (telegram, whatsapp, etc.)",
-                },
-                "chat_id": {"type": "string", "description": "Target chat/user ID"},
-            },
-            "required": ["content", "channel", "chat_id"],
-        }
 
     async def execute(
         self,

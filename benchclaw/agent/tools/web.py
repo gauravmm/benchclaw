@@ -4,11 +4,11 @@ import html
 import json
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from readability import Document
 
 from benchclaw.agent.tools.base import Tool, ToolContext
@@ -56,6 +56,12 @@ def _validate_url(url: str) -> tuple[bool, str]:
 class WebSearchTool(Tool):
     """Search the web using Brave Search API."""
 
+    class Params(BaseModel):
+        query: str = Field(description="Search query")
+        count: int | None = Field(
+            default=None, ge=1, le=10, description="Results (1-10)"
+        )
+
     @property
     def name(self) -> str:
         return "web_search"
@@ -66,22 +72,6 @@ class WebSearchTool(Tool):
             "Query the Brave Search API and return up to 10 results, each with a title, URL, and description snippet. "
             "Example: `{'query': 'python asyncio best practices 2025', 'count': 5}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query"},
-                "count": {
-                    "type": "integer",
-                    "description": "Results (1-10)",
-                    "minimum": 1,
-                    "maximum": 10,
-                },
-            },
-            "required": ["query"],
-        }
 
     @classmethod
     def build(cls, config: "WebSearchConfig | None", ctx: ToolContext) -> "WebSearchTool":
@@ -125,6 +115,15 @@ class WebSearchTool(Tool):
 class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
 
+    class Params(BaseModel):
+        url: str = Field(description="URL to fetch")
+        extract_mode: Literal["markdown", "text"] = Field(
+            default="markdown", description="Output format for extracted content"
+        )
+        max_chars: int | None = Field(
+            default=None, ge=100, description="Truncate output to this many characters"
+        )
+
     @property
     def name(self) -> str:
         return "web_fetch"
@@ -133,25 +132,9 @@ class WebFetchTool(Tool):
     def description(self) -> str | None:
         return (
             "Fetch a URL and extract its main readable content using Readability, returning JSON with the extracted text in markdown or plain-text format. "
-            "Handles HTML pages, JSON APIs, and raw text; content is truncated at `maxChars` (default 50,000). "
-            "Example: `{'url': 'https://example.com/article', 'extractMode': 'markdown', 'maxChars': 10000}`."
+            "Handles HTML pages, JSON APIs, and raw text; content is truncated at `max_chars` (default 50,000). "
+            "Example: `{'url': 'https://example.com/article', 'extract_mode': 'markdown', 'max_chars': 10000}`."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "URL to fetch"},
-                "extractMode": {
-                    "type": "string",
-                    "enum": ["markdown", "text"],
-                    "default": "markdown",
-                },
-                "maxChars": {"type": "integer", "minimum": 100},
-            },
-            "required": ["url"],
-        }
 
     @classmethod
     def build(cls, _config: None, _ctx: ToolContext) -> "WebFetchTool":
