@@ -114,6 +114,9 @@ class AgentLoop:
                 model=self.config.model,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
+                top_p=self.config.top_p,
+                top_k=self.config.top_k,
+                enable_thinking=self.config.enable_thinking,
             )
         except Exception as e:
             logger.error(f"LLM error for {addr}: {e}")

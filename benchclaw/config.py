@@ -25,6 +25,13 @@ class AgentConfig(BaseModel):
     model: str = "anthropic/claude-opus-4-5"
     max_tokens: int = 8192
     temperature: float = 0.7
+    # top_p, top_k, enable_thinking are forwarded to LiteLLMProvider.chat.
+    # vLLM honours top_p / top_k via extra_body; OpenRouter / hosted
+    # providers ignore the extras silently. enable_thinking is the
+    # ``chat_template_kwargs`` switch HF gemma-class checkpoints use.
+    top_p: float | None = None
+    top_k: int | None = None
+    enable_thinking: bool | None = None
     max_tool_iterations: int = 20
     memory_window: int = 50
     context_window: int = 22000

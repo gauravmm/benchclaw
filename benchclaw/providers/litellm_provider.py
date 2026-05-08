@@ -70,6 +70,9 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMResponse:
         assert max_tokens >= 1
         assert temperature >= 0
@@ -86,6 +89,18 @@ class LiteLLMProvider(LLMProvider):
             "tools": tools,
             "custom_llm_provider": self._spec.litellm_provider,
         }
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        # top_k and enable_thinking aren't first-class in OpenAI's schema, so
+        # litellm forwards them via ``extra_body``. vLLM honours them; hosted
+        # providers ignore the extras silently, which is the behaviour we want.
+        extra_body: dict[str, Any] = {}
+        if top_k is not None:
+            extra_body["top_k"] = top_k
+        if enable_thinking is not None:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
 
         self._apply_model_overrides(model, kwargs)
 

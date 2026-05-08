@@ -32,6 +32,9 @@ class _FakeProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMResponse:
         return self._response
 
