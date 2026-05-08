@@ -11,7 +11,7 @@ so :class:`AgentLoop` stays focused on orchestration.
 from __future__ import annotations
 
 import platform
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,10 +23,15 @@ from benchclaw.bus import MessageAddress
 from benchclaw.config import AgentConfig
 from benchclaw.media import MediaRepository
 from benchclaw.session import RenderOptions, Session
+from benchclaw.utils import now_aware
 
 if TYPE_CHECKING:
     from benchclaw.agent.tools.base import Tool
     from benchclaw.agent.tools.registry import ToolRegistry
+
+# Signature for tail providers: takes the active address, returns either a
+# tag/body tuple (rendered as ``<tag>body</tag>``) or None to skip this turn.
+TailProvider = Callable[[MessageAddress], tuple[str, str] | None]
 
 BOOTSTRAP_FILES = ["AGENTS.md"]
 
@@ -66,6 +71,12 @@ def build_system_prompt(
     model: str | None = None,
     context_window: int | None = None,
 ) -> str:
+    """Render the cache-stable portion of the prompt.
+
+    Time and other turn-local context lives in :meth:`PromptBuilder.build`'s
+    tail injection, not here, so this output stays byte-identical across
+    turns and the upstream prefix cache hits.
+    """
     bootstrap_files = [
         {"name": f, "content": (workspace / f).read_text(encoding="utf-8")}
         for f in BOOTSTRAP_FILES
@@ -81,7 +92,6 @@ def build_system_prompt(
         _env()
         .get_template("system_prompt.j2")
         .render(
-            now="",  # Tail-injected per turn (Phase 3c); kept for template compatibility.
             runtime=(
                 f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, "
                 f"Python {platform.python_version()}"
@@ -125,6 +135,33 @@ def _last_user_message_index(messages: list[dict[str, object]]) -> int | None:
     )
 
 
+def _insert_synthetic_tail(
+    messages: list[dict[str, object]],
+    blocks: list[tuple[str, str]],
+) -> tuple[list[dict[str, object]], int]:
+    """Insert a synthetic ``user`` message holding the tail blocks just
+    before the latest user turn.
+
+    Returns ``(messages, stable_prefix_end)``. Keeping the turn-local
+    context in a separate message — rather than splicing it into the
+    system prompt — is what lets the system-prompt prefix stay
+    byte-identical across turns and the upstream cache hit.
+
+    ``blocks`` are rendered as ``<tag>body</tag>``; an empty ``blocks``
+    list returns ``(messages, last_user_idx)`` unchanged.
+    """
+    last_user_idx = _last_user_message_index(messages)
+    if last_user_idx is None:
+        return list(messages), len(messages)
+    if not blocks:
+        return list(messages), last_user_idx
+    parts = [f"<{tag}>{body}</{tag}>" for tag, body in blocks]
+    tail_msg: dict[str, object] = {"role": "user", "content": "\n".join(parts)}
+    out = list(messages)
+    out.insert(last_user_idx, tail_msg)
+    return out, last_user_idx
+
+
 def _prepend_media_to_last_user(
     messages: list[dict[str, object]],
     media_blocks: list[dict[str, object]] | None,
@@ -150,11 +187,17 @@ def _prepend_media_to_last_user(
     return out
 
 
+def _current_time_provider(_addr: MessageAddress) -> tuple[str, str] | None:
+    return ("current_time", now_aware().strftime("%Y-%m-%d %H:%M (%A) %z"))
+
+
 class PromptBuilder:
     """Assembles the per-turn prompt from session + workspace state.
 
     Held by :class:`AgentLoop` for the lifetime of the process. ``build``
-    is called every turn.
+    is called every turn. Other modules can append persistent synthetic
+    tail messages via :meth:`register_tail_provider` — the substrate for
+    "ambient fact" features (current time is the only built-in).
     """
 
     def __init__(
@@ -169,6 +212,17 @@ class PromptBuilder:
         self.tools = tools
         self.media_repo = media_repo
         self.agent_config = agent_config
+        self._tail_providers: list[TailProvider] = [_current_time_provider]
+
+    def register_tail_provider(self, provider: TailProvider) -> None:
+        """Append *provider* to the tail-injection chain.
+
+        Each provider is called once per ``build`` and may return a
+        ``(tag, body)`` pair to be rendered as ``<tag>body</tag>`` in
+        the synthetic tail message, or ``None`` to skip this turn.
+        Order matches registration order.
+        """
+        self._tail_providers.append(provider)
 
     def render_options(self) -> RenderOptions:
         return RenderOptions()
@@ -197,7 +251,7 @@ class PromptBuilder:
         media_blocks: list[dict[str, object]] | None = None
         if pending_media and self.media_repo:
             media_blocks = self.media_repo.build_media_blocks(pending_media)
-        out = _prepend_media_to_last_user(messages, media_blocks)
-        last_user_idx = _last_user_message_index(out)
-        stable_prefix_end = last_user_idx if last_user_idx is not None else len(out)
+        with_media = _prepend_media_to_last_user(messages, media_blocks)
+        tail_blocks = [block for p in self._tail_providers if (block := p(addr)) is not None]
+        out, stable_prefix_end = _insert_synthetic_tail(with_media, tail_blocks)
         return PromptBuild(messages=out, stable_prefix_end=stable_prefix_end)
