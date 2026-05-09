@@ -212,16 +212,24 @@ class MediaRepository:
         return {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{data}"}}
 
     def audio_block(self, path: str) -> dict[str, object]:
-        """Build a provider-ready audio block for one workspace-relative file path."""
+        """Build a provider-ready audio block for one workspace-relative file path.
+
+        Emits the OpenAI-compatible shape used by vLLM:
+        ``{"type": "input_audio", "input_audio": {"data": <b64>, "format": <ext>}}``
+        where ``format`` is the short extension (``wav``, ``mp3``, ``ogg``, …),
+        not a full MIME type.
+        """
         abs_path, mime_type = self.resolve_file(path)
         if not mime_type or not mime_type.startswith("audio/"):
             raise ValueError(f"Path is not an audio file: {path}")
-        # Strip codec parameter for the block media_type (e.g. "audio/ogg; codecs=opus" → "audio/ogg")
-        block_mime = mime_type.split(";")[0].strip()
+        # Strip codec params ("audio/ogg; codecs=opus" → "audio/ogg") and
+        # collapse the MIME subtype to its short form.
+        subtype = mime_type.split(";", 1)[0].strip().split("/", 1)[1]
+        fmt = {"mpeg": "mp3", "x-wav": "wav"}.get(subtype, subtype)
         data = base64.b64encode(abs_path.read_bytes()).decode()
         return {
             "type": "input_audio",
-            "source": {"type": "base64", "media_type": block_mime, "data": data},
+            "input_audio": {"data": data, "format": fmt},
         }
 
     def build_media_blocks(self, paths: Iterable[str]) -> list[dict[str, object]]:

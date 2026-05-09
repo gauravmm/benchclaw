@@ -30,6 +30,7 @@ from benchclaw.config import Config
 from benchclaw.media import MediaRepository
 from benchclaw.providers.base import LLMProvider, LLMResponse
 from benchclaw.session import (
+    AssistantEvent,
     Session,
     SessionManager,
     SystemEvent,
@@ -201,13 +202,15 @@ class AgentLoop:
         build = self.prompt.build(session, addr, pending_media)
         self.cache_monitor.observe(addr, build)
         llm_messages = build.messages
-        dump_messages(self.debug_dump_dir, addr, llm_messages)
         if pending_media:
             pending_media.clear()
         response = await self._call_provider(addr, llm_messages)
         if response is None:
             return
         await self._apply_llm_response(response, session, tracker, call_ctx, addr)
+        if isinstance(session.events[-1], AssistantEvent):
+            llm_messages = [*llm_messages, session.events[-1].to_llm_message()]
+        dump_messages(self.debug_dump_dir, addr, llm_messages)
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
