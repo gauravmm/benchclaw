@@ -10,7 +10,6 @@ from typing import Any, ClassVar, Literal, Protocol, TypedDict, Unpack
 from loguru import logger
 from pathvalidate import sanitize_filename
 
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MediaMetadata, MessageAddress, ToolResult
 from benchclaw.utils import _parse_timestamp, ensure_aware, now_aware
 
@@ -397,12 +396,10 @@ class Session:
         self.updated_at = now_aware()
         self._append_log_line(event.to_record())
 
-    def compact(self, log_store: LogStore | None, *, log_limit: int = 20) -> None:
-        recent_activity = log_store.read_recent(n=log_limit) if log_store else "[No logs available]"
+    def compact(self) -> None:
         self.append(
             SummaryEvent(
-                content="[Context compacted to stay within context window limits.]\nRecent activity log:\n"
-                + recent_activity
+                content="[Context compacted to stay within context window limits.]"
             )
         )
         self.compacted_through = len(self.events) - 1

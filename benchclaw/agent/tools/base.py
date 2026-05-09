@@ -16,7 +16,6 @@ from benchclaw.bus import MessageAddress, MessageBus, ToolResult
 # now owned by ``AgentLoop``'s TaskGroup.
 
 if TYPE_CHECKING:
-    from benchclaw.agent.tools.memory import LogStore
     from benchclaw.media import MediaRepository
 
 
@@ -29,13 +28,18 @@ class FileSnapshot:
     mtime_ns: int
 
 
+class ToolConfig(BaseModel):
+    """Base config shared by every tool. Subclass to add tool-specific fields."""
+
+    enabled: bool = True
+
+
 @dataclass
 class ToolContext:
     """Runtime context passed to Tool.build() and Tool.execute() during agent operation."""
 
     workspace: Path
     bus: MessageBus | None = None  # MessageBus; None for subagents/tests
-    log_store: "LogStore | None" = None  # LogStore; set by AgentLoop before building ToolRegistry
     media_repo: "MediaRepository | None" = None
     address: MessageAddress | None = None  # Current session address; None for background/subagents
     background_tasks: dict[str, Task] | None = None  # Live task handles; master loop only

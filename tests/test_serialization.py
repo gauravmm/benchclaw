@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.bus import MessageAddress
 from benchclaw.session import (
     MAX_SESSIONS,
@@ -153,16 +152,13 @@ def test_session_clear_writes_marker_so_audit_trail_persists(tmp_path: Path):
     assert loaded.events[0].content == "after clear"
 
 
-@pytest.mark.asyncio
-async def test_session_compact_uses_log_store(tmp_path: Path) -> None:
-    async with LogStore(tmp_path) as log_store:
-        log_store.append("recent log entry")
-        session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
+def test_session_compact_emits_summary_event(tmp_path: Path) -> None:
+    session = Session(addr=MessageAddress(channel="telegram", chat_id="1"))
 
-        session.compact(log_store)
+    session.compact()
 
     assert isinstance(session.events[-1], SummaryEvent)
-    assert "recent log entry" in session.events[-1].content
+    assert "compacted" in session.events[-1].content.lower()
     assert session.compacted_through == 0
 
 

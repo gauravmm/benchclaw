@@ -150,8 +150,11 @@ class CronTool(Tool):
                         await self._execute_job(job)
 
                     next_wake = store.next_wake()
-                    delay = max(0.0, (next_wake - now).total_seconds()) if next_wake else 60.0
-                    logger.debug(f"Cron: sleeping {delay:.1f}s (next_wake={next_wake})")
+                    if next_wake:
+                        delay = max(0.0, (next_wake - now).total_seconds())
+                        logger.debug(f"Cron: sleeping {delay:.1f}s (next_wake={next_wake})")
+                    else:
+                        delay = 60.0
                     self._wakeup.clear()
                     with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
                         await asyncio.wait_for(self._wakeup.wait(), timeout=delay)

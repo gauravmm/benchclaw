@@ -136,9 +136,12 @@ export class WhatsAppClient {
 
     // Handle incoming messages
     this.sock.ev.on('messages.upsert', async ({ messages, type }: { messages: any[]; type: string }) => {
+      console.log(`messages.upsert: type=${type} count=${messages.length}`);
       if (type !== 'notify') return;
 
       for (const msg of messages) {
+        const kind = Object.keys(msg.message || {})[0] || 'none';
+        console.log(`  msg from=${msg.key.remoteJid} fromMe=${msg.key.fromMe} kind=${kind}`);
         // Skip own messages
         if (msg.key.fromMe) continue;
 
@@ -146,7 +149,10 @@ export class WhatsAppClient {
         if (msg.key.remoteJid === 'status@broadcast') continue;
 
         const extracted = this.extractMessageContent(msg);
-        if (!extracted) continue;
+        if (!extracted) {
+          console.log(`  -> dropped (extractMessageContent returned null for kind=${kind})`);
+          continue;
+        }
         const { content, mediaMetadata } = extracted;
         const context = this.extractContextInfo(msg.message);
 

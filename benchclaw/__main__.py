@@ -25,13 +25,19 @@ def run(args) -> None:
         provider = LiteLLMProvider(config.provider)
 
         async def run():
-            async with MediaRepository(config.workspace_path) as media_repo:
+            shared_roots = {
+                alias: Path(root).expanduser()
+                for alias, root in config.media.shared_roots.items()
+            }
+            async with MediaRepository(
+                config.workspace_path, shared_roots=shared_roots
+            ) as media_repo:
                 channels = ChannelManager(config, bus, media_repo=media_repo)
                 agent = AgentLoop(
                     config=config,
                     bus=bus,
                     provider=provider,
-                    debug_dump_path=args.debug_dump,
+                    debug_dump_dir=args.debug_dump,
                     media_repo=media_repo,
                 )
 
@@ -70,8 +76,8 @@ def main() -> None:
         "--debug-dump",
         type=Path,
         default=None,
-        metavar="FILE",
-        help="dump LLM input messages to this file before each call (for debugging)",
+        metavar="DIR",
+        help="dump LLM input messages to this directory (one file per conversation) before each call (for debugging)",
     )
     args = parser.parse_args()
     run(args)

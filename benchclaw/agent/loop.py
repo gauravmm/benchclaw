@@ -17,7 +17,6 @@ from benchclaw.agent.response import ResponseHandler
 from benchclaw.agent.tools.base import ToolContext
 from benchclaw.agent.tools.cron.tool import CronTool
 from benchclaw.agent.tools.mcp_manager import MCPManager
-from benchclaw.agent.tools.memory import LogStore
 from benchclaw.agent.tools.registry import ToolRegistry
 from benchclaw.bus import (
     InboundMessage,
@@ -47,13 +46,13 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         media_repo: MediaRepository,
-        debug_dump_path: Path | None = None,
+        debug_dump_dir: Path | None = None,
     ):
         self.workspace_path = config.workspace_path
         self.config = config.agents.master
         self.bus = bus
         self.provider = provider
-        self.debug_dump_path = debug_dump_path
+        self.debug_dump_dir = debug_dump_dir
         self.media_repo = media_repo
 
         self.sessions = SessionManager(config.workspace_path / "sessions")
@@ -61,7 +60,6 @@ class AgentLoop:
         master_ctx = ToolContext(
             workspace=config.workspace_path,
             bus=bus,
-            log_store=LogStore(config.workspace_path),
             media_repo=media_repo,
         )
         self.master_ctx = master_ctx
@@ -74,10 +72,8 @@ class AgentLoop:
             agent_config=self.config,
         )
         self.response = ResponseHandler(bus, self.tools, self.config)
-        self.compactor = Compactor(self.config, master_ctx.log_store)
-        self.cache_monitor = PromptCacheMonitor(
-            log_dir=config.workspace_path / "logs" / "cache" if debug_dump_path else None
-        )
+        self.compactor = Compactor(self.config)
+        self.cache_monitor = PromptCacheMonitor(log_dir=debug_dump_dir)
 
     @staticmethod
     def _collapse_user_messages(messages: list[InboundMessage]) -> UserEvent:
@@ -205,7 +201,7 @@ class AgentLoop:
         build = self.prompt.build(session, addr, pending_media)
         self.cache_monitor.observe(addr, build)
         llm_messages = build.messages
-        dump_messages(self.debug_dump_path, llm_messages)
+        dump_messages(self.debug_dump_dir, addr, llm_messages)
         if pending_media:
             pending_media.clear()
         response = await self._call_provider(addr, llm_messages)
@@ -219,7 +215,6 @@ class AgentLoop:
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
-            log_store=self.tools._master_ctx.log_store,
             media_repo=self.media_repo,
             address=addr,
             background_tasks=tracker.tasks,

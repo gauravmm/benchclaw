@@ -50,12 +50,63 @@ class MediaRepository:
     Metadata lives at `workspace/.media.json` and is keyed by workspace-relative path.
     """
 
-    def __init__(self, workspace: Path, max_age_days: int = 30) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        shared_roots: dict[str, Path] | None = None,
+        max_age_days: int = 30,
+    ) -> None:
         self.workspace = workspace
         self.media_dir = workspace / "media"
         self.meta_path = workspace / ".media.json"
         self.max_age_days = max_age_days
         self._entries: dict[str, MediaEntry] = {}
+        self._shared_roots: dict[str, Path] = {}
+        for alias, root in (shared_roots or {}).items():
+            resolved = Path(root).expanduser()
+            if not resolved.is_dir():
+                logger.warning(
+                    f"Shared media root '{alias}' -> {resolved} does not exist; skipping"
+                )
+                continue
+            self._shared_roots[alias] = resolved.resolve()
+
+    @property
+    def shared_root_aliases(self) -> tuple[str, ...]:
+        return tuple(sorted(self._shared_roots))
+
+    def _resolve_shared(self, path: str) -> tuple[Path, str | None] | None:
+        """If ``path`` starts with a configured shared-root alias, resolve it
+        against that root; otherwise return None so the caller falls through
+        to the workspace-relative path."""
+        if not self._shared_roots:
+            return None
+        rel = Path(path)
+        if rel.is_absolute():
+            return None
+        parts: list[str] = []
+        for part in rel.parts:
+            if part in ("", "."):
+                continue
+            if part == "..":
+                raise ValueError(f"Path must not contain '..': {path}")
+            parts.append(part)
+        if not parts:
+            return None
+        head, *rest = parts
+        if head not in self._shared_roots:
+            return None
+        if not rest:
+            raise ValueError(
+                f"Shared media path must include a subpath: '{head}/<filename>': {path}"
+            )
+        root = self._shared_roots[head]
+        candidate = root.joinpath(*rest).resolve()
+        if not candidate.is_relative_to(root):
+            raise ValueError(f"Path escapes shared root '{head}': {path}")
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Media file not found: {head}/{'/'.join(rest)}")
+        return candidate, filetype.guess_mime(str(candidate))
 
     def load(self) -> None:
         """Load metadata from the workspace root metadata file."""
@@ -133,7 +184,14 @@ class MediaRepository:
         return str(abs_path.relative_to(self.workspace))
 
     def resolve_file(self, path: str) -> tuple[Path, str | None]:
-        """Resolve a workspace-relative path to (absolute_path, mime_type)."""
+        """Resolve a logical path to (absolute_path, mime_type).
+
+        Logical paths are either workspace-relative (e.g. ``media/...``) or
+        ``<alias>/<subpath>`` for a configured shared root. Shared roots are
+        read-only and resolve to absolute paths off-workspace.
+        """
+        if (resolved := self._resolve_shared(path)) is not None:
+            return resolved
         relpath = self._normalize_relpath(path)
         abs_path = self.workspace / relpath
         if not abs_path.is_file():
@@ -182,6 +240,10 @@ class MediaRepository:
 
     def set_caption(self, path: str, caption: str) -> None:
         """Update or create a caption for any workspace-relative file path."""
+        rel = Path(path)
+        head = rel.parts[0] if rel.parts else ""
+        if head in self._shared_roots:
+            raise ValueError(f"Cannot annotate media in a read-only shared root: {path}")
         relpath = self._normalize_relpath(path)
         abs_path, mime_type = self.resolve_file(relpath)
         entry = self._entries.get(relpath)

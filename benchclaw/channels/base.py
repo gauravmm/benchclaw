@@ -25,6 +25,7 @@ from benchclaw.utils import DurationField
 
 class ChannelConfig(BaseModel):
     allow_from: list[str] | None = None
+    allow_chats: list[str] | None = None
     attention_policy: AttentionPolicy = AttentionPolicy.SUMMON_GROUP
     attention_lookback: DurationField = timedelta(minutes=10)
     attention_gap: DurationField = timedelta(minutes=5)
@@ -138,6 +139,13 @@ class BaseChannel(AsyncContextManagerMixin):
                 return True
         return False
 
+    def is_chat_allowed(self, chat_id: str) -> bool:
+        """Check if a chat is allowed. Empty/missing list means all chats."""
+        allow_list = self.config.allow_chats
+        if not allow_list:
+            return True
+        return chat_id in allow_list
+
     async def _handle_message(
         self,
         sender_id: str,
@@ -166,6 +174,13 @@ class BaseChannel(AsyncContextManagerMixin):
             logger.warning(
                 f"Access denied for sender {sender_id} on channel {self.name}. "
                 f"Add them to allow_from list in config to grant access."
+            )
+            return
+
+        if not self.is_chat_allowed(chat_id):
+            logger.debug(
+                f"Ignoring message in chat {chat_id} on channel {self.name} "
+                f"(not in allow_chats)."
             )
             return
 

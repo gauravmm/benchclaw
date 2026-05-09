@@ -62,7 +62,6 @@ async def test_process_llm_turn_sends_visible_response(tmp_path: Path) -> None:
         call_ctx = ToolContext(
             workspace=loop.tools._master_ctx.workspace,
             bus=loop.bus,
-            log_store=loop.tools._master_ctx.log_store,
             media_repo=loop.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
@@ -89,7 +88,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
             content="Checking that now.",
             tool_calls=[
                 ToolCallRequest(
-                    id="tc1", name="log", arguments={"action": "append", "content": "step"}
+                    id="tc1", name="cron", arguments={"action": "list"}
                 )
             ],
         ),
@@ -103,7 +102,6 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
         call_ctx = ToolContext(
             workspace=loop.tools._master_ctx.workspace,
             bus=loop.bus,
-            log_store=loop.tools._master_ctx.log_store,
             media_repo=loop.media_repo,
             address=addr,
             background_tasks=tracker.tasks,
@@ -120,7 +118,7 @@ async def test_process_llm_turn_records_tool_calls_as_events(tmp_path: Path) -> 
     assert outbound.content == "Checking that now."
     assert isinstance(session.events[-1], AssistantEvent)
     assert session.events[-1].tool_calls is not None
-    assert session.events[-1].tool_calls[0]["function"]["name"] == "log"
+    assert session.events[-1].tool_calls[0]["function"]["name"] == "cron"
     assert tracker.pending
 
 
