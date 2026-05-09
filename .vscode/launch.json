@@ -6,7 +6,7 @@
       "type": "debugpy",
       "request": "launch",
       "module": "benchclaw",
-      "args": ["--verbose", "--debug-dump", "debug_dump.txt"],
+      "args": ["--verbose", "--debug-dump", "debug_dump"],
       "cwd": "${workspaceFolder}",
       "justMyCode": true
     }
