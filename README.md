@@ -43,6 +43,20 @@ Set `master_only = True` to exclude the tool from subagent registries.
 
 Channel config is picked up automatically — presence in `config/config.yaml` is sufficient to enable the channel, no `enabled` flag needed.
 
+## Tool Reminders
+
+Configure per-tool nudges in `config/config.yaml` to inject a short message after a specific tool returns:
+
+```yaml
+tool_reminders:
+  cute-db__search_cute:
+    text: "Path not visible to user; call send_media to deliver it."
+    ephemeral: true
+  search_media: "Cite the source when answering."
+```
+
+Bare strings are persistent (visible on every subsequent turn). Set `ephemeral: true` for in-the-moment nudges that should disappear once the user replies — useful for "do the obvious next step" prompts that would otherwise accumulate. See `spec/TOOL_REMINDERS.md` for details.
+
 ## Anti-Thrashing Mechanisms
 
 Three mechanisms in `agent/loop.py` prevent LLM thrashing, particularly with thinking models (Qwen, etc.):

@@ -85,6 +85,23 @@ Fully event-driven. `run()` subscribes to new addresses and spawns one `_address
 - `is_subagent: bool`
 - `subagent_manager` — not yet wired
 
+## Tool Reminders
+
+Per-tool nudges injected into session history immediately after a tool's result. Configured in `config/config.yaml` under `tool_reminders`, keyed by the tool name the LLM sees (MCP tools use the `<server>__<tool>` form).
+
+```yaml
+tool_reminders:
+  search_media: "cite when answering"           # bare string → persistent
+  cute-db__search_cute:                          # dict form → ephemeral mode available
+    text: "Path not visible to user; call send_media."
+    ephemeral: true
+```
+
+- **Persistent** (default): appended as a normal `SystemEvent`, visible on every subsequent turn until compaction.
+- **Ephemeral**: appended as `SystemEvent(ephemeral=True)`. The renderer hides it once any `UserEvent` follows it in the session log; the event itself stays in `session.jsonl` for replay fidelity. Use for in-the-moment nudges that should not accumulate (e.g. "now call send_media").
+
+Dispatch lives in `ToolCallTracker.handle_result` (`agent/loop_state.py`); the renderer rule is in `Session.render_history` (`session.py`). Spec: `spec/TOOL_REMINDERS.md`.
+
 ## Channels
 
 Each platform lives in `benchclaw/channels/<name>.py`:
