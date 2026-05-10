@@ -11,6 +11,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 from benchclaw.bus import ToolResultEvent
+from benchclaw.config import ToolReminder
 from benchclaw.session import Session, SystemEvent, ToolEvent
 
 
@@ -24,9 +25,10 @@ class AddressState:
 class ToolCallTracker:
     """Per-address tracker for in-flight background tool calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, reminders: dict[str, ToolReminder] | None = None) -> None:
         self._in_flight: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._reminders: dict[str, ToolReminder] = reminders or {}
         # Set when an assistant turn dispatches exactly one tool call AND
         # that tool was declared ``terminal_when_lone``. The loop reads
         # this when the tool result drains the in-flight set: True ⇒ skip
@@ -83,6 +85,11 @@ class ToolCallTracker:
                 tool_name=event.tool_name,
             )
         )
+        reminder = self._reminders.get(event.tool_name)
+        if reminder is not None:
+            session.append(
+                SystemEvent(content=reminder.text, ephemeral=reminder.ephemeral)
+            )
         if event.tool_call_id in self._in_flight:
             del self._in_flight[event.tool_call_id]
             return not self._in_flight

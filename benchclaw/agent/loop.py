@@ -51,12 +51,14 @@ class AgentLoop:
     ):
         self.workspace_path = config.workspace_path
         self.config = config.agents.master
+        self.tool_reminders = config.tool_reminders
         self.bus = bus
         self.provider = provider
         self.debug_dump_dir = debug_dump_dir
         self.media_repo = media_repo
 
         self.sessions = SessionManager(config.workspace_path / "sessions")
+        self._log_tool_reminders()
 
         master_ctx = ToolContext(
             workspace=config.workspace_path,
@@ -214,7 +216,7 @@ class AgentLoop:
 
     async def _address_loop(self, addr: MessageAddress) -> None:
         session = self.sessions.get(addr)
-        tracker = ToolCallTracker()
+        tracker = ToolCallTracker(reminders=self.tool_reminders)
         call_ctx = ToolContext(
             workspace=self.tools._master_ctx.workspace,
             bus=self.bus,
@@ -246,10 +248,28 @@ class AgentLoop:
                 pending_media=state.pending_media,
             )
 
+    def _log_tool_reminders(self) -> None:
+        if not self.tool_reminders:
+            return
+        descriptions = ", ".join(
+            f"{name} ({'ephemeral' if reminder.ephemeral else 'persistent'})"
+            for name, reminder in self.tool_reminders.items()
+        )
+        logger.info(f"Loaded {len(self.tool_reminders)} tool reminders: {descriptions}")
+
+    def _warn_unknown_reminders(self) -> None:
+        unknown = [name for name in self.tool_reminders if name not in self.tools]
+        for name in unknown:
+            logger.warning(
+                f"tool_reminders entry '{name}' does not match any registered tool; "
+                "the reminder will never fire"
+            )
+
     async def run(self) -> None:
         async with contextlib.AsyncExitStack() as stack:
             await stack.enter_async_context(self.sessions)
             await stack.enter_async_context(self.tools)
+            self._warn_unknown_reminders()
             logger.info("Agent loop started")
             new_addr_queue = self.bus.subscribe_new_addresses()
 

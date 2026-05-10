@@ -12,6 +12,7 @@ from benchclaw.session import (
     Session,
     SessionManager,
     SummaryEvent,
+    SystemEvent,
     UserEvent,
 )
 
@@ -160,6 +161,63 @@ def test_session_compact_emits_summary_event(tmp_path: Path) -> None:
     assert isinstance(session.events[-1], SummaryEvent)
     assert "compacted" in session.events[-1].content.lower()
     assert session.compacted_through == 0
+
+
+def test_system_event_ephemeral_roundtrip(tmp_path: Path) -> None:
+    addr = MessageAddress(channel="telegram", chat_id="1")
+    session = Session(addr=addr)
+    session.append(SystemEvent(content="persistent note"))
+    session.append(SystemEvent(content="one-shot nudge", ephemeral=True))
+
+    path = tmp_path / "session.jsonl"
+    session.save(path)
+
+    loaded = Session.load(path)
+    assert loaded is not None
+    assert isinstance(loaded.events[0], SystemEvent)
+    assert loaded.events[0].ephemeral is False
+    assert isinstance(loaded.events[1], SystemEvent)
+    assert loaded.events[1].ephemeral is True
+
+
+def test_system_event_ephemeral_omitted_from_record_when_false() -> None:
+    """``ephemeral`` is the rare case; default-False entries should not bloat the log."""
+    record = SystemEvent(content="x").to_record()
+    assert "ephemeral" not in record
+
+    record = SystemEvent(content="x", ephemeral=True).to_record()
+    assert record["ephemeral"] is True
+
+
+def test_render_history_hides_ephemeral_after_user_event() -> None:
+    addr = MessageAddress(channel="telegram", chat_id="1")
+    session = Session(addr=addr)
+    session.append(UserEvent(content="first"))
+    session.append(SystemEvent(content="visible-while-active", ephemeral=True))
+    session.append(AssistantEvent(content="responding"))
+
+    # Before the next user message: ephemeral is visible.
+    rendered = session.render_history(session.events)
+    contents = [str(message.get("content", "")) for message in rendered]
+    assert any("visible-while-active" in content for content in contents)
+
+    # User replies — the ephemeral is now upstream of a UserEvent and must be hidden.
+    session.append(UserEvent(content="follow up"))
+    rendered = session.render_history(session.events)
+    contents = [str(message.get("content", "")) for message in rendered]
+    assert not any("visible-while-active" in content for content in contents)
+
+
+def test_render_history_keeps_persistent_system_event_after_user_event() -> None:
+    addr = MessageAddress(channel="telegram", chat_id="1")
+    session = Session(addr=addr)
+    session.append(UserEvent(content="first"))
+    session.append(SystemEvent(content="persistent rule"))  # ephemeral=False
+    session.append(UserEvent(content="follow up"))
+
+    rendered = session.render_history(session.events)
+    contents = [str(message.get("content", "")) for message in rendered]
+    assert any("persistent rule" in content for content in contents)
 
 
 def test_session_history_includes_sender_and_timestamp_prefix() -> None:

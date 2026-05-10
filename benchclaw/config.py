@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import yaml
 from loguru import logger
@@ -90,6 +91,24 @@ class MediaConfig(BaseModel):
         return value
 
 
+class ToolReminder(BaseModel):
+    """A reminder string injected after a specific tool returns.
+
+    See ``spec/TOOL_REMINDERS.md``. Bare strings in YAML are coerced to
+    ``ToolReminder(text=..., ephemeral=False)`` by ``Config``.
+    """
+
+    text: str
+    ephemeral: bool = False
+
+    @field_validator("text")
+    @classmethod
+    def _non_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("tool_reminders text must be non-empty")
+        return value
+
+
 class ChannelConfigs(BaseModel):
     """Optional built-in channel configuration."""
 
@@ -113,6 +132,17 @@ class Config(BaseSettings):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
+    tool_reminders: dict[str, ToolReminder] = Field(default_factory=dict)
+
+    @field_validator("tool_reminders", mode="before")
+    @classmethod
+    def _coerce_reminder_strings(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        return {
+            key: ({"text": entry} if isinstance(entry, str) else entry)
+            for key, entry in value.items()
+        }
 
     @property
     def workspace_path(self) -> Path:

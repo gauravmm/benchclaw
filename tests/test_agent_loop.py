@@ -134,6 +134,65 @@ def test_tool_call_tracker_interrupt_records_background_notice() -> None:
     assert "still executing in the background" in str(session.events[-1].content)
 
 
+def test_tool_call_tracker_appends_configured_reminder() -> None:
+    from benchclaw.bus import ToolResultEvent
+    from benchclaw.config import ToolReminder
+
+    session = Session(MessageAddress("telegram", "123"))
+    tracker = ToolCallTracker(
+        reminders={
+            "cute-db__search_cute": ToolReminder(
+                text="results not visible — call send_media",
+                ephemeral=True,
+            ),
+            "search_media": ToolReminder(text="cite when answering"),
+        },
+    )
+    # Mark tc1 as in-flight so handle_result treats it as a foreground result.
+    tracker._in_flight["tc1"] = "cute-db__search_cute"
+    tracker.handle_result(
+        ToolResultEvent(
+            tool_call_id="tc1",
+            tool_name="cute-db__search_cute",
+            result="path: cuteness/abc.webp",
+        ),
+        session,
+    )
+    # ToolEvent then SystemEvent (ephemeral=True).
+    assert isinstance(session.events[-2], type(session.events[-2]))  # ToolEvent
+    assert isinstance(session.events[-1], SystemEvent)
+    assert session.events[-1].ephemeral is True
+    assert "send_media" in session.events[-1].content
+
+    # A different in-flight tool with a persistent reminder.
+    tracker._in_flight["tc2"] = "search_media"
+    tracker.handle_result(
+        ToolResultEvent(
+            tool_call_id="tc2",
+            tool_name="search_media",
+            result="found 1",
+        ),
+        session,
+    )
+    assert isinstance(session.events[-1], SystemEvent)
+    assert session.events[-1].ephemeral is False
+    assert "cite" in session.events[-1].content
+
+
+def test_tool_call_tracker_skips_when_no_reminder_configured() -> None:
+    from benchclaw.bus import ToolResultEvent
+
+    session = Session(MessageAddress("telegram", "123"))
+    tracker = ToolCallTracker()  # no reminders
+    tracker._in_flight["tc1"] = "exec"
+    tracker.handle_result(
+        ToolResultEvent(tool_call_id="tc1", tool_name="exec", result="ok"),
+        session,
+    )
+    # Only the ToolEvent — no SystemEvent injected.
+    assert not any(isinstance(ev, SystemEvent) for ev in session.events)
+
+
 def test_build_llm_messages_keeps_only_latest_reasoning(tmp_path: Path) -> None:
     addr = MessageAddress("telegram", "123")
     session = Session(addr)

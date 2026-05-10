@@ -264,6 +264,10 @@ class SystemEvent(BaseEvent):
 
     content: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    # When True, the renderer hides this event once any UserEvent appears
+    # later in the event list. The event still lives in session.jsonl for
+    # replay fidelity. See spec/TOOL_REMINDERS.md.
+    ephemeral: bool = False
 
     @property
     def kind(self) -> Literal["system"]:
@@ -273,6 +277,8 @@ class SystemEvent(BaseEvent):
         record = {**self._record_base(), "content": self.content}
         if self.metadata:
             record["metadata"] = self.metadata
+        if self.ephemeral:
+            record["ephemeral"] = True
         return record
 
     def to_llm_message(self, **kwargs: Any) -> dict[str, Any]:
@@ -347,6 +353,7 @@ def event_from_record(record: dict[str, Any]) -> ConversationEvent:
             timestamp=timestamp,
             content=str(record.get("content", "")),
             metadata=dict(record.get("metadata") or {}),
+            ephemeral=bool(record.get("ephemeral", False)),
         )
     if kind == "summary":
         return SummaryEvent(timestamp=timestamp, content=str(record.get("content", "")))
@@ -450,9 +457,19 @@ class Session:
     ) -> list[dict[str, object]]:
         options = options or RenderOptions()
         last_reasoning_idx = self._find_last_reasoning_index(history)
+        last_user_idx = max(
+            (i for i, ev in enumerate(history) if isinstance(ev, UserEvent)),
+            default=-1,
+        )
         pending_media_blocks = self._build_pending_media_blocks(media_repo, options)
         messages: list[dict[str, object]] = []
         for i, event in enumerate(history):
+            if (
+                isinstance(event, SystemEvent)
+                and event.ephemeral
+                and i < last_user_idx
+            ):
+                continue
             messages.append(
                 self._render_event_message(
                     event,
