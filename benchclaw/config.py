@@ -31,7 +31,6 @@ class AgentConfig(BaseModel):
     top_k: int | None = None
     enable_thinking: bool | None = None
     max_tool_iterations: int = 20
-    memory_window: int = 50
     context_window: int = 22000
 
 

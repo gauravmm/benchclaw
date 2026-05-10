@@ -471,32 +471,28 @@ class Session:
         system_prompt: str,
         media_repo: MediaRenderer | None,
         options: RenderOptions | None = None,
-        *,
-        max_messages: int = 50,
     ) -> list[dict[str, object]]:
-        history = self.get_history_events(max_messages)
+        history = self.get_history_events()
         return [
             {"role": "system", "content": system_prompt},
             *self.render_history(history, media_repo=media_repo, options=options),
         ]
 
-    def get_history_events(self, max_messages: int = 50) -> list[ConversationEvent]:
-        """Return the current typed conversation history window."""
+    def get_history_events(self) -> list[ConversationEvent]:
+        """Return the current typed conversation history.
+
+        After a compaction, the ``SummaryEvent`` at ``compacted_through``
+        replaces everything before it; otherwise all events are returned
+        verbatim. Bounding history length is the compactor's job — this
+        method does not trim, so the rendered prefix stays cache-stable
+        between compactions.
+        """
         if self.compacted_through >= 0 and self.events:
-            history = [
+            return [
                 self.events[self.compacted_through],
                 *self.events[self.compacted_through + 1 :],
             ]
-        else:
-            history = list(self.events)
-        if max_messages > 0:
-            if self.compacted_through >= 0 and history:
-                summary, recent = history[0], history[1:]
-                recent = recent[-max_messages:]
-                history = [summary, *recent]
-            else:
-                history = history[-max_messages:]
-        return history
+        return list(self.events)
 
     def clear(self, action: ClearAction = "reset") -> None:
         """Clear all events from the in-memory history.

@@ -5,7 +5,9 @@
 Compaction is **reactive and lossy**. After each LLM response, `_maybe_compact_session` checks
 `response.usage["total_tokens"]` against 80% of `context_window` (22k default). If exceeded,
 `session.compact()` appends a `SummaryEvent` containing the last 20 log entries and sets
-`compacted_through` so only the summary + last `memory_window` (50) events are rendered.
+`compacted_through` so only the summary + every event after it is rendered. There is no
+sliding window — the rendered prefix stays byte-stable between compactions so the upstream
+prompt cache hits.
 
 Problems:
 
@@ -169,7 +171,6 @@ agents:
   master:
     context_window: 22000
     max_tokens: 8192
-    memory_window: 50
     compaction:
       threshold: 0.7          # fraction of (context_window - max_tokens)
       max_tool_result_tokens: 2000  # truncate tool results above this

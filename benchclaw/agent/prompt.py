@@ -283,7 +283,6 @@ class PromptBuilder:
             system_prompt,
             self.media_repo,
             self.render_options(),
-            max_messages=self.agent_config.memory_window,
         )
         media_blocks: list[dict[str, object]] | None = None
         if pending_media and self.media_repo:
