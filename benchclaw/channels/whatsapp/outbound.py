@@ -18,11 +18,13 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import AsyncIterator
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import filetype
 from loguru import logger
+from PIL import Image
 
 from benchclaw.bus import OutboundMessage
 from benchclaw.channels.whatsapp.address import WhatsAppId
@@ -99,7 +101,10 @@ async def _dispatch_media(
     on MIME family. Audio doesn't support captions on WhatsApp natively,
     so a non-empty caption is sent as a follow-up text message after the
     audio (Phase C of WHATSAPP_PARITY)."""
-    encoded = base64.b64encode(path.read_bytes()).decode()
+    raw = path.read_bytes()
+    if mime == "image/webp":
+        raw, mime = _transcode_webp(raw)
+    encoded = base64.b64encode(raw).decode()
     kind = mime.split("/", 1)[0] if mime else ""
     payload: dict[str, Any] = {"type": "send", "to": to}
 
@@ -137,6 +142,22 @@ async def _dispatch_media(
             {"type": "send", "to": to, "text": audio_caption_followup},
         )
         yield None
+
+
+def _transcode_webp(raw: bytes) -> tuple[bytes, str]:
+    # WhatsApp/Baileys does not render WebP through the image: field — it
+    # routes there as a sticker. Re-encode to JPEG (opaque) or PNG (alpha)
+    # so LLM-supplied WebP paths land as inline images.
+    img = Image.open(BytesIO(raw))
+    has_alpha = img.mode in ("RGBA", "LA") or (
+        img.mode == "P" and "transparency" in img.info
+    )
+    out = BytesIO()
+    if has_alpha:
+        img.convert("RGBA").save(out, format="PNG")
+        return out.getvalue(), "image/png"
+    img.convert("RGB").save(out, format="JPEG", quality=90)
+    return out.getvalue(), "image/jpeg"
 
 
 async def _send_payload(channel: "WhatsAppChannel", payload: dict[str, Any]) -> None:

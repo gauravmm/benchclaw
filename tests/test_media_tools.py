@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime
 from pathlib import Path
@@ -312,6 +313,68 @@ async def test_whatsapp_send_preserves_lid_chat_id(tmp_path: Path):
     [payload] = channel._ws.payloads
     parsed = json.loads(payload)
     assert parsed["to"] == "222355137806442@lid"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_transcodes_webp_to_jpeg(tmp_path: Path):
+    from io import BytesIO
+
+    from PIL import Image
+
+    image = tmp_path / "media" / "out.webp"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    buf = BytesIO()
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(buf, format="WEBP")
+    image.write_bytes(buf.getvalue())
+
+    channel = WhatsAppChannel(WhatsAppConfig(), MessageBus(), media_repo=None)
+    channel._ws = _FakeWS()
+    channel._connected = True
+
+    await channel.send(
+        OutboundMessage(
+            address=MessageAddress("whatsapp", "123@s.whatsapp.net"),
+            content="caption",
+            media=[str(image)],
+        )
+    )
+
+    [payload] = channel._ws.payloads
+    parsed = json.loads(payload)
+    assert parsed["imageMimeType"] == "image/jpeg"
+    decoded = base64.b64decode(parsed["imageBase64"])
+    assert decoded[:3] == b"\xff\xd8\xff"  # JPEG SOI marker
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_transcodes_webp_with_alpha_to_png(tmp_path: Path):
+    from io import BytesIO
+
+    from PIL import Image
+
+    image = tmp_path / "media" / "alpha.webp"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    buf = BytesIO()
+    Image.new("RGBA", (8, 8), (0, 255, 0, 128)).save(buf, format="WEBP")
+    image.write_bytes(buf.getvalue())
+
+    channel = WhatsAppChannel(WhatsAppConfig(), MessageBus(), media_repo=None)
+    channel._ws = _FakeWS()
+    channel._connected = True
+
+    await channel.send(
+        OutboundMessage(
+            address=MessageAddress("whatsapp", "123@s.whatsapp.net"),
+            content="",
+            media=[str(image)],
+        )
+    )
+
+    [payload] = channel._ws.payloads
+    parsed = json.loads(payload)
+    assert parsed["imageMimeType"] == "image/png"
+    decoded = base64.b64decode(parsed["imageBase64"])
+    assert decoded[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 @pytest.mark.asyncio
